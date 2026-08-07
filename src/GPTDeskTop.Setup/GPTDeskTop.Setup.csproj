@@ -11,7 +11,8 @@
     <AssemblyVersion>1.4.0.0</AssemblyVersion>
     <FileVersion>1.4.0.0</FileVersion>
     <PublishDir>$(MSBuildProjectDirectory)\..\..\Output\Publish</PublishDir>
-    <OutputPath>$(MSBuildProjectDirectory)\..\..\Output\Setup\</OutputPath>
+    <SetupOutput>$(MSBuildProjectDirectory)\..\..\Output\Setup</SetupOutput>
+    <OutputPath>$(MSBuildProjectDirectory)\..\..\Output\Setup\Build\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
@@ -28,6 +29,13 @@
   </ItemGroup>
 
   <Target Name="EnsureSetupOutput" BeforeTargets="Build">
-    <MakeDir Directories="$(MSBuildProjectDirectory)\..\..\Output\Setup" />
+    <MakeDir Directories="$(SetupOutput)" />
+  </Target>
+
+  <Target Name="CreateStandaloneSetup" AfterTargets="Build" Condition="'$(SetupPackaging)' != 'true' AND '$(Configuration)' == 'Release'">
+    <Exec Command="dotnet publish &quot;$(MSBuildProjectFullPath)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -p:SetupPackaging=true -o &quot;$(SetupOutput)\Final&quot;" />
+    <Copy SourceFiles="$(SetupOutput)\Final\GPTDeskTop-Setup.exe" DestinationFiles="$(SetupOutput)\GPTDeskTop-Setup.exe" />
+    <WriteLinesToFile File="$(SetupOutput)\Version.txt" Lines="GPTDeskTop Setup v1.4.0&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
+    <Message Text="Final standalone setup: $(SetupOutput)\GPTDeskTop-Setup.exe" Importance="high" />
   </Target>
 </Project>
