@@ -15,6 +15,7 @@ public sealed class MainForm : Form
     private readonly Button _showChromeButton = new() { Text = "Show Chrome", AutoSize = true };
     private readonly Button _refreshTabsButton = new() { Text = "Refresh Chrome Tabs", AutoSize = true };
     private readonly Button _addMonitorButton = new() { Text = "Add Selected Tab(s)", AutoSize = true };
+    private readonly Button _monitorSettingsButton = new() { Text = "Monitor Settings", AutoSize = true };
     private readonly Button _saveMonitorButton = new() { Text = "Save Monitor", AutoSize = true };
     private readonly Button _deleteMonitorButton = new() { Text = "Delete Monitor", AutoSize = true };
     private readonly Button _startSelectedButton = new() { Text = "Start Selected", AutoSize = true };
@@ -31,7 +32,7 @@ public sealed class MainForm : Form
     private readonly RichTextBox _activityBox = new();
     private readonly TextBox _autoReplyBox = new() { Text = "كمل", Font = new Font("Segoe UI", 11F), Dock = DockStyle.Fill };
     private readonly CheckBox _enabledCheck = new() { Text = "Enabled", Checked = true, AutoSize = true, Anchor = AnchorStyles.Left };
-    private readonly Label _editorLabel = new() { Text = "Select one or more open tabs to add, or select a saved monitor to edit.", AutoEllipsis = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Label _editorLabel = new() { Text = "Select open tab(s) to add. Every tab gets its own Delay and Timer settings.", AutoEllipsis = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
     private readonly Label _versionLabel = new()
     {
         Text = $"GPTDeskTop v{GetAppVersion()}  |  .NET 8  |  Chrome CDP",
@@ -83,7 +84,8 @@ public sealed class MainForm : Form
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, Padding = new Padding(0, 4, 0, 0) };
         toolbar.Controls.AddRange(new Control[]
         {
-            _launchChromeButton, _hideChromeButton, _showChromeButton, _refreshTabsButton, _addMonitorButton, _deleteMonitorButton,
+            _launchChromeButton, _hideChromeButton, _showChromeButton, _refreshTabsButton,
+            _addMonitorButton, _monitorSettingsButton, _deleteMonitorButton,
             _startSelectedButton, _stopSelectedButton, _startAllButton, _stopAllButton,
             _refreshHistoryButton, _deleteLogButton, _clearHistoryButton
         });
@@ -115,7 +117,7 @@ public sealed class MainForm : Form
 
         var openGroup = new GroupBox { Text = "Open Chrome Tabs - Ctrl/Shift select multiple rows, then Add Selected Tab(s)", Dock = DockStyle.Fill, Padding = new Padding(8) };
         openGroup.Controls.Add(_tabsGrid);
-        var savedGroup = new GroupBox { Text = "Saved Monitors - each row runs independently", Dock = DockStyle.Fill, Padding = new Padding(8) };
+        var savedGroup = new GroupBox { Text = "Saved Monitors - independent Auto Reply / Delay / Timer per tab", Dock = DockStyle.Fill, Padding = new Padding(8) };
         savedGroup.Controls.Add(_monitorsGrid);
         var activityGroup = new GroupBox { Text = "Live Activity", Dock = DockStyle.Fill, Padding = new Padding(8) };
         activityGroup.Controls.Add(_activityBox);
@@ -141,7 +143,7 @@ public sealed class MainForm : Form
     {
         ConfigureReadOnlyGrid(_tabsGrid);
         _tabsGrid.MultiSelect = true;
-        _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Id), HeaderText = "Tab ID", Width = 260 });
+        _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Id), HeaderText = "Tab ID", Width = 240 });
         _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Title), HeaderText = "Title", Width = 420 });
         _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Url), HeaderText = "URL", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
     }
@@ -150,12 +152,14 @@ public sealed class MainForm : Form
     {
         ConfigureReadOnlyGrid(_monitorsGrid);
         _monitorsGrid.MultiSelect = false;
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Id), HeaderText = "ID", Width = 55 });
-        _monitorsGrid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(SavedMonitor.Enabled), HeaderText = "Enabled", Width = 70 });
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.RuntimeStatus), HeaderText = "Status", Width = 85 });
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Title), HeaderText = "Title", Width = 330 });
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.AutoReply), HeaderText = "Auto Reply", Width = 180 });
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.TabId), HeaderText = "Tab ID", Width = 200 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Id), HeaderText = "ID", Width = 50 });
+        _monitorsGrid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(SavedMonitor.Enabled), HeaderText = "On", Width = 45 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.RuntimeStatus), HeaderText = "Status", Width = 80 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Title), HeaderText = "Title", Width = 270 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.AutoReply), HeaderText = "Auto Reply", Width = 150 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.ReplyDelaySeconds), HeaderText = "Delay (s)", Width = 70 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.TimerSeconds), HeaderText = "Timer (s)", Width = 70 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.TabId), HeaderText = "Tab ID", Width = 170 });
         _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Url), HeaderText = "URL", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
     }
 
@@ -170,7 +174,7 @@ public sealed class MainForm : Form
         _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Direction), HeaderText = "Direction", Width = 80 });
         _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Prompt), HeaderText = "Prompt", Width = 140 });
         _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Response), HeaderText = "Response", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
-        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Status), HeaderText = "Status", Width = 75 });
+        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Status), HeaderText = "Status", Width = 90 });
     }
 
     private static void ConfigureReadOnlyGrid(DataGridView grid)
@@ -191,6 +195,7 @@ public sealed class MainForm : Form
         _showChromeButton.Click += async (_, _) => await ShowChromeAsync();
         _refreshTabsButton.Click += async (_, _) => await RefreshTabsAsync();
         _addMonitorButton.Click += async (_, _) => await AddSelectedTabAsync();
+        _monitorSettingsButton.Click += async (_, _) => await EditSelectedMonitorSettingsAsync();
         _saveMonitorButton.Click += async (_, _) => await SaveSelectedMonitorAsync();
         _deleteMonitorButton.Click += async (_, _) => await DeleteSelectedMonitorAsync();
         _startSelectedButton.Click += async (_, _) => await StartSelectedMonitorAsync();
@@ -202,6 +207,7 @@ public sealed class MainForm : Form
         _clearHistoryButton.Click += async (_, _) => await ClearHistoryAsync();
         _tabsGrid.SelectionChanged += (_, _) => SelectCurrentTab();
         _monitorsGrid.SelectionChanged += (_, _) => SelectCurrentMonitor();
+        _monitorsGrid.CellDoubleClick += async (_, _) => await EditSelectedMonitorSettingsAsync();
 
         _monitor.Activity += (id, message) => Ui(() => AppendActivity($"M{id}: {message}"));
         _monitor.HistoryChanged += () => Ui(async () => await RefreshHistoryAsync());
@@ -216,7 +222,6 @@ public sealed class MainForm : Form
         await RefreshMonitorsAsync();
         await RefreshHistoryAsync();
         AppendActivity($"Application version: {GetAppVersion()}");
-        AppendActivity($"Saved Chrome visibility: {(_chromeHidden ? "Hidden" : "Visible")}");
     }
 
     private async Task LaunchChromeAsync()
@@ -226,19 +231,11 @@ public sealed class MainForm : Form
             _chrome.LaunchMonitorChrome();
             AppendActivity("Monitor Chrome launched.");
             await Task.Delay(1800);
-
             if (_chromeHidden)
-            {
-                var hidden = await _chrome.HideMonitorChromeAsync();
-                AppendActivity(hidden ? "Monitor Chrome restored in hidden mode." : "Chrome launched but could not be hidden automatically.");
-            }
-
+                await _chrome.HideMonitorChromeAsync();
             await RefreshTabsAsync();
         }
-        catch (Exception ex)
-        {
-            ShowError("Chrome Launch Error", ex.Message);
-        }
+        catch (Exception ex) { ShowError("Chrome Launch Error", ex.Message); }
     }
 
     private async Task HideChromeAsync()
@@ -247,19 +244,15 @@ public sealed class MainForm : Form
         {
             if (!await _chrome.HideMonitorChromeAsync())
             {
-                MessageBox.Show(this, "Monitor Chrome window was not found. Launch Monitor Chrome first.", "Chrome Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(this, "Monitor Chrome window was not found.", "Chrome Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-
             _chromeHidden = true;
             await _database.SetSettingAsync("ChromeHidden", "1");
             UpdateChromeVisibilityButtons();
-            AppendActivity("Monitor Chrome hidden. Monitoring continues in background.");
+            AppendActivity("Monitor Chrome hidden. Monitoring continues.");
         }
-        catch (Exception ex)
-        {
-            ShowError("Hide Chrome Error", ex.Message);
-        }
+        catch (Exception ex) { ShowError("Hide Chrome Error", ex.Message); }
     }
 
     private async Task ShowChromeAsync()
@@ -268,19 +261,15 @@ public sealed class MainForm : Form
         {
             if (!await _chrome.ShowMonitorChromeAsync())
             {
-                MessageBox.Show(this, "Monitor Chrome window was not found. Launch Monitor Chrome first.", "Chrome Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(this, "Monitor Chrome window was not found.", "Chrome Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-
             _chromeHidden = false;
             await _database.SetSettingAsync("ChromeHidden", "0");
             UpdateChromeVisibilityButtons();
             AppendActivity("Monitor Chrome shown.");
         }
-        catch (Exception ex)
-        {
-            ShowError("Show Chrome Error", ex.Message);
-        }
+        catch (Exception ex) { ShowError("Show Chrome Error", ex.Message); }
     }
 
     private void UpdateChromeVisibilityButtons()
@@ -313,8 +302,7 @@ public sealed class MainForm : Form
 
     private void SelectCurrentTab()
     {
-        if (_tabsGrid.CurrentRow?.DataBoundItem is not ChromeTab tab)
-            return;
+        if (_tabsGrid.CurrentRow?.DataBoundItem is not ChromeTab tab) return;
         _selectedTab = tab;
         if (_selectedMonitor is null)
             _editorLabel.Text = $"Open tab: {tab.Title} | {tab.Id}";
@@ -322,40 +310,30 @@ public sealed class MainForm : Form
 
     private void SelectCurrentMonitor()
     {
-        if (_monitorsGrid.CurrentRow?.DataBoundItem is not SavedMonitor monitor)
-            return;
+        if (_monitorsGrid.CurrentRow?.DataBoundItem is not SavedMonitor monitor) return;
         _selectedMonitor = monitor;
         _autoReplyBox.Text = monitor.AutoReply;
         _enabledCheck.Checked = monitor.Enabled;
-        _editorLabel.Text = $"Saved monitor #{monitor.Id}: {monitor.Title}";
+        _editorLabel.Text = $"Monitor #{monitor.Id}: {monitor.Title} | Delay {monitor.ReplyDelaySeconds}s | Timer {monitor.TimerSeconds}s";
     }
 
     private async Task AddSelectedTabAsync()
     {
-        var selectedTabs = _tabsGrid.SelectedRows
-            .Cast<DataGridViewRow>()
-            .Select(r => r.DataBoundItem)
-            .OfType<ChromeTab>()
-            .DistinctBy(t => t.Id)
-            .ToList();
-
-        if (selectedTabs.Count == 0 && _selectedTab is not null)
-            selectedTabs.Add(_selectedTab);
-
+        var selectedTabs = _tabsGrid.SelectedRows.Cast<DataGridViewRow>()
+            .Select(r => r.DataBoundItem).OfType<ChromeTab>().DistinctBy(t => t.Id).ToList();
+        if (selectedTabs.Count == 0 && _selectedTab is not null) selectedTabs.Add(_selectedTab);
         if (selectedTabs.Count == 0)
         {
             MessageBox.Show(this, "Select one or more open Chrome tabs first.", "No Tabs Selected", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        if (string.IsNullOrWhiteSpace(_autoReplyBox.Text))
-        {
-            MessageBox.Show(this, "Enter an auto reply first.", "Auto Reply Required", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
 
+        var defaultDelay = await _database.GetIntSettingAsync("ReplyDelaySeconds", 3, 0, 300);
+        var defaultReply = string.IsNullOrWhiteSpace(_autoReplyBox.Text) ? "كمل" : _autoReplyBox.Text.Trim();
         long? lastSavedId = null;
         var added = 0;
         var skipped = 0;
+
         foreach (var tab in selectedTabs)
         {
             var duplicate = _monitors.FirstOrDefault(m => string.Equals(m.Url, tab.Url, StringComparison.OrdinalIgnoreCase));
@@ -371,35 +349,59 @@ public sealed class MainForm : Form
                 TabId = tab.Id,
                 Title = tab.Title,
                 Url = tab.Url,
-                AutoReply = _autoReplyBox.Text.Trim(),
-                Enabled = _enabledCheck.Checked
+                AutoReply = defaultReply,
+                ReplyDelaySeconds = defaultDelay,
+                TimerSeconds = 1,
+                Enabled = true
             };
+
+            if (!MonitorSettingsForm.Edit(this, monitor))
+            {
+                AppendActivity($"Add cancelled for tab: {tab.Title}");
+                continue;
+            }
+
             await _database.SaveMonitorAsync(monitor);
             lastSavedId = monitor.Id;
             added++;
-            AppendActivity($"Saved monitor #{monitor.Id}: {monitor.Title}");
+            AppendActivity($"Saved monitor #{monitor.Id}: {monitor.Title} | Delay {monitor.ReplyDelaySeconds}s | Timer {monitor.TimerSeconds}s");
         }
 
-        await _database.SetSettingAsync("DefaultAutoReply", _autoReplyBox.Text.Trim());
         await RefreshMonitorsAsync();
-        if (lastSavedId.HasValue)
-            SelectMonitorRow(lastSavedId.Value);
+        if (lastSavedId.HasValue) SelectMonitorRow(lastSavedId.Value);
         AppendActivity($"Add Selected Tab(s): added {added}, already saved {skipped}.");
+    }
+
+    private async Task EditSelectedMonitorSettingsAsync()
+    {
+        if (_selectedMonitor is null)
+        {
+            MessageBox.Show(this, "Select a saved monitor first.", "No Monitor Selected", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (_monitor.IsMonitorRunning(_selectedMonitor.Id))
+        {
+            MessageBox.Show(this, "Stop this monitor before changing its Delay/Timer settings.", "Monitor Is Running", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (!MonitorSettingsForm.Edit(this, _selectedMonitor)) return;
+        await _database.SaveMonitorAsync(_selectedMonitor);
+        await _database.SetSettingAsync("DefaultAutoReply", _selectedMonitor.AutoReply);
+        var id = _selectedMonitor.Id;
+        AppendActivity($"Monitor #{id} settings saved: Delay {_selectedMonitor.ReplyDelaySeconds}s | Timer {_selectedMonitor.TimerSeconds}s");
+        await RefreshMonitorsAsync();
+        SelectMonitorRow(id);
     }
 
     private async Task SaveSelectedMonitorAsync()
     {
-        if (_selectedMonitor is null)
-        {
-            await AddSelectedTabAsync();
-            return;
-        }
+        if (_selectedMonitor is null) { await AddSelectedTabAsync(); return; }
         if (string.IsNullOrWhiteSpace(_autoReplyBox.Text))
         {
             MessageBox.Show(this, "Auto reply cannot be empty.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-
         _selectedMonitor.AutoReply = _autoReplyBox.Text.Trim();
         _selectedMonitor.Enabled = _enabledCheck.Checked;
         var matchingTab = ResolveTab(_selectedMonitor);
@@ -411,19 +413,16 @@ public sealed class MainForm : Form
         }
         await _database.SaveMonitorAsync(_selectedMonitor);
         await _database.SetSettingAsync("DefaultAutoReply", _selectedMonitor.AutoReply);
-        AppendActivity($"Monitor #{_selectedMonitor.Id} saved.");
         var id = _selectedMonitor.Id;
+        AppendActivity($"Monitor #{id} saved.");
         await RefreshMonitorsAsync();
         SelectMonitorRow(id);
     }
 
     private async Task DeleteSelectedMonitorAsync()
     {
-        if (_selectedMonitor is null)
-            return;
-        if (MessageBox.Show(this, $"Delete saved monitor #{_selectedMonitor.Id}?\n\nThis does not close the Chrome tab.", "Delete Monitor", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
-            return;
-
+        if (_selectedMonitor is null) return;
+        if (MessageBox.Show(this, $"Delete saved monitor #{_selectedMonitor.Id}?\n\nThis does not close the Chrome tab.", "Delete Monitor", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         var id = _selectedMonitor.Id;
         await _monitor.StopMonitorAsync(id);
         await _database.DeleteMonitorAsync(id);
@@ -445,16 +444,13 @@ public sealed class MainForm : Form
     private async Task StartAllEnabledAsync()
     {
         await RefreshTabsAsync();
-        foreach (var monitor in _monitors.Where(m => m.Enabled).ToList())
-            await StartMonitorAsync(monitor, false);
+        foreach (var monitor in _monitors.Where(m => m.Enabled).ToList()) await StartMonitorAsync(monitor, false);
         await RefreshMonitorsAsync(false);
     }
 
     private async Task StartMonitorAsync(SavedMonitor monitor, bool refreshTabsIfMissing = true)
     {
-        if (_monitor.IsMonitorRunning(monitor.Id))
-            return;
-
+        if (_monitor.IsMonitorRunning(monitor.Id)) return;
         var tab = ResolveTab(monitor);
         if (tab is null && refreshTabsIfMissing)
         {
@@ -466,7 +462,6 @@ public sealed class MainForm : Form
             AppendActivity($"Monitor #{monitor.Id} not started: matching Chrome tab is not open ({monitor.Title}).");
             return;
         }
-
         monitor.TabId = tab.Id;
         monitor.Title = tab.Title;
         monitor.Url = tab.Url;
@@ -481,8 +476,7 @@ public sealed class MainForm : Form
 
     private async Task StopSelectedMonitorAsync()
     {
-        if (_selectedMonitor is null)
-            return;
+        if (_selectedMonitor is null) return;
         await _monitor.StopMonitorAsync(_selectedMonitor.Id);
         await RefreshMonitorsAsync(false);
     }
@@ -502,25 +496,22 @@ public sealed class MainForm : Form
             monitor.RuntimeStatus = _monitor.IsMonitorRunning(monitor.Id) ? "Running" : "Stopped";
         _monitorsGrid.DataSource = null;
         _monitorsGrid.DataSource = _monitors;
-        if (selectedId.HasValue)
-            SelectMonitorRow(selectedId.Value);
+        if (selectedId.HasValue) SelectMonitorRow(selectedId.Value);
     }
 
     private void SelectMonitorRow(long id)
     {
         foreach (DataGridViewRow row in _monitorsGrid.Rows)
         {
-            if (row.DataBoundItem is SavedMonitor monitor && monitor.Id == id)
-            {
-                _monitorsGrid.ClearSelection();
-                row.Selected = true;
-                _monitorsGrid.CurrentCell = row.Cells[0];
-                _selectedMonitor = monitor;
-                _autoReplyBox.Text = monitor.AutoReply;
-                _enabledCheck.Checked = monitor.Enabled;
-                _editorLabel.Text = $"Saved monitor #{monitor.Id}: {monitor.Title}";
-                break;
-            }
+            if (row.DataBoundItem is not SavedMonitor monitor || monitor.Id != id) continue;
+            _monitorsGrid.ClearSelection();
+            row.Selected = true;
+            _monitorsGrid.CurrentCell = row.Cells[0];
+            _selectedMonitor = monitor;
+            _autoReplyBox.Text = monitor.AutoReply;
+            _enabledCheck.Checked = monitor.Enabled;
+            _editorLabel.Text = $"Monitor #{monitor.Id}: {monitor.Title} | Delay {monitor.ReplyDelaySeconds}s | Timer {monitor.TimerSeconds}s";
+            break;
         }
     }
 
@@ -531,16 +522,12 @@ public sealed class MainForm : Form
             _historyGrid.DataSource = null;
             _historyGrid.DataSource = await _database.GetRecentLogsAsync();
         }
-        catch (Exception ex)
-        {
-            AppendActivity($"History error: {ex.Message}");
-        }
+        catch (Exception ex) { AppendActivity($"History error: {ex.Message}"); }
     }
 
     private async Task DeleteSelectedLogAsync()
     {
-        if (_historyGrid.CurrentRow?.DataBoundItem is not MessageLog log)
-            return;
+        if (_historyGrid.CurrentRow?.DataBoundItem is not MessageLog log) return;
         await _database.DeleteLogAsync(log.Id);
         AppendActivity($"History row #{log.Id} deleted.");
         await RefreshHistoryAsync();
@@ -548,8 +535,7 @@ public sealed class MainForm : Form
 
     private async Task ClearHistoryAsync()
     {
-        if (MessageBox.Show(this, "Delete ALL stored message history?", "Clear History", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-            return;
+        if (MessageBox.Show(this, "Delete ALL stored message history?", "Clear History", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
         await _database.ClearLogsAsync();
         AppendActivity("Message history cleared.");
         await RefreshHistoryAsync();
@@ -570,12 +556,8 @@ public sealed class MainForm : Form
 
     private void Ui(Action action)
     {
-        if (IsDisposed || Disposing)
-            return;
-        if (InvokeRequired)
-            BeginInvoke(action);
-        else
-            action();
+        if (IsDisposed || Disposing) return;
+        if (InvokeRequired) BeginInvoke(action); else action();
     }
 
     private static string GetAppVersion()
@@ -586,8 +568,7 @@ public sealed class MainForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (_monitor.IsRunning)
-            _monitor.StopAllAsync().GetAwaiter().GetResult();
+        if (_monitor.IsRunning) _monitor.StopAllAsync().GetAwaiter().GetResult();
         base.OnFormClosing(e);
     }
 }
