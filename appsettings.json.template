@@ -1,0 +1,17 @@
+{
+  "OpenAI": {
+    "ApiKey": "REPLACE_OR_USE_OPENAI_API_KEY_ENVIRONMENT_VARIABLE",
+    "Model": "chat-latest",
+    "Endpoint": "https://api.openai.com/v1/chat/completions",
+    "TimeoutSeconds": 90,
+    "SystemPrompt": "You are a concise and helpful desktop auto-responder."
+  },
+  "Monitoring": {
+    "PollIntervalSeconds": 5,
+    "SimulationEnabled": true,
+    "SimulationMessageIntervalSeconds": 30
+  },
+  "Database": {
+    "FileName": "appdata.db"
+  }
+}

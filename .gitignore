@@ -1,0 +1,35 @@
+# Build outputs
+bin/
+obj/
+[Bb]uild/
+[Dd]ebug/
+[Rr]elease/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider / VS Code
+.idea/
+.vscode/
+
+# Local database and runtime data
+*.db
+*.db-shm
+*.db-wal
+appdata.db*
+
+# Secrets / local configuration
+src/GPTDeskTop/appsettings.Local.json
+.env
+
+# Logs
+*.log
+logs/
+
+# OS files
+Thumbs.db
+.DS_Store
