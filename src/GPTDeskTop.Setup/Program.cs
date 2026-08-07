@@ -8,7 +8,7 @@ namespace GPTDeskTop.Setup;
 internal static class Program
 {
     private const string AppName = "GPTDeskTop";
-    private const string Version = "1.6.0";
+    private const string Version = "1.7.0";
 
     [STAThread]
     private static void Main(string[] args)
