@@ -65,6 +65,7 @@ public sealed class LocalDatabase
                 INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('DefaultAutoReply', 'كمل');
                 INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('NotificationDurationSeconds', '8');
                 INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('ReplyDelaySeconds', '3');
+                INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('ChromeHidden', '0');
                 """;
             await command.ExecuteNonQueryAsync();
         }
