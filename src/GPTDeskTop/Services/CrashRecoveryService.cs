@@ -56,8 +56,7 @@ public static class CrashRecoveryService
                     tab = await chrome.CreateTabAsync(url, cancellationToken);
                 }
 
-                await Task.Delay(1200, cancellationToken);
-                var sent = await chrome.SendChatMessageAsync(tab, recoveryMessage, cancellationToken);
+                var sent = await SendWithRetryAsync(chrome, tab, recoveryMessage, cancellationToken);
 
                 saved.TabId = tab.Id;
                 saved.Title = string.IsNullOrWhiteSpace(tab.Title) ? saved.Title : tab.Title;
@@ -87,5 +86,28 @@ public static class CrashRecoveryService
             await database.AddLogAsync("System", "CrashRecovery", ex.ToString(), "CrashRecoveryFailed", cancellationToken: cancellationToken);
             // Leave CrashRecoveryPending=1 so the next startup can retry.
         }
+    }
+
+    private static async Task<bool> SendWithRetryAsync(
+        ChromeDevToolsService chrome,
+        ChromeTab tab,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= 6; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(attempt == 1 ? 1200 : 700, cancellationToken);
+            try
+            {
+                if (await chrome.SendChatMessageAsync(tab, message, cancellationToken))
+                    return true;
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("Promise was collected", StringComparison.OrdinalIgnoreCase))
+            {
+                // ChatGPT is still rebuilding its DOM; retry after a short delay.
+            }
+        }
+        return false;
     }
 }
