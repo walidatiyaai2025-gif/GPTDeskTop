@@ -30,14 +30,12 @@ public sealed class ChromeDevToolsService
         using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/list", cancellationToken);
         response.EnsureSuccessStatusCode();
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
-
         using var document = JsonDocument.Parse(json);
         var tabs = new List<ChromeTab>();
         foreach (var item in document.RootElement.EnumerateArray())
         {
             var type = item.TryGetProperty("type", out var typeElement) ? typeElement.GetString() ?? string.Empty : string.Empty;
             if (!string.Equals(type, "page", StringComparison.OrdinalIgnoreCase)) continue;
-
             tabs.Add(new ChromeTab
             {
                 Id = item.TryGetProperty("id", out var id) ? id.GetString() ?? string.Empty : string.Empty,
@@ -69,7 +67,6 @@ public sealed class ChromeDevToolsService
         var result = await SendCommandAsync(controlTab, "Target.createTarget", new { url }, cancellationToken);
         var targetId = result.TryGetProperty("targetId", out var id) ? id.GetString() : null;
         if (string.IsNullOrWhiteSpace(targetId)) throw new InvalidOperationException("Chrome did not return a target ID for the new tab.");
-
         for (var attempt = 0; attempt < 40; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -214,7 +211,7 @@ public sealed class ChromeDevToolsService
                 return { assistantCount: messages.length, lastAssistantText: last, isGenerating: !!stopButton, errorText };
             })()
             """;
-        var value = await EvaluateAsync(tab, expression, cancellationToken);
+        var value = await EvaluateAsync(tab, expression, cancellationToken, awaitPromise: false);
         return new ChatPageState(
             value.TryGetProperty("assistantCount", out var count) ? count.GetInt32() : 0,
             value.TryGetProperty("lastAssistantText", out var text) ? text.GetString() ?? string.Empty : string.Empty,
@@ -225,39 +222,57 @@ public sealed class ChromeDevToolsService
     public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default)
     {
         var textLiteral = JsonSerializer.Serialize(message);
-        var expression = $$"""
-            (async () => {
+        var setEditorExpression = $$"""
+            (() => {
                 const text = {{textLiteral}};
                 const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]') || document.querySelector('[contenteditable="true"]');
                 if (!editor) return false;
                 editor.focus();
                 if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
                     const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set;
-                    setter?.call(editor, text); editor.dispatchEvent(new Event('input', { bubbles: true })); editor.dispatchEvent(new Event('change', { bubbles: true }));
+                    setter?.call(editor, text);
+                    editor.dispatchEvent(new Event('input', { bubbles: true }));
+                    editor.dispatchEvent(new Event('change', { bubbles: true }));
                 } else {
-                    const selection = window.getSelection(); const range = document.createRange(); range.selectNodeContents(editor); selection?.removeAllRanges(); selection?.addRange(range);
-                    document.execCommand('insertText', false, text); editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+                    const selection = window.getSelection();
+                    const range = document.createRange();
+                    range.selectNodeContents(editor);
+                    selection?.removeAllRanges();
+                    selection?.addRange(range);
+                    document.execCommand('insertText', false, text);
+                    editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
                 }
-                await new Promise(r => setTimeout(r, 350));
-                const sendButton = document.querySelector('button[data-testid="send-button"]') || [...document.querySelectorAll('button')].find(b => /send|إرسال/i.test(b.getAttribute('aria-label') || ''));
-                if (!sendButton || sendButton.disabled) return false;
-                sendButton.click(); return true;
+                return true;
             })()
             """;
-        var value = await EvaluateAsync(tab, expression, cancellationToken);
-        return value.ValueKind == JsonValueKind.True;
+
+        var editorReady = await EvaluateAsync(tab, setEditorExpression, cancellationToken, awaitPromise: false);
+        if (editorReady.ValueKind != JsonValueKind.True) return false;
+
+        await Task.Delay(350, cancellationToken);
+        const string clickExpression = """
+            (() => {
+                const sendButton = document.querySelector('button[data-testid="send-button"]') ||
+                    [...document.querySelectorAll('button')].find(b => /send|إرسال/i.test(b.getAttribute('aria-label') || ''));
+                if (!sendButton || sendButton.disabled) return false;
+                sendButton.click();
+                return true;
+            })()
+            """;
+        var clicked = await EvaluateAsync(tab, clickExpression, cancellationToken, awaitPromise: false);
+        return clicked.ValueKind == JsonValueKind.True;
     }
 
     public async Task ReloadTabAsync(ChromeTab tab, CancellationToken cancellationToken = default)
         => await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
 
-    private async Task<JsonElement> EvaluateAsync(ChromeTab tab, string expression, CancellationToken cancellationToken)
+    private async Task<JsonElement> EvaluateAsync(ChromeTab tab, string expression, CancellationToken cancellationToken, bool awaitPromise)
     {
         for (var attempt = 1; attempt <= 3; attempt++)
         {
             try
             {
-                return await SendCommandAsync(tab, "Runtime.evaluate", new { expression, returnByValue = true, awaitPromise = true, userGesture = true }, cancellationToken, true);
+                return await SendCommandAsync(tab, "Runtime.evaluate", new { expression, returnByValue = true, awaitPromise, userGesture = true }, cancellationToken, true);
             }
             catch (InvalidOperationException ex) when (IsTransientPromiseCollected(ex) && attempt < 3)
             {
