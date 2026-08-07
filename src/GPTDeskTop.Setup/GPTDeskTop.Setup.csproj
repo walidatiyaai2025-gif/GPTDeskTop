@@ -21,12 +21,15 @@
     <ProjectReference Include="..\GPTDeskTop.Publish\GPTDeskTop.Publish.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
-  <ItemGroup>
-    <EmbeddedResource Include="$(PublishDir)\GPTDeskTop.exe" LogicalName="Payload.GPTDeskTop.exe" />
-    <EmbeddedResource Include="$(PublishDir)\appsettings.json" LogicalName="Payload.appsettings.json" Condition="Exists('$(PublishDir)\appsettings.json')" />
-    <EmbeddedResource Include="$(PublishDir)\Version.txt" LogicalName="Payload.Version.txt" Condition="Exists('$(PublishDir)\Version.txt')" />
-    <EmbeddedResource Include="$(PublishDir)\ReleaseNotes.txt" LogicalName="Payload.ReleaseNotes.txt" Condition="Exists('$(PublishDir)\ReleaseNotes.txt')" />
-  </ItemGroup>
+  <Target Name="AttachInstallerPayload" BeforeTargets="PrepareResources" DependsOnTargets="ResolveProjectReferences">
+    <Error Condition="!Exists('$(PublishDir)\GPTDeskTop.exe')" Text="Published GPTDeskTop payload was not created: $(PublishDir)\GPTDeskTop.exe" />
+    <ItemGroup>
+      <EmbeddedResource Include="$(PublishDir)\GPTDeskTop.exe" LogicalName="Payload.GPTDeskTop.exe" />
+      <EmbeddedResource Include="$(PublishDir)\appsettings.json" LogicalName="Payload.appsettings.json" Condition="Exists('$(PublishDir)\appsettings.json')" />
+      <EmbeddedResource Include="$(PublishDir)\Version.txt" LogicalName="Payload.Version.txt" Condition="Exists('$(PublishDir)\Version.txt')" />
+      <EmbeddedResource Include="$(PublishDir)\ReleaseNotes.txt" LogicalName="Payload.ReleaseNotes.txt" Condition="Exists('$(PublishDir)\ReleaseNotes.txt')" />
+    </ItemGroup>
+  </Target>
 
   <Target Name="EnsureSetupOutput" BeforeTargets="Build">
     <MakeDir Directories="$(SetupOutput)" />
