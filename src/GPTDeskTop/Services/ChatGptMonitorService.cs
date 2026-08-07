@@ -9,13 +9,21 @@ public sealed class ChatGptMonitorService
     private readonly ChromeDevToolsService _chrome;
     private readonly LocalDatabase _database;
     private readonly MonitoringConfig _config;
-    private CancellationTokenSource? _cts;
-    private Task? _worker;
+    private readonly object _sync = new();
+    private readonly Dictionary<long, MonitorRuntime> _running = new();
 
-    public event Action<string>? Activity;
+    public event Action<long, string>? Activity;
     public event Action? HistoryChanged;
+    public event Action? RunningStateChanged;
 
-    public bool IsRunning => _worker is { IsCompleted: false };
+    public bool IsRunning
+    {
+        get
+        {
+            lock (_sync)
+                return _running.Count > 0;
+        }
+    }
 
     public ChatGptMonitorService(ChromeDevToolsService chrome, LocalDatabase database, MonitoringConfig config)
     {
@@ -24,111 +32,157 @@ public sealed class ChatGptMonitorService
         _config = config;
     }
 
-    public Task StartAsync(ChromeTab tab, string autoReply)
+    public bool IsMonitorRunning(long monitorId)
     {
-        if (IsRunning)
-            throw new InvalidOperationException("Monitoring is already running.");
-        if (string.IsNullOrWhiteSpace(autoReply))
-            throw new ArgumentException("Auto reply text cannot be empty.", nameof(autoReply));
+        lock (_sync)
+            return _running.ContainsKey(monitorId);
+    }
 
-        _cts = new CancellationTokenSource();
-        _worker = Task.Run(() => MonitorLoopAsync(tab, autoReply.Trim(), _cts.Token));
+    public Task StartMonitorAsync(SavedMonitor monitor, ChromeTab tab)
+    {
+        if (monitor.Id <= 0)
+            throw new InvalidOperationException("Save the monitor before starting it.");
+        if (string.IsNullOrWhiteSpace(monitor.AutoReply))
+            throw new InvalidOperationException("Auto reply text cannot be empty.");
+
+        lock (_sync)
+        {
+            if (_running.ContainsKey(monitor.Id))
+                return Task.CompletedTask;
+
+            var cts = new CancellationTokenSource();
+            var worker = Task.Run(() => MonitorLoopAsync(monitor, tab, cts.Token));
+            _running.Add(monitor.Id, new MonitorRuntime(cts, worker));
+        }
+
+        Activity?.Invoke(monitor.Id, $"Started: {monitor.Title}");
+        RunningStateChanged?.Invoke();
         return Task.CompletedTask;
     }
 
-    public async Task StopAsync()
+    public async Task StopMonitorAsync(long monitorId)
     {
-        if (_cts is null)
-            return;
+        MonitorRuntime? runtime;
+        lock (_sync)
+        {
+            if (!_running.Remove(monitorId, out runtime))
+                return;
+        }
 
-        _cts.Cancel();
+        runtime.Cancellation.Cancel();
         try
         {
-            if (_worker is not null)
-                await _worker;
+            await runtime.Worker;
         }
         catch (OperationCanceledException)
         {
         }
         finally
         {
-            _cts.Dispose();
-            _cts = null;
-            _worker = null;
+            runtime.Cancellation.Dispose();
+            Activity?.Invoke(monitorId, "Stopped.");
+            RunningStateChanged?.Invoke();
         }
     }
 
-    private async Task MonitorLoopAsync(ChromeTab tab, string autoReply, CancellationToken cancellationToken)
+    public async Task StopAllAsync()
     {
-        Activity?.Invoke($"Monitoring tab: {tab.Title} [{tab.Id}]");
-        Activity?.Invoke($"Auto reply: {autoReply}");
+        long[] ids;
+        lock (_sync)
+            ids = _running.Keys.ToArray();
 
-        var initial = await _chrome.GetChatStateAsync(tab, cancellationToken);
-        var lastHandledText = initial.LastAssistantText;
-        var candidateText = string.Empty;
-        var candidateSince = DateTimeOffset.MinValue;
+        await Task.WhenAll(ids.Select(StopMonitorAsync));
+    }
 
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(Math.Max(300, _config.PollIntervalMilliseconds)));
-        while (await timer.WaitForNextTickAsync(cancellationToken))
+    private async Task MonitorLoopAsync(SavedMonitor monitor, ChromeTab tab, CancellationToken cancellationToken)
+    {
+        var prefix = $"[{monitor.Title}]";
+        Activity?.Invoke(monitor.Id, $"{prefix} Monitoring Tab ID {tab.Id}");
+        Activity?.Invoke(monitor.Id, $"{prefix} Auto reply: {monitor.AutoReply}");
+
+        try
         {
-            try
-            {
-                var state = await _chrome.GetChatStateAsync(tab, cancellationToken);
-                var text = state.LastAssistantText.Trim();
+            var initial = await _chrome.GetChatStateAsync(tab, cancellationToken);
+            var lastHandledText = initial.LastAssistantText;
+            var candidateText = string.Empty;
+            var candidateSince = DateTimeOffset.MinValue;
 
-                if (state.IsGenerating || string.IsNullOrWhiteSpace(text) || string.Equals(text, lastHandledText, StringComparison.Ordinal))
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(Math.Max(300, _config.PollIntervalMilliseconds)));
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                try
                 {
+                    var state = await _chrome.GetChatStateAsync(tab, cancellationToken);
+                    var text = state.LastAssistantText.Trim();
+
+                    if (state.IsGenerating || string.IsNullOrWhiteSpace(text) || string.Equals(text, lastHandledText, StringComparison.Ordinal))
+                    {
+                        candidateText = string.Empty;
+                        candidateSince = DateTimeOffset.MinValue;
+                        continue;
+                    }
+
+                    if (!string.Equals(candidateText, text, StringComparison.Ordinal))
+                    {
+                        candidateText = text;
+                        candidateSince = DateTimeOffset.UtcNow;
+                        Activity?.Invoke(monitor.Id, $"{prefix} New response detected; waiting for stability...");
+                        continue;
+                    }
+
+                    if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds)
+                        continue;
+
+                    lastHandledText = text;
                     candidateText = string.Empty;
                     candidateSince = DateTimeOffset.MinValue;
-                    continue;
-                }
 
-                if (!string.Equals(candidateText, text, StringComparison.Ordinal))
+                    Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT replied: {Shorten(text, 220)}");
+                    await _database.AddLogAsync(
+                        "Inbound", string.Empty, text, "Detected", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+                    HistoryChanged?.Invoke();
+
+                    var sent = await _chrome.SendChatMessageAsync(tab, monitor.AutoReply, cancellationToken);
+                    if (sent)
+                    {
+                        Activity?.Invoke(monitor.Id, $"{prefix} Auto reply sent: {monitor.AutoReply}");
+                        await _database.AddLogAsync(
+                            "Outbound", monitor.AutoReply, string.Empty, "Sent", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+                    }
+                    else
+                    {
+                        Activity?.Invoke(monitor.Id, $"{prefix} Send failed: editor/send button not ready.");
+                        await _database.AddLogAsync(
+                            "Outbound", monitor.AutoReply, string.Empty, "Failed", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+                    }
+
+                    HistoryChanged?.Invoke();
+                    await Task.Delay(Math.Max(250, _config.DelayAfterSendMilliseconds), cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    candidateText = text;
-                    candidateSince = DateTimeOffset.UtcNow;
-                    Activity?.Invoke("New ChatGPT response detected; waiting until it is stable...");
-                    continue;
+                    throw;
                 }
-
-                if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds)
-                    continue;
-
-                lastHandledText = text;
-                candidateText = string.Empty;
-                candidateSince = DateTimeOffset.MinValue;
-
-                Activity?.Invoke($"ChatGPT replied: {Shorten(text, 220)}");
-                await _database.AddLogAsync("Inbound", string.Empty, text, "Detected", cancellationToken);
-                HistoryChanged?.Invoke();
-
-                var sent = await _chrome.SendChatMessageAsync(tab, autoReply, cancellationToken);
-                if (sent)
+                catch (Exception ex)
                 {
-                    Activity?.Invoke($"Auto reply sent: {autoReply}");
-                    await _database.AddLogAsync("Outbound", autoReply, string.Empty, "Sent", cancellationToken);
+                    Activity?.Invoke(monitor.Id, $"{prefix} Monitor error: {ex.Message}");
+                    await Task.Delay(1500, cancellationToken);
                 }
-                else
-                {
-                    Activity?.Invoke("Auto reply could not be sent: prompt editor/send button was not ready.");
-                    await _database.AddLogAsync("Outbound", autoReply, string.Empty, "Failed", cancellationToken);
-                }
-
-                HistoryChanged?.Invoke();
-                await Task.Delay(Math.Max(250, _config.DelayAfterSendMilliseconds), cancellationToken);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        }
+        finally
+        {
+            lock (_sync)
             {
-                throw;
+                if (_running.TryGetValue(monitor.Id, out var current) && current.Cancellation.Token == cancellationToken)
+                    _running.Remove(monitor.Id);
             }
-            catch (Exception ex)
-            {
-                Activity?.Invoke($"Monitor error: {ex.Message}");
-                await Task.Delay(1500, cancellationToken);
-            }
+            RunningStateChanged?.Invoke();
         }
     }
 
     private static string Shorten(string value, int max)
         => value.Length <= max ? value : value[..max] + "…";
+
+    private sealed record MonitorRuntime(CancellationTokenSource Cancellation, Task Worker);
 }
