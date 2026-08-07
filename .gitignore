@@ -4,13 +4,13 @@ obj/
 [Bb]uild/
 [Dd]ebug/
 [Rr]elease/
+Output/
 
 # Installer generated payload/output
-src/GPTDeskTop.Setup/Payload/
 src/GPTDeskTop.Setup/bin/
 src/GPTDeskTop.Setup/obj/
-src/GPTDeskTop.Bootstrapper/bin/
-src/GPTDeskTop.Bootstrapper/obj/
+src/GPTDeskTop.Publish/bin/
+src/GPTDeskTop.Publish/obj/
 
 # Visual Studio
 .vs/
