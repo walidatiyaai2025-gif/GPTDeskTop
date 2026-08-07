@@ -1,46 +1,72 @@
 # GPTDeskTop
 
-.NET 8 WinForms desktop monitor for a selected Chrome/ChatGPT tab.
+.NET 8 WinForms persistent multi-tab monitor for ChatGPT pages opened in a dedicated Chrome/CDP session.
 
-## What this version monitors
+## Multi-tab workflow
 
-The first version used a simulated inbound message source. This version monitors the **actual ChatGPT web page opened in Chrome** through the Chrome DevTools Protocol (CDP).
+GPTDeskTop now supports any number of independent saved monitors.
 
-The UI shows a live list of Chrome page targets with:
+1. Click **Launch Monitor Chrome**.
+2. Open/sign in to ChatGPT in that Chrome window.
+3. Open every conversation you want to monitor.
+4. Click **Refresh Chrome Tabs**.
+5. Select an open tab.
+6. Enter that tab's automatic reply, for example `كمل`.
+7. Click **Add Selected Tab**.
+8. Repeat for any additional tabs. Every saved monitor can have a different reply.
+9. Use **Start Selected** for one monitor, or **Start All Enabled** for all enabled monitors.
+10. Use **Stop Selected** or **Stop All** independently.
 
-- Tab ID
-- Title
-- URL
+## Saved Monitor controls
 
-Select a ChatGPT tab, type an automatic reply such as `كمل`, and press **Start Monitoring**. When a new ChatGPT assistant response finishes, GPTDeskTop detects it and sends the configured text into that same ChatGPT conversation.
+Each saved monitor persists:
+
+- Monitor database ID
+- current Chrome Tab ID
+- tab title
+- exact conversation URL
+- individual Auto Reply text
+- Enabled state
+- created/updated timestamps
+
+Use **Save Monitor** after editing Auto Reply or Enabled. Use **Delete Monitor** to remove only the saved monitor definition; it does not close the Chrome tab and it does not erase historical logs.
+
+If Chrome later assigns a different Tab ID, GPTDeskTop attempts to reconnect the saved monitor by its exact stored conversation URL.
+
+## Concurrent monitoring
+
+`ChatGptMonitorService` runs one cancellable background worker for each Monitor ID. Every worker maintains independent ChatGPT response-stability/de-duplication state, so activity in one tab does not control or reset another tab.
+
+A reply such as `كمل` can create a continuing response loop for that monitor until it is stopped. Different tabs can run different loops simultaneously.
 
 ## Chrome requirement
 
-A normal Chrome instance does not expose its tab IDs/DOM to an external desktop process. Use the application's **Launch Monitor Chrome** button. It starts a dedicated Chrome profile with:
+Use **Launch Monitor Chrome**. It starts a persistent dedicated profile with Chrome remote debugging enabled:
 
 ```text
 --remote-debugging-port=9222
 --user-data-dir=%LOCALAPPDATA%\GPTDeskTop\ChromeProfile
 ```
 
-This is intentional: modern Chrome restricts remote debugging against the normal/default profile.
+Sign in to ChatGPT once in this dedicated Chrome profile. The profile is reused between launches.
 
-Sign into ChatGPT once in that dedicated Chrome window. The dedicated profile is persistent between launches.
+## Local database
 
-## Workflow
+`appdata.db` is automatically created beside the executable and upgraded in place.
 
-1. Run GPTDeskTop.
-2. Click **Launch Monitor Chrome**.
-3. Open/sign in to ChatGPT in that Chrome window.
-4. Open the conversation to monitor.
-5. Click **Refresh Chrome Tabs**.
-6. Select the row whose URL is `chatgpt.com`.
-7. Enter the automatic reply text, e.g. `كمل`.
-8. Click **Start Monitoring**.
-9. Each completed new assistant reply triggers one automatic reply.
-10. Click **Stop Monitoring** to stop the continuation loop.
+Tables:
 
-> Note: if your auto reply is `كمل`, each new assistant answer can trigger another `كمل`, so the conversation can continue repeatedly until you stop monitoring.
+- `SavedMonitors`: all selected monitor tabs and their individual configuration.
+- `AppSettings`: key/value application settings such as the default auto reply.
+- `MessageLogs`: inbound/outbound activity including MonitorId, TabId and TabTitle.
+
+Existing databases from the earlier version are upgraded by adding the new monitor-aware log columns; the database is not reset.
+
+History supports:
+
+- Refresh History
+- Delete Selected Log
+- Clear History
 
 ## Build and run
 
@@ -53,25 +79,35 @@ dotnet restore .\GPTDeskTop.sln
 dotnet run --project .\src\GPTDeskTop\GPTDeskTop.csproj
 ```
 
-No OpenAI API key is required for this browser-monitoring mode because GPTDeskTop is controlling the user's already-authenticated ChatGPT web session rather than calling the OpenAI API directly.
+For an existing clone:
 
-## Local database
+```powershell
+git pull origin main
+dotnet restore .\GPTDeskTop.sln
+dotnet run --project .\src\GPTDeskTop\GPTDeskTop.csproj
+```
 
-`appdata.db` is automatically created beside the executable. It contains:
-
-- `MessageLogs`: ID, timestamp, direction, prompt, response, status.
-- `AppSettings`: key/value settings.
-
-Detected ChatGPT replies are logged as `Inbound`; automatic messages sent to ChatGPT are logged as `Outbound`.
+No OpenAI API key is required in browser-monitoring mode because GPTDeskTop interacts with the authenticated ChatGPT web session through Chrome DevTools Protocol rather than calling the OpenAI API directly.
 
 ## Main source files
 
-- `Services/ChromeDevToolsService.cs` — starts monitor Chrome, reads tabs, evaluates DOM state, sends messages.
-- `Services/ChatGptMonitorService.cs` — polling, stable-response detection, cancellation and auto-reply loop.
-- `UI/MainForm.cs` — Chrome tabs grid, Tab ID/Title/URL, auto-reply textbox, Start/Stop, live activity and history.
-- `Data/LocalDatabase.cs` — SQLite initialization and history.
-- `Configuration/AppConfig.cs` — CDP, polling and database settings.
+- `Services/ChromeDevToolsService.cs` — Chrome startup, tab discovery, ChatGPT DOM state and message send.
+- `Services/ChatGptMonitorService.cs` — independent concurrent workers per saved monitor.
+- `UI/MainForm.cs` — open tabs, saved monitor CRUD, per-monitor controls, activity and history.
+- `Data/LocalDatabase.cs` — SQLite initialization, schema upgrades, monitor/settings/history CRUD.
+- `Models/Models.cs` — Chrome tabs, saved monitor and log models.
+- `TaskPlanner.md` — team implementation/status plan.
 
-## Robustness
+## Validation checklist
 
-ChatGPT is a web application and its DOM can change. The implementation uses multiple fallback selectors for the prompt editor and send/stop buttons. If OpenAI changes the page markup significantly, update those selectors in `ChromeDevToolsService.cs`.
+- Add two or more different ChatGPT tabs with different automatic replies.
+- Start both and confirm every response is sent only to its own tab.
+- Stop one monitor and confirm the others continue running.
+- Restart GPTDeskTop and verify Saved Monitors and Auto Reply values return from SQLite.
+- Restart Chrome, reopen the same conversation URL, refresh tabs and verify URL fallback can resolve the monitor.
+- Delete a monitor and verify the Chrome tab remains open.
+- Verify monitor-aware history shows which monitor produced every inbound/outbound row.
+
+## Robustness note
+
+ChatGPT is a web application and its DOM can change. The browser integration uses fallback selectors, but a major ChatGPT markup change may require updating selectors in `ChromeDevToolsService.cs`.
