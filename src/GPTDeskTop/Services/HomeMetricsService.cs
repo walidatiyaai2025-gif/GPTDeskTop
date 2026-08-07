@@ -8,6 +8,7 @@ public sealed class HomeMetricsService : IDisposable
     private readonly ChatGptMonitorService _monitor;
     private readonly Label _crashCard;
     private readonly Label _monitorCard;
+    private readonly List<DataGridView> _statusGrids = new();
     private bool _disposed;
 
     public HomeMetricsService(Form form, LocalDatabase database, ChatGptMonitorService monitor)
@@ -40,6 +41,15 @@ public sealed class HomeMetricsService : IDisposable
             panel.BringToFront();
         }
 
+        foreach (var grid in FindControls<DataGridView>(form))
+        {
+            if (grid.Columns.Cast<DataGridViewColumn>().Any(c => string.Equals(c.HeaderText, "Status", StringComparison.OrdinalIgnoreCase)))
+            {
+                grid.CellFormatting += OnStatusCellFormatting;
+                _statusGrids.Add(grid);
+            }
+        }
+
         form.Shown += OnShown;
         _monitor.RunningStateChanged += OnRunningStateChanged;
     }
@@ -59,6 +69,28 @@ public sealed class HomeMetricsService : IDisposable
             TextAlign = ContentAlignment.MiddleCenter,
             Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold)
         };
+
+    private void OnStatusCellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
+    {
+        if (sender is not DataGridView grid || e.RowIndex < 0 || e.ColumnIndex < 0) return;
+        if (!string.Equals(grid.Columns[e.ColumnIndex].HeaderText, "Status", StringComparison.OrdinalIgnoreCase)) return;
+
+        var value = e.Value?.ToString() ?? string.Empty;
+        if (value.Contains("Running", StringComparison.OrdinalIgnoreCase))
+        {
+            e.Value = "● Running";
+            e.CellStyle.ForeColor = Color.SeaGreen;
+            e.CellStyle.Font = new Font(grid.Font, FontStyle.Bold);
+            e.FormattingApplied = true;
+        }
+        else if (value.Contains("Stopped", StringComparison.OrdinalIgnoreCase))
+        {
+            e.Value = "● Stopped";
+            e.CellStyle.ForeColor = Color.Firebrick;
+            e.CellStyle.Font = new Font(grid.Font, FontStyle.Bold);
+            e.FormattingApplied = true;
+        }
+    }
 
     private async void OnShown(object? sender, EventArgs e) => await RefreshAsync();
     private async void OnRunningStateChanged() => await RefreshAsync();
@@ -83,7 +115,7 @@ public sealed class HomeMetricsService : IDisposable
     private static void SetText(Control control, string value)
     {
         if (control.IsDisposed) return;
-        if (control.InvokeRequired) control.BeginInvoke(() => control.Text = value);
+        if (control.InvokeRequired) control.BeginInvoke(new Action(() => control.Text = value));
         else control.Text = value;
     }
 
@@ -101,5 +133,6 @@ public sealed class HomeMetricsService : IDisposable
         if (_disposed) return;
         _disposed = true;
         _monitor.RunningStateChanged -= OnRunningStateChanged;
+        foreach (var grid in _statusGrids) grid.CellFormatting -= OnStatusCellFormatting;
     }
 }
