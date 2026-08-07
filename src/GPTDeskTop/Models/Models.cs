@@ -17,6 +17,8 @@ public sealed record ChatPageState(
 
 public sealed class SavedMonitor
 {
+    private string _runtimeStatus = "Stopped";
+
     public long Id { get; set; }
     public string TabId { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
@@ -27,7 +29,16 @@ public sealed class SavedMonitor
     public bool Enabled { get; set; } = true;
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
-    public string RuntimeStatus { get; set; } = "Stopped";
+
+    public string RuntimeStatus
+    {
+        get => string.Equals(_runtimeStatus, "Running", StringComparison.OrdinalIgnoreCase)
+            ? "🟢 Running"
+            : "🔴 Stopped";
+        set => _runtimeStatus = value?.Contains("Running", StringComparison.OrdinalIgnoreCase) == true
+            ? "Running"
+            : "Stopped";
+    }
 }
 
 public sealed class MessageLog
