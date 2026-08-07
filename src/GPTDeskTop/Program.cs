@@ -37,20 +37,16 @@ internal static class Program
                 database.SetSettingAsync("CrashRecoveryPending", "0").GetAwaiter().GetResult();
             }
 
-            // Mark this process unclean until MainForm finishes its graceful shutdown path.
             database.SetSettingAsync("LastShutdownClean", "0").GetAwaiter().GetResult();
 
             ExceptionLogService.Configure(database);
 
-            Application.ThreadException += (_, e) =>
-                ExceptionLogService.Log(e.Exception, "Application.ThreadException");
-
+            Application.ThreadException += (_, e) => ExceptionLogService.Log(e.Exception, "Application.ThreadException");
             AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             {
                 if (e.ExceptionObject is Exception exception)
                     ExceptionLogService.Log(exception, "AppDomain.UnhandledException");
             };
-
             TaskScheduler.UnobservedTaskException += (_, e) =>
             {
                 ExceptionLogService.Log(e.Exception, "TaskScheduler.UnobservedTaskException");
@@ -63,7 +59,17 @@ internal static class Program
             using var notifications = new TrayNotificationService(monitor, database);
             notifications.InitializeAsync().GetAwaiter().GetResult();
 
-            Application.Run(new MainForm(chrome, monitor, database));
+            CrashRecoveryService.RecoverIfPendingAsync(chrome, monitor, database).GetAwaiter().GetResult();
+
+            var mainForm = new MainForm(chrome, monitor, database);
+            using var metrics = new HomeMetricsService(mainForm, database, monitor);
+            mainForm.FormClosed += (_, _) =>
+            {
+                try { database.SetSettingAsync("LastShutdownClean", "1").GetAwaiter().GetResult(); }
+                catch (Exception ex) { ExceptionLogService.Log(ex, "Program.MarkCleanShutdown"); }
+            };
+
+            Application.Run(mainForm);
         }
         catch (Exception ex)
         {
