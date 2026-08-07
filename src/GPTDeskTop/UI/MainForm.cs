@@ -12,7 +12,7 @@ public sealed class MainForm : Form
 
     private readonly Button _launchChromeButton = new() { Text = "Launch Monitor Chrome", AutoSize = true };
     private readonly Button _refreshTabsButton = new() { Text = "Refresh Chrome Tabs", AutoSize = true };
-    private readonly Button _addMonitorButton = new() { Text = "Add Selected Tab", AutoSize = true };
+    private readonly Button _addMonitorButton = new() { Text = "Add Selected Tab(s)", AutoSize = true };
     private readonly Button _saveMonitorButton = new() { Text = "Save Monitor", AutoSize = true };
     private readonly Button _deleteMonitorButton = new() { Text = "Delete Monitor", AutoSize = true };
     private readonly Button _startSelectedButton = new() { Text = "Start Selected", AutoSize = true };
@@ -29,7 +29,7 @@ public sealed class MainForm : Form
     private readonly RichTextBox _activityBox = new();
     private readonly TextBox _autoReplyBox = new() { Text = "كمل", Font = new Font("Segoe UI", 11F), Dock = DockStyle.Fill };
     private readonly CheckBox _enabledCheck = new() { Text = "Enabled", Checked = true, AutoSize = true, Anchor = AnchorStyles.Left };
-    private readonly Label _editorLabel = new() { Text = "Select an open tab to add, or select a saved monitor to edit.", AutoEllipsis = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Label _editorLabel = new() { Text = "Select one or more open tabs to add, or select a saved monitor to edit.", AutoEllipsis = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
 
     private List<ChromeTab> _tabs = new();
     private List<SavedMonitor> _monitors = new();
@@ -71,7 +71,7 @@ public sealed class MainForm : Form
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, Padding = new Padding(0, 4, 0, 0) };
         toolbar.Controls.AddRange(new Control[]
         {
-            _launchChromeButton, _refreshTabsButton, _addMonitorButton, _saveMonitorButton, _deleteMonitorButton,
+            _launchChromeButton, _refreshTabsButton, _addMonitorButton, _deleteMonitorButton,
             _startSelectedButton, _stopSelectedButton, _startAllButton, _stopAllButton,
             _refreshHistoryButton, _deleteLogButton, _clearHistoryButton
         });
@@ -101,7 +101,7 @@ public sealed class MainForm : Form
         _activityBox.ForeColor = Color.Gainsboro;
         _activityBox.Font = new Font("Consolas", 9.5F);
 
-        var openGroup = new GroupBox { Text = "Open Chrome Tabs - select a tab then Add Selected Tab", Dock = DockStyle.Fill, Padding = new Padding(8) };
+        var openGroup = new GroupBox { Text = "Open Chrome Tabs - Ctrl/Shift select multiple rows, then Add Selected Tab(s)", Dock = DockStyle.Fill, Padding = new Padding(8) };
         openGroup.Controls.Add(_tabsGrid);
         var savedGroup = new GroupBox { Text = "Saved Monitors - each row runs independently", Dock = DockStyle.Fill, Padding = new Padding(8) };
         savedGroup.Controls.Add(_monitorsGrid);
@@ -125,7 +125,7 @@ public sealed class MainForm : Form
     private void ConfigureTabsGrid()
     {
         ConfigureReadOnlyGrid(_tabsGrid);
-        _tabsGrid.MultiSelect = false;
+        _tabsGrid.MultiSelect = true;
         _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Id), HeaderText = "Tab ID", Width = 260 });
         _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Title), HeaderText = "Title", Width = 420 });
         _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Url), HeaderText = "URL", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
@@ -256,9 +256,19 @@ public sealed class MainForm : Form
 
     private async Task AddSelectedTabAsync()
     {
-        if (_selectedTab is null)
+        var selectedTabs = _tabsGrid.SelectedRows
+            .Cast<DataGridViewRow>()
+            .Select(r => r.DataBoundItem)
+            .OfType<ChromeTab>()
+            .DistinctBy(t => t.Id)
+            .ToList();
+
+        if (selectedTabs.Count == 0 && _selectedTab is not null)
+            selectedTabs.Add(_selectedTab);
+
+        if (selectedTabs.Count == 0)
         {
-            MessageBox.Show(this, "Select an open Chrome tab first.", "No Tab Selected", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Select one or more open Chrome tabs first.", "No Tabs Selected", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
         if (string.IsNullOrWhiteSpace(_autoReplyBox.Text))
@@ -267,30 +277,38 @@ public sealed class MainForm : Form
             return;
         }
 
-        var duplicate = _monitors.FirstOrDefault(m => string.Equals(m.Url, _selectedTab.Url, StringComparison.OrdinalIgnoreCase));
-        if (duplicate is not null)
+        long? lastSavedId = null;
+        var added = 0;
+        var skipped = 0;
+        foreach (var tab in selectedTabs)
         {
-            _selectedMonitor = duplicate;
-            _autoReplyBox.Text = duplicate.AutoReply;
-            _enabledCheck.Checked = duplicate.Enabled;
-            _editorLabel.Text = $"Already saved as monitor #{duplicate.Id}: {duplicate.Title}";
-            SelectMonitorRow(duplicate.Id);
-            return;
+            var duplicate = _monitors.FirstOrDefault(m => string.Equals(m.Url, tab.Url, StringComparison.OrdinalIgnoreCase));
+            if (duplicate is not null)
+            {
+                skipped++;
+                lastSavedId = duplicate.Id;
+                continue;
+            }
+
+            var monitor = new SavedMonitor
+            {
+                TabId = tab.Id,
+                Title = tab.Title,
+                Url = tab.Url,
+                AutoReply = _autoReplyBox.Text.Trim(),
+                Enabled = _enabledCheck.Checked
+            };
+            await _database.SaveMonitorAsync(monitor);
+            lastSavedId = monitor.Id;
+            added++;
+            AppendActivity($"Saved monitor #{monitor.Id}: {monitor.Title}");
         }
 
-        var monitor = new SavedMonitor
-        {
-            TabId = _selectedTab.Id,
-            Title = _selectedTab.Title,
-            Url = _selectedTab.Url,
-            AutoReply = _autoReplyBox.Text.Trim(),
-            Enabled = _enabledCheck.Checked
-        };
-        await _database.SaveMonitorAsync(monitor);
-        await _database.SetSettingAsync("DefaultAutoReply", monitor.AutoReply);
-        AppendActivity($"Saved monitor #{monitor.Id}: {monitor.Title}");
+        await _database.SetSettingAsync("DefaultAutoReply", _autoReplyBox.Text.Trim());
         await RefreshMonitorsAsync();
-        SelectMonitorRow(monitor.Id);
+        if (lastSavedId.HasValue)
+            SelectMonitorRow(lastSavedId.Value);
+        AppendActivity($"Add Selected Tab(s): added {added}, already saved {skipped}.");
     }
 
     private async Task SaveSelectedMonitorAsync()
