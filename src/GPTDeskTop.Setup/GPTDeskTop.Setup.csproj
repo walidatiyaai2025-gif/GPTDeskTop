@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>GPTDeskTop-Setup</AssemblyName>
+    <RootNamespace>GPTDeskTop.Setup</RootNamespace>
+    <Version>1.4.0</Version>
+    <AssemblyVersion>1.4.0.0</AssemblyVersion>
+    <FileVersion>1.4.0.0</FileVersion>
+    <PublishDir>$(MSBuildProjectDirectory)\..\..\Output\Publish</PublishDir>
+    <OutputPath>$(MSBuildProjectDirectory)\..\..\Output\Setup\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\GPTDeskTop.Publish\GPTDeskTop.Publish.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="$(PublishDir)\GPTDeskTop.exe" LogicalName="Payload.GPTDeskTop.exe" />
+    <EmbeddedResource Include="$(PublishDir)\appsettings.json" LogicalName="Payload.appsettings.json" Condition="Exists('$(PublishDir)\appsettings.json')" />
+    <EmbeddedResource Include="$(PublishDir)\Version.txt" LogicalName="Payload.Version.txt" Condition="Exists('$(PublishDir)\Version.txt')" />
+    <EmbeddedResource Include="$(PublishDir)\ReleaseNotes.txt" LogicalName="Payload.ReleaseNotes.txt" Condition="Exists('$(PublishDir)\ReleaseNotes.txt')" />
+  </ItemGroup>
+
+  <Target Name="EnsureSetupOutput" BeforeTargets="Build">
+    <MakeDir Directories="$(MSBuildProjectDirectory)\..\..\Output\Setup" />
+  </Target>
+</Project>
