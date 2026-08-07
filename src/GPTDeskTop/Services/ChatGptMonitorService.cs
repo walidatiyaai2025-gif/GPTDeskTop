@@ -21,15 +21,21 @@ public sealed class ChatGptMonitorService
 
     public ChatGptMonitorService(ChromeDevToolsService chrome, LocalDatabase database, MonitoringConfig config)
     {
-        _chrome = chrome; _database = database; _config = config;
+        _chrome = chrome;
+        _database = database;
+        _config = config;
     }
 
-    public bool IsMonitorRunning(long monitorId) { lock (_sync) return _running.ContainsKey(monitorId); }
+    public bool IsMonitorRunning(long monitorId)
+    {
+        lock (_sync) return _running.ContainsKey(monitorId);
+    }
 
     public Task StartMonitorAsync(SavedMonitor monitor, ChromeTab tab)
     {
         if (monitor.Id <= 0) throw new InvalidOperationException("Save the monitor before starting it.");
         if (string.IsNullOrWhiteSpace(monitor.AutoReply)) throw new InvalidOperationException("Auto reply text cannot be empty.");
+
         lock (_sync)
         {
             if (_running.ContainsKey(monitor.Id)) return Task.CompletedTask;
@@ -37,21 +43,35 @@ public sealed class ChatGptMonitorService
             var worker = Task.Run(() => MonitorLoopAsync(monitor, tab, cts.Token));
             _running.Add(monitor.Id, new MonitorRuntime(cts, worker));
         }
-        Activity?.Invoke(monitor.Id, $"Started: {monitor.Title}"); RunningStateChanged?.Invoke(); return Task.CompletedTask;
+
+        Activity?.Invoke(monitor.Id, $"Started: {monitor.Title}");
+        RunningStateChanged?.Invoke();
+        return Task.CompletedTask;
     }
 
     public async Task StopMonitorAsync(long monitorId)
     {
         MonitorRuntime? runtime;
-        lock (_sync) { if (!_running.Remove(monitorId, out runtime)) return; }
+        lock (_sync)
+        {
+            if (!_running.Remove(monitorId, out runtime)) return;
+        }
+
         runtime.Cancellation.Cancel();
-        try { await runtime.Worker; } catch (OperationCanceledException) { }
-        finally { runtime.Cancellation.Dispose(); Activity?.Invoke(monitorId, "Stopped."); RunningStateChanged?.Invoke(); }
+        try { await runtime.Worker; }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            runtime.Cancellation.Dispose();
+            Activity?.Invoke(monitorId, "Stopped.");
+            RunningStateChanged?.Invoke();
+        }
     }
 
     public async Task StopAllAsync()
     {
-        long[] ids; lock (_sync) ids = _running.Keys.ToArray();
+        long[] ids;
+        lock (_sync) ids = _running.Keys.ToArray();
         await Task.WhenAll(ids.Select(StopMonitorAsync));
     }
 
@@ -59,7 +79,9 @@ public sealed class ChatGptMonitorService
     {
         var timerSeconds = Math.Clamp(monitor.TimerSeconds, 1, 60);
         var replyDelaySeconds = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300);
-        Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Timer {timerSeconds}s | Delay {replyDelaySeconds}s | Reply: {monitor.AutoReply}");
+        var noResponseSeconds = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600, cancellationToken);
+
+        Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Timer {timerSeconds}s | Delay {replyDelaySeconds}s | No-response refresh {noResponseSeconds}s | Reply: {monitor.AutoReply}");
 
         try
         {
@@ -67,6 +89,7 @@ public sealed class ChatGptMonitorService
             var lastHandledText = GetEffectiveResponse(initial);
             var candidateText = string.Empty;
             var candidateSince = DateTimeOffset.MinValue;
+            var lastResponseActivity = DateTimeOffset.UtcNow;
 
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(timerSeconds));
             while (await timer.WaitForNextTickAsync(cancellationToken))
@@ -76,17 +99,56 @@ public sealed class ChatGptMonitorService
                     var prefix = $"[{monitor.Title}]";
                     var state = await _chrome.GetChatStateAsync(tab, cancellationToken);
                     var text = GetEffectiveResponse(state);
+
+                    noResponseSeconds = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600, cancellationToken);
+                    if ((DateTimeOffset.UtcNow - lastResponseActivity).TotalSeconds >= noResponseSeconds)
+                    {
+                        Activity?.Invoke(monitor.Id, $"{prefix} No new response for {noResponseSeconds}s. Refreshing this tab...");
+                        await _chrome.ReloadTabAsync(tab, cancellationToken);
+                        await _database.AddLogAsync(
+                            "System",
+                            "Page.reload",
+                            $"No assistant response for {noResponseSeconds} seconds.",
+                            "NoResponseRefresh",
+                            monitor.Id,
+                            tab.Id,
+                            monitor.Title,
+                            cancellationToken);
+                        HistoryChanged?.Invoke();
+                        lastResponseActivity = DateTimeOffset.UtcNow;
+                        candidateText = string.Empty;
+                        candidateSince = DateTimeOffset.MinValue;
+                        await Task.Delay(Math.Max(1000, _config.DelayAfterSendMilliseconds), cancellationToken);
+                        continue;
+                    }
+
                     if (state.IsGenerating || string.IsNullOrWhiteSpace(text) || string.Equals(text, lastHandledText, StringComparison.Ordinal))
-                    { candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; continue; }
+                    {
+                        candidateText = string.Empty;
+                        candidateSince = DateTimeOffset.MinValue;
+                        continue;
+                    }
 
                     if (!string.Equals(candidateText, text, StringComparison.Ordinal))
-                    { candidateText = text; candidateSince = DateTimeOffset.UtcNow; Activity?.Invoke(monitor.Id, $"{prefix} New response detected..."); continue; }
-                    if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue;
+                    {
+                        candidateText = text;
+                        candidateSince = DateTimeOffset.UtcNow;
+                        Activity?.Invoke(monitor.Id, $"{prefix} New response detected...");
+                        continue;
+                    }
 
-                    lastHandledText = text; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
+                    if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds)
+                        continue;
+
+                    lastHandledText = text;
+                    lastResponseActivity = DateTimeOffset.UtcNow;
+                    candidateText = string.Empty;
+                    candidateSince = DateTimeOffset.MinValue;
+
                     var isError = !string.IsNullOrWhiteSpace(state.ErrorText) || IsErrorResponse(text);
                     await _database.AddLogAsync("Inbound", string.Empty, text, isError ? "Error" : "Detected", monitor.Id, tab.Id, monitor.Title, cancellationToken);
-                    HistoryChanged?.Invoke(); ResponseReceived?.Invoke(monitor.Id, monitor.Title, text, isError);
+                    HistoryChanged?.Invoke();
+                    ResponseReceived?.Invoke(monitor.Id, monitor.Title, text, isError);
 
                     if (isError && IsDeliveryTimeout(text))
                     {
@@ -109,6 +171,7 @@ public sealed class ChatGptMonitorService
 
                         tab = newTab;
                         lastHandledText = string.Empty;
+                        lastResponseActivity = DateTimeOffset.UtcNow;
                         candidateText = string.Empty;
                         candidateSince = DateTimeOffset.MinValue;
                         Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Recovery chat is now monitored under the same Monitor ID #{monitor.Id}.");
@@ -124,11 +187,13 @@ public sealed class ChatGptMonitorService
                             await _chrome.ReloadTabAsync(tab, cancellationToken);
                             await _database.AddLogAsync("System", "Page.reload", text, "RefreshedAfterError", monitor.Id, tab.Id, monitor.Title, cancellationToken);
                             HistoryChanged?.Invoke();
+                            lastResponseActivity = DateTimeOffset.UtcNow;
                             await Task.Delay(Math.Max(1500, _config.DelayAfterSendMilliseconds), cancellationToken);
                         }
                         catch (Exception refreshEx) when (refreshEx is not OperationCanceledException)
                         {
-                            await _database.AddLogAsync("System", "Page.reload", refreshEx.Message, "RefreshFailed", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+                            ExceptionLogService.Log(refreshEx, "Monitor.RefreshAfterError", monitor.Id, tab.Id, monitor.Title);
+                            await _database.AddLogAsync("System", "Page.reload", refreshEx.ToString(), "RefreshFailed", monitor.Id, tab.Id, monitor.Title, cancellationToken);
                             HistoryChanged?.Invoke();
                         }
                         continue;
@@ -143,29 +208,42 @@ public sealed class ChatGptMonitorService
                         if (recheck.IsGenerating || !string.Equals(latestText, text, StringComparison.Ordinal))
                         {
                             await _database.AddLogAsync("System", monitor.AutoReply, latestText, "SendDelayCancelled", monitor.Id, tab.Id, monitor.Title, cancellationToken);
-                            HistoryChanged?.Invoke(); continue;
+                            HistoryChanged?.Invoke();
+                            continue;
                         }
                     }
 
                     var autoSent = await _chrome.SendChatMessageAsync(tab, monitor.AutoReply, cancellationToken);
                     await _database.AddLogAsync("Outbound", monitor.AutoReply, string.Empty, autoSent ? "Sent" : "Failed", monitor.Id, tab.Id, monitor.Title, cancellationToken);
                     HistoryChanged?.Invoke();
+                    lastResponseActivity = DateTimeOffset.UtcNow;
                     await Task.Delay(Math.Max(250, _config.DelayAfterSendMilliseconds), cancellationToken);
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
                 catch (Exception ex)
                 {
-                    Activity?.Invoke(monitor.Id, $"Monitor error: {ex.Message}");
-                    await _database.AddLogAsync("System", string.Empty, ex.Message, "MonitorException", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+                    Activity?.Invoke(monitor.Id, $"Monitor exception logged: {ex.GetType().Name}: {ex.Message}");
+                    await ExceptionLogService.LogAsync(ex, "ChatGptMonitorService.MonitorLoop", monitor.Id, tab.Id, monitor.Title);
                     HistoryChanged?.Invoke();
                     await Task.Delay(1500, cancellationToken);
                 }
             }
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            await ExceptionLogService.LogAsync(ex, "ChatGptMonitorService.WorkerFatal", monitor.Id, tab.Id, monitor.Title);
+            Activity?.Invoke(monitor.Id, $"Monitor worker stopped by exception: {ex.Message}");
+        }
         finally
         {
             lock (_sync)
-                if (_running.TryGetValue(monitor.Id, out var current) && current.Cancellation.Token == cancellationToken) _running.Remove(monitor.Id);
+            {
+                if (_running.TryGetValue(monitor.Id, out var current) && current.Cancellation.Token == cancellationToken)
+                    _running.Remove(monitor.Id);
+            }
             RunningStateChanged?.Invoke();
         }
     }
@@ -179,7 +257,21 @@ public sealed class ChatGptMonitorService
     private static bool IsErrorResponse(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
-        string[] markers = { "message delivery timed out", "something went wrong", "there was an error", "network error", "failed to generate", "error generating", "unable to generate", "unable to load", "حدث خطأ", "خطأ في الشبكة", "تعذر إنشاء", "تعذر تحميل" };
+        string[] markers =
+        {
+            "message delivery timed out",
+            "something went wrong",
+            "there was an error",
+            "network error",
+            "failed to generate",
+            "error generating",
+            "unable to generate",
+            "unable to load",
+            "حدث خطأ",
+            "خطأ في الشبكة",
+            "تعذر إنشاء",
+            "تعذر تحميل"
+        };
         return markers.Any(marker => text.Contains(marker, StringComparison.OrdinalIgnoreCase));
     }
 
