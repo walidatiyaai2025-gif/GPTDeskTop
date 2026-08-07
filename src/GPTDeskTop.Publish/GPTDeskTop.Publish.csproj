@@ -16,8 +16,8 @@
     <RemoveDir Directories="$(PublishRoot)" Condition="Exists('$(PublishRoot)')" />
     <MakeDir Directories="$(PublishRoot)" />
     <Exec Command="dotnet publish &quot;$(AppProject)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o &quot;$(PublishRoot)&quot;" />
-    <WriteLinesToFile File="$(PublishRoot)\Version.txt" Lines="GPTDeskTop v1.4.0&#x0D;&#x0A;Runtime: win-x64 self-contained&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
-    <WriteLinesToFile File="$(PublishRoot)\ReleaseNotes.txt" Lines="GPTDeskTop v1.4.0&#x0D;&#x0A;- Three-project Visual Studio solution&#x0D;&#x0A;- SDK-style publish and setup projects&#x0D;&#x0A;- Per-monitor reply delay and monitor timer settings&#x0D;&#x0A;- Chrome hide/show and tray notifications" Overwrite="true" Encoding="UTF-8" />
+    <WriteLinesToFile File="$(PublishRoot)\Version.txt" Lines="GPTDeskTop v1.6.0&#x0D;&#x0A;Runtime: win-x64 self-contained&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
+    <WriteLinesToFile File="$(PublishRoot)\ReleaseNotes.txt" Lines="GPTDeskTop v1.6.0&#x0D;&#x0A;- Persistent exception logging to SQLite and log files&#x0D;&#x0A;- 180-second configurable no-response tab refresh watchdog&#x0D;&#x0A;- Improved Chrome hide/show behavior&#x0D;&#x0A;- Green/red monitor runtime indicators&#x0D;&#x0A;- Existing per-tab delays, timers and timeout recovery retained" Overwrite="true" Encoding="UTF-8" />
     <Message Text="GPTDeskTop publish payload created at $(PublishRoot)" Importance="high" />
   </Target>
 </Project>
