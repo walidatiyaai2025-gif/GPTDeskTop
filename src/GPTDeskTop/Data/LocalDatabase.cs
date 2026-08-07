@@ -53,6 +53,8 @@ public sealed class LocalDatabase
                     Title TEXT NOT NULL DEFAULT '',
                     Url TEXT NOT NULL DEFAULT '',
                     AutoReply TEXT NOT NULL DEFAULT '',
+                    ReplyDelaySeconds INTEGER NOT NULL DEFAULT 3,
+                    TimerSeconds INTEGER NOT NULL DEFAULT 1,
                     Enabled INTEGER NOT NULL DEFAULT 1,
                     CreatedAt TEXT NOT NULL,
                     UpdatedAt TEXT NOT NULL
@@ -73,6 +75,8 @@ public sealed class LocalDatabase
         await EnsureColumnAsync(connection, "MessageLogs", "MonitorId", "INTEGER NULL");
         await EnsureColumnAsync(connection, "MessageLogs", "TabId", "TEXT NOT NULL DEFAULT ''");
         await EnsureColumnAsync(connection, "MessageLogs", "TabTitle", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, "SavedMonitors", "ReplyDelaySeconds", "INTEGER NOT NULL DEFAULT 3");
+        await EnsureColumnAsync(connection, "SavedMonitors", "TimerSeconds", "INTEGER NOT NULL DEFAULT 1");
     }
 
     private static async Task EnsureColumnAsync(SqliteConnection connection, string table, string column, string definition)
@@ -95,6 +99,9 @@ public sealed class LocalDatabase
     public async Task<long> SaveMonitorAsync(SavedMonitor monitor, CancellationToken cancellationToken = default)
     {
         var now = DateTime.UtcNow;
+        monitor.ReplyDelaySeconds = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300);
+        monitor.TimerSeconds = Math.Clamp(monitor.TimerSeconds, 1, 60);
+
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
@@ -102,8 +109,8 @@ public sealed class LocalDatabase
         if (monitor.Id <= 0)
         {
             command.CommandText = """
-                INSERT INTO SavedMonitors(TabId, Title, Url, AutoReply, Enabled, CreatedAt, UpdatedAt)
-                VALUES($tabId, $title, $url, $autoReply, $enabled, $createdAt, $updatedAt);
+                INSERT INTO SavedMonitors(TabId, Title, Url, AutoReply, ReplyDelaySeconds, TimerSeconds, Enabled, CreatedAt, UpdatedAt)
+                VALUES($tabId, $title, $url, $autoReply, $replyDelaySeconds, $timerSeconds, $enabled, $createdAt, $updatedAt);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$createdAt", now.ToString("O"));
@@ -113,6 +120,7 @@ public sealed class LocalDatabase
             command.CommandText = """
                 UPDATE SavedMonitors
                 SET TabId=$tabId, Title=$title, Url=$url, AutoReply=$autoReply,
+                    ReplyDelaySeconds=$replyDelaySeconds, TimerSeconds=$timerSeconds,
                     Enabled=$enabled, UpdatedAt=$updatedAt
                 WHERE Id=$id;
                 SELECT $id;
@@ -124,6 +132,8 @@ public sealed class LocalDatabase
         command.Parameters.AddWithValue("$title", monitor.Title ?? string.Empty);
         command.Parameters.AddWithValue("$url", monitor.Url ?? string.Empty);
         command.Parameters.AddWithValue("$autoReply", monitor.AutoReply ?? string.Empty);
+        command.Parameters.AddWithValue("$replyDelaySeconds", monitor.ReplyDelaySeconds);
+        command.Parameters.AddWithValue("$timerSeconds", monitor.TimerSeconds);
         command.Parameters.AddWithValue("$enabled", monitor.Enabled ? 1 : 0);
         command.Parameters.AddWithValue("$updatedAt", now.ToString("O"));
 
@@ -142,7 +152,7 @@ public sealed class LocalDatabase
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT Id, TabId, Title, Url, AutoReply, Enabled, CreatedAt, UpdatedAt
+            SELECT Id, TabId, Title, Url, AutoReply, ReplyDelaySeconds, TimerSeconds, Enabled, CreatedAt, UpdatedAt
             FROM SavedMonitors
             ORDER BY Id;
             """;
@@ -157,9 +167,11 @@ public sealed class LocalDatabase
                 Title = reader.GetString(2),
                 Url = reader.GetString(3),
                 AutoReply = reader.GetString(4),
-                Enabled = reader.GetInt64(5) != 0,
-                CreatedAt = ParseLocal(reader.GetString(6)),
-                UpdatedAt = ParseLocal(reader.GetString(7))
+                ReplyDelaySeconds = Math.Clamp(reader.GetInt32(5), 0, 300),
+                TimerSeconds = Math.Clamp(reader.GetInt32(6), 1, 60),
+                Enabled = reader.GetInt64(7) != 0,
+                CreatedAt = ParseLocal(reader.GetString(8)),
+                UpdatedAt = ParseLocal(reader.GetString(9))
             });
         }
         return result;
