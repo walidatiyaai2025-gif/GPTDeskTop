@@ -50,14 +50,14 @@ public static class FluentTheme
                 case Label label:
                     if (label.ForeColor == SystemColors.ControlText) label.ForeColor = Text;
                     break;
-                case Panel panel:
-                    panel.BackColor = Background;
-                    break;
                 case TableLayoutPanel table:
                     table.BackColor = Background;
                     break;
                 case FlowLayoutPanel flow:
                     flow.BackColor = Background;
+                    break;
+                case Panel panel:
+                    panel.BackColor = Background;
                     break;
             }
             if (control.HasChildren) ApplyRecursive(control.Controls);
@@ -115,8 +115,5 @@ public static class FluentTheme
     }
 
     public static ContextMenuStrip CreateMenu()
-    {
-        var menu = new ContextMenuStrip { Renderer = new ToolStripProfessionalRenderer(), Font = new Font("Segoe UI Variable Text", 9F) };
-        return menu;
-    }
+        => new() { Renderer = new ToolStripProfessionalRenderer(), Font = new Font("Segoe UI Variable Text", 9F) };
 }
