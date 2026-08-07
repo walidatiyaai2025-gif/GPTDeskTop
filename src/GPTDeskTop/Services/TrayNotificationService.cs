@@ -1,4 +1,5 @@
 using GPTDeskTop.Data;
+using GPTDeskTop.UI;
 
 namespace GPTDeskTop.Services;
 
@@ -24,9 +25,13 @@ public sealed class TrayNotificationService : IDisposable
             _durationMenu.DropDownItems.Add(item);
         }
 
+        var settingsItem = new ToolStripMenuItem("Settings...");
+        settingsItem.Click += async (_, _) => await OpenSettingsAsync();
+
         var menu = new ContextMenuStrip();
         menu.Items.Add(new ToolStripMenuItem("GPTDeskTop notifications") { Enabled = false });
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(settingsItem);
         menu.Items.Add(_durationMenu);
 
         _notifyIcon = new NotifyIcon
@@ -42,9 +47,7 @@ public sealed class TrayNotificationService : IDisposable
 
     public async Task InitializeAsync()
     {
-        var saved = await _database.GetSettingAsync("NotificationDurationSeconds");
-        if (int.TryParse(saved, out var seconds))
-            _durationSeconds = Math.Clamp(seconds, 1, 60);
+        _durationSeconds = await _database.GetIntSettingAsync("NotificationDurationSeconds", 8, 1, 60);
         UpdateMenuChecks();
     }
 
@@ -68,6 +71,23 @@ public sealed class TrayNotificationService : IDisposable
         {
             // Notifications must never interrupt monitor workers.
         }
+    }
+
+    private async Task OpenSettingsAsync()
+    {
+        using var form = new SettingsForm(_database);
+        if (form.ShowDialog() != DialogResult.OK)
+            return;
+
+        _durationSeconds = await _database.GetIntSettingAsync("NotificationDurationSeconds", 8, 1, 60);
+        var replyDelay = await _database.GetIntSettingAsync("ReplyDelaySeconds", 3, 0, 300);
+        UpdateMenuChecks();
+
+        _notifyIcon.ShowBalloonTip(
+            Math.Min(_durationSeconds, 5) * 1000,
+            "GPTDeskTop Settings Saved",
+            $"Reply delay: {replyDelay} second(s). Notification duration: {_durationSeconds} second(s).",
+            ToolTipIcon.Info);
     }
 
     private async Task SetDurationAsync(int seconds)
