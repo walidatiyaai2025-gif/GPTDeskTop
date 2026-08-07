@@ -11,6 +11,8 @@ public sealed class MainForm : Form
     private readonly LocalDatabase _database;
 
     private readonly Button _launchChromeButton = new() { Text = "Launch Monitor Chrome", AutoSize = true };
+    private readonly Button _hideChromeButton = new() { Text = "Hide Chrome", AutoSize = true };
+    private readonly Button _showChromeButton = new() { Text = "Show Chrome", AutoSize = true };
     private readonly Button _refreshTabsButton = new() { Text = "Refresh Chrome Tabs", AutoSize = true };
     private readonly Button _addMonitorButton = new() { Text = "Add Selected Tab(s)", AutoSize = true };
     private readonly Button _saveMonitorButton = new() { Text = "Save Monitor", AutoSize = true };
@@ -30,11 +32,20 @@ public sealed class MainForm : Form
     private readonly TextBox _autoReplyBox = new() { Text = "كمل", Font = new Font("Segoe UI", 11F), Dock = DockStyle.Fill };
     private readonly CheckBox _enabledCheck = new() { Text = "Enabled", Checked = true, AutoSize = true, Anchor = AnchorStyles.Left };
     private readonly Label _editorLabel = new() { Text = "Select one or more open tabs to add, or select a saved monitor to edit.", AutoEllipsis = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Label _versionLabel = new()
+    {
+        Text = $"GPTDeskTop v{GetAppVersion()}  |  .NET 8  |  Chrome CDP",
+        Dock = DockStyle.Fill,
+        TextAlign = ContentAlignment.MiddleRight,
+        Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+        ForeColor = Color.DimGray
+    };
 
     private List<ChromeTab> _tabs = new();
     private List<SavedMonitor> _monitors = new();
     private ChromeTab? _selectedTab;
     private SavedMonitor? _selectedMonitor;
+    private bool _chromeHidden;
 
     public MainForm(ChromeDevToolsService chrome, ChatGptMonitorService monitor, LocalDatabase database)
     {
@@ -42,7 +53,7 @@ public sealed class MainForm : Form
         _monitor = monitor;
         _database = database;
 
-        Text = "GPTDeskTop - Multi Tab ChatGPT Monitor";
+        Text = $"GPTDeskTop v{GetAppVersion()} - Multi Tab ChatGPT Monitor";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1200, 780);
         Size = new Size(1600, 980);
@@ -59,7 +70,7 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 5,
+            RowCount = 6,
             Padding = new Padding(10)
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
@@ -67,11 +78,12 @@ public sealed class MainForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 225));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
 
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, Padding = new Padding(0, 4, 0, 0) };
         toolbar.Controls.AddRange(new Control[]
         {
-            _launchChromeButton, _refreshTabsButton, _addMonitorButton, _deleteMonitorButton,
+            _launchChromeButton, _hideChromeButton, _showChromeButton, _refreshTabsButton, _addMonitorButton, _deleteMonitorButton,
             _startSelectedButton, _stopSelectedButton, _startAllButton, _stopAllButton,
             _refreshHistoryButton, _deleteLogButton, _clearHistoryButton
         });
@@ -119,7 +131,10 @@ public sealed class MainForm : Form
         root.Controls.Add(editor, 0, 2);
         root.Controls.Add(savedGroup, 0, 3);
         root.Controls.Add(split, 0, 4);
+        root.Controls.Add(_versionLabel, 0, 5);
         Controls.Add(root);
+
+        UpdateChromeVisibilityButtons();
     }
 
     private void ConfigureTabsGrid()
@@ -172,6 +187,8 @@ public sealed class MainForm : Form
     private void WireEvents()
     {
         _launchChromeButton.Click += async (_, _) => await LaunchChromeAsync();
+        _hideChromeButton.Click += async (_, _) => await HideChromeAsync();
+        _showChromeButton.Click += async (_, _) => await ShowChromeAsync();
         _refreshTabsButton.Click += async (_, _) => await RefreshTabsAsync();
         _addMonitorButton.Click += async (_, _) => await AddSelectedTabAsync();
         _saveMonitorButton.Click += async (_, _) => await SaveSelectedMonitorAsync();
@@ -194,8 +211,12 @@ public sealed class MainForm : Form
     private async Task LoadStartupStateAsync()
     {
         _autoReplyBox.Text = await _database.GetSettingAsync("DefaultAutoReply") ?? "كمل";
+        _chromeHidden = string.Equals(await _database.GetSettingAsync("ChromeHidden"), "1", StringComparison.Ordinal);
+        UpdateChromeVisibilityButtons();
         await RefreshMonitorsAsync();
         await RefreshHistoryAsync();
+        AppendActivity($"Application version: {GetAppVersion()}");
+        AppendActivity($"Saved Chrome visibility: {(_chromeHidden ? "Hidden" : "Visible")}");
     }
 
     private async Task LaunchChromeAsync()
@@ -205,12 +226,67 @@ public sealed class MainForm : Form
             _chrome.LaunchMonitorChrome();
             AppendActivity("Monitor Chrome launched.");
             await Task.Delay(1800);
+
+            if (_chromeHidden)
+            {
+                var hidden = await _chrome.HideMonitorChromeAsync();
+                AppendActivity(hidden ? "Monitor Chrome restored in hidden mode." : "Chrome launched but could not be hidden automatically.");
+            }
+
             await RefreshTabsAsync();
         }
         catch (Exception ex)
         {
             ShowError("Chrome Launch Error", ex.Message);
         }
+    }
+
+    private async Task HideChromeAsync()
+    {
+        try
+        {
+            if (!await _chrome.HideMonitorChromeAsync())
+            {
+                MessageBox.Show(this, "Monitor Chrome window was not found. Launch Monitor Chrome first.", "Chrome Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            _chromeHidden = true;
+            await _database.SetSettingAsync("ChromeHidden", "1");
+            UpdateChromeVisibilityButtons();
+            AppendActivity("Monitor Chrome hidden. Monitoring continues in background.");
+        }
+        catch (Exception ex)
+        {
+            ShowError("Hide Chrome Error", ex.Message);
+        }
+    }
+
+    private async Task ShowChromeAsync()
+    {
+        try
+        {
+            if (!await _chrome.ShowMonitorChromeAsync())
+            {
+                MessageBox.Show(this, "Monitor Chrome window was not found. Launch Monitor Chrome first.", "Chrome Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            _chromeHidden = false;
+            await _database.SetSettingAsync("ChromeHidden", "0");
+            UpdateChromeVisibilityButtons();
+            AppendActivity("Monitor Chrome shown.");
+        }
+        catch (Exception ex)
+        {
+            ShowError("Show Chrome Error", ex.Message);
+        }
+    }
+
+    private void UpdateChromeVisibilityButtons()
+    {
+        _hideChromeButton.Enabled = !_chromeHidden;
+        _showChromeButton.Enabled = _chromeHidden;
     }
 
     private async Task RefreshTabsAsync()
@@ -500,6 +576,12 @@ public sealed class MainForm : Form
             BeginInvoke(action);
         else
             action();
+    }
+
+    private static string GetAppVersion()
+    {
+        var version = typeof(MainForm).Assembly.GetName().Version;
+        return version is null ? "unknown" : $"{version.Major}.{version.Minor}.{version.Build}";
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
