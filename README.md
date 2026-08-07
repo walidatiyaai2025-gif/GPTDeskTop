@@ -2,53 +2,38 @@
 
 .NET 8 WinForms persistent multi-tab monitor for ChatGPT pages opened in a dedicated Chrome/CDP session.
 
+Current application version: **1.3.0**.
+
 ## Multi-tab workflow
 
-GPTDeskTop now supports any number of independent saved monitors.
+GPTDeskTop supports any number of independent saved monitors.
 
 1. Click **Launch Monitor Chrome**.
-2. Open/sign in to ChatGPT in that Chrome window.
-3. Open every conversation you want to monitor.
-4. Click **Refresh Chrome Tabs**.
-5. Select an open tab.
-6. Enter that tab's automatic reply, for example `كمل`.
-7. Click **Add Selected Tab**.
-8. Repeat for any additional tabs. Every saved monitor can have a different reply.
-9. Use **Start Selected** for one monitor, or **Start All Enabled** for all enabled monitors.
-10. Use **Stop Selected** or **Stop All** independently.
+2. Open/sign in to ChatGPT and open every conversation you want to monitor.
+3. Click **Refresh Chrome Tabs**.
+4. Select one or more open tabs with Ctrl/Shift.
+5. Click **Add Selected Tab(s)**.
+6. A **Monitor Settings** dialog opens separately for every selected tab.
+7. Configure that tab's Auto Reply, Delay Before Send, Monitor Timer and Enabled state.
+8. Use **Start Selected** or **Start All Enabled**.
 
-## Saved Monitor controls
+Every monitor persists its own:
 
-Each saved monitor persists:
-
-- Monitor database ID
-- current Chrome Tab ID
-- tab title
-- exact conversation URL
-- individual Auto Reply text
+- Auto Reply text
+- Reply Delay in seconds (`0-300`)
+- Monitor Timer in seconds (`1-60`), which controls how often that tab is checked
 - Enabled state
-- created/updated timestamps
+- Tab ID, title and exact URL
 
-Use **Save Monitor** after editing Auto Reply or Enabled. Use **Delete Monitor** to remove only the saved monitor definition; it does not close the Chrome tab and it does not erase historical logs.
+Double-click a saved monitor or click **Monitor Settings** to edit its Delay/Timer later. Stop a running monitor before changing its runtime timing settings.
 
-If Chrome later assigns a different Tab ID, GPTDeskTop attempts to reconnect the saved monitor by its exact stored conversation URL.
+## Notifications and recovery
 
-## Concurrent monitoring
+Every completed ChatGPT reply is saved to SQLite and shown as a Windows tray balloon. Error responses are saved first, then only the affected Chrome tab is refreshed. Balloon duration is configurable from the tray Settings dialog.
 
-`ChatGptMonitorService` runs one cancellable background worker for each Monitor ID. Every worker maintains independent ChatGPT response-stability/de-duplication state, so activity in one tab does not control or reset another tab.
+## Chrome visibility
 
-A reply such as `كمل` can create a continuing response loop for that monitor until it is stopped. Different tabs can run different loops simultaneously.
-
-## Chrome requirement
-
-Use **Launch Monitor Chrome**. It starts a persistent dedicated profile with Chrome remote debugging enabled:
-
-```text
---remote-debugging-port=9222
---user-data-dir=%LOCALAPPDATA%\GPTDeskTop\ChromeProfile
-```
-
-Sign in to ChatGPT once in this dedicated Chrome profile. The profile is reused between launches.
+**Hide Chrome** hides the dedicated monitor Chrome window while monitoring continues through CDP. **Show Chrome** restores it. The preference is saved in SQLite.
 
 ## Local database
 
@@ -56,30 +41,13 @@ Sign in to ChatGPT once in this dedicated Chrome profile. The profile is reused 
 
 Tables:
 
-- `SavedMonitors`: all selected monitor tabs and their individual configuration.
-- `AppSettings`: key/value application settings such as the default auto reply.
-- `MessageLogs`: inbound/outbound activity including MonitorId, TabId and TabTitle.
-
-Existing databases from the earlier version are upgraded by adding the new monitor-aware log columns; the database is not reset.
-
-History supports:
-
-- Refresh History
-- Delete Selected Log
-- Clear History
+- `SavedMonitors`: tab identity, Auto Reply, per-tab ReplyDelaySeconds, per-tab TimerSeconds and Enabled state.
+- `AppSettings`: global settings such as balloon duration, default delay and Chrome visibility.
+- `MessageLogs`: inbound/outbound/system activity including MonitorId, TabId and TabTitle.
 
 ## Build and run
 
 Requirements: Windows 10/11 and .NET 8 SDK.
-
-```powershell
-git clone https://github.com/walidatiyaai2025-gif/GPTDeskTop.git
-cd GPTDeskTop
-dotnet restore .\GPTDeskTop.sln
-dotnet run --project .\src\GPTDeskTop\GPTDeskTop.csproj
-```
-
-For an existing clone:
 
 ```powershell
 git pull origin main
@@ -87,27 +55,35 @@ dotnet restore .\GPTDeskTop.sln
 dotnet run --project .\src\GPTDeskTop\GPTDeskTop.csproj
 ```
 
-No OpenAI API key is required in browser-monitoring mode because GPTDeskTop interacts with the authenticated ChatGPT web session through Chrome DevTools Protocol rather than calling the OpenAI API directly.
+No OpenAI API key is required in browser-monitoring mode.
+
+## Build Setup from Visual Studio
+
+The solution now contains three projects:
+
+- `GPTDeskTop` - application
+- `GPTDeskTop.Setup` - WiX MSI package
+- `GPTDeskTop.Bootstrapper` - final Setup EXE
+
+For Visual Studio 2022, install the **HeatWave for VS2022 / WiX Toolset** extension so `.wixproj` projects load in Solution Explorer. NuGet restores WiX Toolset 5 packages automatically.
+
+Then:
+
+1. Open `GPTDeskTop.sln`.
+2. Select **Release | x64**.
+3. Build **GPTDeskTop.Bootstrapper** or **Build Solution**.
+4. The MSI is generated under `src\GPTDeskTop.Setup\bin\Release\`.
+5. The final installer is generated under `src\GPTDeskTop.Bootstrapper\bin\Release\` as **GPTDeskTop-Setup.exe**.
+
+The setup build publishes the application as **win-x64 self-contained**, so the target PC does not need a separate .NET 8 runtime installation.
 
 ## Main source files
 
-- `Services/ChromeDevToolsService.cs` — Chrome startup, tab discovery, ChatGPT DOM state and message send.
-- `Services/ChatGptMonitorService.cs` — independent concurrent workers per saved monitor.
-- `UI/MainForm.cs` — open tabs, saved monitor CRUD, per-monitor controls, activity and history.
-- `Data/LocalDatabase.cs` — SQLite initialization, schema upgrades, monitor/settings/history CRUD.
-- `Models/Models.cs` — Chrome tabs, saved monitor and log models.
-- `TaskPlanner.md` — team implementation/status plan.
-
-## Validation checklist
-
-- Add two or more different ChatGPT tabs with different automatic replies.
-- Start both and confirm every response is sent only to its own tab.
-- Stop one monitor and confirm the others continue running.
-- Restart GPTDeskTop and verify Saved Monitors and Auto Reply values return from SQLite.
-- Restart Chrome, reopen the same conversation URL, refresh tabs and verify URL fallback can resolve the monitor.
-- Delete a monitor and verify the Chrome tab remains open.
-- Verify monitor-aware history shows which monitor produced every inbound/outbound row.
-
-## Robustness note
-
-ChatGPT is a web application and its DOM can change. The browser integration uses fallback selectors, but a major ChatGPT markup change may require updating selectors in `ChromeDevToolsService.cs`.
+- `Services/ChromeDevToolsService.cs` - Chrome/CDP integration.
+- `Services/ChatGptMonitorService.cs` - independent monitor workers and per-tab timers/delays.
+- `UI/MainForm.cs` - home UI and monitor management.
+- `UI/MonitorSettingsForm.cs` - per-tab add/edit settings.
+- `Data/LocalDatabase.cs` - SQLite schema and CRUD.
+- `src/GPTDeskTop.Setup/*` - MSI project.
+- `src/GPTDeskTop.Bootstrapper/*` - Setup EXE project.
+- `TaskPlanner.md` - team implementation/status plan.
