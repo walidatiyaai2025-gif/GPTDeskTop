@@ -2,7 +2,54 @@
 
 .NET 8 WinForms persistent multi-tab monitor for ChatGPT pages opened in a dedicated Chrome/CDP session.
 
-Current application version: **1.3.0**.
+Current application version: **1.4.0**.
+
+## Solution structure
+
+`GPTDeskTop.sln` now contains exactly three SDK-style projects that Visual Studio 2022 can open without WiX support:
+
+1. `GPTDeskTop` - the main .NET 8 WinForms application.
+2. `GPTDeskTop.Publish` - builds a `win-x64` self-contained, single-file application payload under `Output\Publish`.
+3. `GPTDeskTop.Setup` - embeds that payload and produces the final standalone installer `Output\Setup\GPTDeskTop-Setup.exe`.
+
+The previous WiX `.wixproj` projects were removed because they appeared as Unsupported in Visual Studio environments without the WiX extension.
+
+## Build Setup from Visual Studio
+
+1. Pull the latest `main` branch.
+2. Open `GPTDeskTop.sln` in Visual Studio 2022.
+3. Select `Release | x64`.
+4. Choose **Build > Build Solution**.
+5. Project dependencies build in this order:
+   - `GPTDeskTop`
+   - `GPTDeskTop.Publish`
+   - `GPTDeskTop.Setup`
+6. Final installer:
+
+```text
+Output\Setup\GPTDeskTop-Setup.exe
+```
+
+Published application payload:
+
+```text
+Output\Publish\GPTDeskTop.exe
+Output\Publish\appsettings.json
+Output\Publish\Version.txt
+Output\Publish\ReleaseNotes.txt
+```
+
+Both the application payload and final Setup EXE are `win-x64` self-contained. The target Windows PC does not need a separate .NET 8 runtime installation.
+
+## Setup behavior
+
+The installer installs GPTDeskTop for the current Windows user under:
+
+```text
+%LOCALAPPDATA%\Programs\GPTDeskTop
+```
+
+It creates Desktop and Start Menu shortcuts, registers GPTDeskTop in Windows Apps/Uninstall information, and copies an uninstall-capable setup executable into the install directory. Existing `appdata.db` data is not overwritten by upgrades and is preserved during uninstall.
 
 ## Multi-tab workflow
 
@@ -17,37 +64,21 @@ GPTDeskTop supports any number of independent saved monitors.
 7. Configure that tab's Auto Reply, Delay Before Send, Monitor Timer and Enabled state.
 8. Use **Start Selected** or **Start All Enabled**.
 
-Every monitor persists its own:
+Every monitor persists its own Auto Reply, Reply Delay (`0-300` seconds), Monitor Timer (`1-60` seconds), Enabled state, Tab ID, title and exact URL.
 
-- Auto Reply text
-- Reply Delay in seconds (`0-300`)
-- Monitor Timer in seconds (`1-60`), which controls how often that tab is checked
-- Enabled state
-- Tab ID, title and exact URL
+## Notifications, recovery and Chrome visibility
 
-Double-click a saved monitor or click **Monitor Settings** to edit its Delay/Timer later. Stop a running monitor before changing its runtime timing settings.
-
-## Notifications and recovery
-
-Every completed ChatGPT reply is saved to SQLite and shown as a Windows tray balloon. Error responses are saved first, then only the affected Chrome tab is refreshed. Balloon duration is configurable from the tray Settings dialog.
-
-## Chrome visibility
-
-**Hide Chrome** hides the dedicated monitor Chrome window while monitoring continues through CDP. **Show Chrome** restores it. The preference is saved in SQLite.
+Every completed ChatGPT reply is saved to SQLite and shown as a Windows tray balloon. Error responses are saved first, then only the affected Chrome tab is refreshed. **Hide Chrome** hides the dedicated monitor Chrome window while monitoring continues; **Show Chrome** restores it.
 
 ## Local database
 
-`appdata.db` is automatically created beside the executable and upgraded in place.
-
-Tables:
+`appdata.db` is automatically created beside the installed executable and upgraded in place.
 
 - `SavedMonitors`: tab identity, Auto Reply, per-tab ReplyDelaySeconds, per-tab TimerSeconds and Enabled state.
-- `AppSettings`: global settings such as balloon duration, default delay and Chrome visibility.
-- `MessageLogs`: inbound/outbound/system activity including MonitorId, TabId and TabTitle.
+- `AppSettings`: global application settings.
+- `MessageLogs`: inbound/outbound/system history with MonitorId, TabId and TabTitle.
 
-## Build and run
-
-Requirements: Windows 10/11 and .NET 8 SDK.
+## Developer run
 
 ```powershell
 git pull origin main
@@ -56,34 +87,3 @@ dotnet run --project .\src\GPTDeskTop\GPTDeskTop.csproj
 ```
 
 No OpenAI API key is required in browser-monitoring mode.
-
-## Build Setup from Visual Studio
-
-The solution now contains three projects:
-
-- `GPTDeskTop` - application
-- `GPTDeskTop.Setup` - WiX MSI package
-- `GPTDeskTop.Bootstrapper` - final Setup EXE
-
-For Visual Studio 2022, install the **HeatWave for VS2022 / WiX Toolset** extension so `.wixproj` projects load in Solution Explorer. NuGet restores WiX Toolset 5 packages automatically.
-
-Then:
-
-1. Open `GPTDeskTop.sln`.
-2. Select **Release | x64**.
-3. Build **GPTDeskTop.Bootstrapper** or **Build Solution**.
-4. The MSI is generated under `src\GPTDeskTop.Setup\bin\Release\`.
-5. The final installer is generated under `src\GPTDeskTop.Bootstrapper\bin\Release\` as **GPTDeskTop-Setup.exe**.
-
-The setup build publishes the application as **win-x64 self-contained**, so the target PC does not need a separate .NET 8 runtime installation.
-
-## Main source files
-
-- `Services/ChromeDevToolsService.cs` - Chrome/CDP integration.
-- `Services/ChatGptMonitorService.cs` - independent monitor workers and per-tab timers/delays.
-- `UI/MainForm.cs` - home UI and monitor management.
-- `UI/MonitorSettingsForm.cs` - per-tab add/edit settings.
-- `Data/LocalDatabase.cs` - SQLite schema and CRUD.
-- `src/GPTDeskTop.Setup/*` - MSI project.
-- `src/GPTDeskTop.Bootstrapper/*` - Setup EXE project.
-- `TaskPlanner.md` - team implementation/status plan.
