@@ -64,6 +64,7 @@ public sealed class LocalDatabase
                 INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('MonitorMode', 'ChromeCDP');
                 INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('DefaultAutoReply', 'كمل');
                 INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('NotificationDurationSeconds', '8');
+                INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('ReplyDelaySeconds', '3');
                 """;
             await command.ExecuteNonQueryAsync();
         }
@@ -195,6 +196,12 @@ public sealed class LocalDatabase
         command.CommandText = "SELECT Value FROM AppSettings WHERE Key=$key LIMIT 1;";
         command.Parameters.AddWithValue("$key", key);
         return (await command.ExecuteScalarAsync(cancellationToken))?.ToString();
+    }
+
+    public async Task<int> GetIntSettingAsync(string key, int defaultValue, int min, int max, CancellationToken cancellationToken = default)
+    {
+        var raw = await GetSettingAsync(key, cancellationToken);
+        return int.TryParse(raw, out var value) ? Math.Clamp(value, min, max) : Math.Clamp(defaultValue, min, max);
     }
 
     public async Task AddLogAsync(
