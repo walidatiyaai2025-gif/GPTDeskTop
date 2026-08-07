@@ -36,8 +36,7 @@ public sealed class ChromeDevToolsService
         foreach (var item in document.RootElement.EnumerateArray())
         {
             var type = item.TryGetProperty("type", out var typeElement) ? typeElement.GetString() ?? string.Empty : string.Empty;
-            if (!string.Equals(type, "page", StringComparison.OrdinalIgnoreCase))
-                continue;
+            if (!string.Equals(type, "page", StringComparison.OrdinalIgnoreCase)) continue;
 
             tabs.Add(new ChromeTab
             {
@@ -48,28 +47,60 @@ public sealed class ChromeDevToolsService
                 WebSocketDebuggerUrl = item.TryGetProperty("webSocketDebuggerUrl", out var ws) ? ws.GetString() ?? string.Empty : string.Empty
             });
         }
-
         return tabs.OrderBy(t => t.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
     public Process LaunchMonitorChrome()
     {
         var chromePath = FindChromePath();
-        var profilePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "GPTDeskTop",
-            "ChromeProfile");
+        var profilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GPTDeskTop", "ChromeProfile");
         Directory.CreateDirectory(profilePath);
-
         var arguments = $"--remote-debugging-port={_config.DebuggingPort} --user-data-dir=\"{profilePath}\" --new-window \"{_config.StartUrl}\"";
-        _monitorChromeProcess = Process.Start(new ProcessStartInfo
-        {
-            FileName = chromePath,
-            Arguments = arguments,
-            UseShellExecute = true
-        }) ?? throw new InvalidOperationException("Chrome could not be started.");
-
+        _monitorChromeProcess = Process.Start(new ProcessStartInfo { FileName = chromePath, Arguments = arguments, UseShellExecute = true })
+            ?? throw new InvalidOperationException("Chrome could not be started.");
         return _monitorChromeProcess;
+    }
+
+    public async Task<ChromeTab> CreateNewChatTabAsync(CancellationToken cancellationToken = default)
+    {
+        var existing = await GetTabsAsync(cancellationToken);
+        var controlTab = existing.FirstOrDefault() ?? throw new InvalidOperationException("Monitor Chrome has no controllable page.");
+        var result = await SendCommandAsync(controlTab, "Target.createTarget", new { url = _config.StartUrl }, cancellationToken);
+        var targetId = result.TryGetProperty("targetId", out var id) ? id.GetString() : null;
+        if (string.IsNullOrWhiteSpace(targetId)) throw new InvalidOperationException("Chrome did not return a target ID for the new chat.");
+
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(250, cancellationToken);
+            var tabs = await GetTabsAsync(cancellationToken);
+            var created = tabs.FirstOrDefault(t => string.Equals(t.Id, targetId, StringComparison.Ordinal));
+            if (created is not null) return created;
+        }
+        throw new TimeoutException("The new ChatGPT tab did not become ready in time.");
+    }
+
+    public async Task<bool> CloseTabAsync(ChromeTab tab, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/close/{Uri.EscapeDataString(tab.Id)}", cancellationToken);
+            return response.IsSuccessStatusCode;
+        }
+        catch { return false; }
+    }
+
+    public async Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken = default)
+    {
+        List<ChromeTab> tabs;
+        try { tabs = await GetTabsAsync(cancellationToken); }
+        catch { return; }
+
+        foreach (var tab in tabs)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await CloseTabAsync(tab, cancellationToken);
+        }
     }
 
     public async Task<bool> HideMonitorChromeAsync(CancellationToken cancellationToken = default)
@@ -80,16 +111,13 @@ public sealed class ChromeDevToolsService
             _lastKnownWindowHandle = handle;
             return ShowWindow(handle, SwHide);
         }
-
         return await SetBrowserWindowStateAsync("minimized", cancellationToken);
     }
 
     public async Task<bool> ShowMonitorChromeAsync(CancellationToken cancellationToken = default)
     {
         var handle = _lastKnownWindowHandle;
-        if (handle == IntPtr.Zero || !IsWindow(handle))
-            handle = await ResolveMonitorWindowHandleAsync(cancellationToken);
-
+        if (handle == IntPtr.Zero || !IsWindow(handle)) handle = await ResolveMonitorWindowHandleAsync(cancellationToken);
         if (handle != IntPtr.Zero)
         {
             _lastKnownWindowHandle = handle;
@@ -97,7 +125,6 @@ public sealed class ChromeDevToolsService
             ShowWindow(handle, SwRestore);
             return true;
         }
-
         return await SetBrowserWindowStateAsync("normal", cancellationToken);
     }
 
@@ -110,42 +137,24 @@ public sealed class ChromeDevToolsService
                 cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
-                    if (_monitorChromeProcess.HasExited)
-                        break;
+                    if (_monitorChromeProcess.HasExited) break;
                     _monitorChromeProcess.Refresh();
-                    if (_monitorChromeProcess.MainWindowHandle != IntPtr.Zero)
-                        return _monitorChromeProcess.MainWindowHandle;
+                    if (_monitorChromeProcess.MainWindowHandle != IntPtr.Zero) return _monitorChromeProcess.MainWindowHandle;
                 }
-                catch
-                {
-                    break;
-                }
+                catch { break; }
                 await Task.Delay(100, cancellationToken);
             }
         }
-
-        return _lastKnownWindowHandle != IntPtr.Zero && IsWindow(_lastKnownWindowHandle)
-            ? _lastKnownWindowHandle
-            : IntPtr.Zero;
+        return _lastKnownWindowHandle != IntPtr.Zero && IsWindow(_lastKnownWindowHandle) ? _lastKnownWindowHandle : IntPtr.Zero;
     }
 
     private async Task<bool> SetBrowserWindowStateAsync(string state, CancellationToken cancellationToken)
     {
-        var tabs = await GetTabsAsync(cancellationToken);
-        var tab = tabs.FirstOrDefault();
-        if (tab is null)
-            return false;
-
+        var tab = (await GetTabsAsync(cancellationToken)).FirstOrDefault();
+        if (tab is null) return false;
         var windowResult = await SendCommandAsync(tab, "Browser.getWindowForTarget", new { targetId = tab.Id }, cancellationToken);
-        if (!windowResult.TryGetProperty("windowId", out var windowIdElement))
-            return false;
-
-        var windowId = windowIdElement.GetInt32();
-        await SendCommandAsync(tab, "Browser.setWindowBounds", new
-        {
-            windowId,
-            bounds = new { windowState = state }
-        }, cancellationToken);
+        if (!windowResult.TryGetProperty("windowId", out var windowIdElement)) return false;
+        await SendCommandAsync(tab, "Browser.setWindowBounds", new { windowId = windowIdElement.GetInt32(), bounds = new { windowState = state } }, cancellationToken);
         return true;
     }
 
@@ -157,36 +166,21 @@ public sealed class ChromeDevToolsService
                 const last = messages.length ? (messages[messages.length - 1].innerText || '').trim() : '';
                 const stopButton = document.querySelector('button[data-testid="stop-button"]') ||
                     [...document.querySelectorAll('button')].find(b => /stop generating|stop|إيقاف/i.test(b.getAttribute('aria-label') || ''));
-
-                const candidates = [
-                    ...document.querySelectorAll('[role="alert"]'),
-                    ...document.querySelectorAll('[data-testid*="error"]'),
-                    ...document.querySelectorAll('[class*="error"]')
-                ];
-                const errorPattern = /something went wrong|there was an error|network error|failed to (generate|load)|unable to (generate|load)|error generating|حدث خطأ|خطأ في الشبكة|تعذر/i;
+                const candidates = [...document.querySelectorAll('[role="alert"]'), ...document.querySelectorAll('[data-testid*="error"]'), ...document.querySelectorAll('[class*="error"]')];
+                const errorPattern = /message delivery timed out|something went wrong|there was an error|network error|failed to (generate|load)|unable to (generate|load)|error generating|حدث خطأ|خطأ في الشبكة|تعذر/i;
                 let errorText = '';
                 for (const element of candidates) {
                     const text = (element.innerText || element.textContent || '').trim();
-                    if (text && errorPattern.test(text)) {
-                        errorText = text;
-                        break;
-                    }
+                    if (text && errorPattern.test(text)) { errorText = text; break; }
                 }
                 if (!errorText) {
-                    const visibleText = (document.body?.innerText || '').slice(-12000);
-                    const match = visibleText.match(/(Something went wrong[^\n]*|There was an error[^\n]*|Network error[^\n]*|Failed to generate[^\n]*|Unable to generate[^\n]*|حدث خطأ[^\n]*|خطأ في الشبكة[^\n]*|تعذر[^\n]*)/i);
+                    const visibleText = (document.body?.innerText || '').slice(-16000);
+                    const match = visibleText.match(/(Message delivery timed out[^\n]*|Something went wrong[^\n]*|There was an error[^\n]*|Network error[^\n]*|Failed to generate[^\n]*|Unable to generate[^\n]*|حدث خطأ[^\n]*|خطأ في الشبكة[^\n]*|تعذر[^\n]*)/i);
                     errorText = match ? match[1].trim() : '';
                 }
-
-                return {
-                    assistantCount: messages.length,
-                    lastAssistantText: last,
-                    isGenerating: !!stopButton,
-                    errorText
-                };
+                return { assistantCount: messages.length, lastAssistantText: last, isGenerating: !!stopButton, errorText };
             })()
             """;
-
         var value = await EvaluateAsync(tab, expression, cancellationToken);
         return new ChatPageState(
             value.TryGetProperty("assistantCount", out var count) ? count.GetInt32() : 0,
@@ -201,142 +195,69 @@ public sealed class ChromeDevToolsService
         var expression = $$"""
             (async () => {
                 const text = {{textLiteral}};
-                const editor = document.querySelector('#prompt-textarea') ||
-                    document.querySelector('textarea[placeholder]') ||
-                    document.querySelector('[contenteditable="true"]');
+                const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]') || document.querySelector('[contenteditable="true"]');
                 if (!editor) return false;
-
                 editor.focus();
                 if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
-                    const setter = Object.getOwnPropertyDescriptor(
-                        editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
-                        'value')?.set;
-                    setter?.call(editor, text);
-                    editor.dispatchEvent(new Event('input', { bubbles: true }));
-                    editor.dispatchEvent(new Event('change', { bubbles: true }));
+                    const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set;
+                    setter?.call(editor, text); editor.dispatchEvent(new Event('input', { bubbles: true })); editor.dispatchEvent(new Event('change', { bubbles: true }));
                 } else {
-                    const selection = window.getSelection();
-                    const range = document.createRange();
-                    range.selectNodeContents(editor);
-                    selection?.removeAllRanges();
-                    selection?.addRange(range);
-                    document.execCommand('insertText', false, text);
-                    editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+                    const selection = window.getSelection(); const range = document.createRange(); range.selectNodeContents(editor); selection?.removeAllRanges(); selection?.addRange(range);
+                    document.execCommand('insertText', false, text); editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
                 }
-
-                await new Promise(r => setTimeout(r, 300));
-                const sendButton = document.querySelector('button[data-testid="send-button"]') ||
-                    [...document.querySelectorAll('button')].find(b => /send|إرسال/i.test(b.getAttribute('aria-label') || ''));
+                await new Promise(r => setTimeout(r, 350));
+                const sendButton = document.querySelector('button[data-testid="send-button"]') || [...document.querySelectorAll('button')].find(b => /send|إرسال/i.test(b.getAttribute('aria-label') || ''));
                 if (!sendButton || sendButton.disabled) return false;
-                sendButton.click();
-                return true;
+                sendButton.click(); return true;
             })()
             """;
-
         var value = await EvaluateAsync(tab, expression, cancellationToken);
         return value.ValueKind == JsonValueKind.True;
     }
 
     public async Task ReloadTabAsync(ChromeTab tab, CancellationToken cancellationToken = default)
-    {
-        await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
-    }
+        => await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
 
     private async Task<JsonElement> EvaluateAsync(ChromeTab tab, string expression, CancellationToken cancellationToken)
-    {
-        return await SendCommandAsync(tab, "Runtime.evaluate", new
-        {
-            expression,
-            returnByValue = true,
-            awaitPromise = true,
-            userGesture = true
-        }, cancellationToken, extractRuntimeValue: true);
-    }
+        => await SendCommandAsync(tab, "Runtime.evaluate", new { expression, returnByValue = true, awaitPromise = true, userGesture = true }, cancellationToken, true);
 
-    private static async Task<JsonElement> SendCommandAsync(
-        ChromeTab tab,
-        string method,
-        object parameters,
-        CancellationToken cancellationToken,
-        bool extractRuntimeValue = false)
+    private static async Task<JsonElement> SendCommandAsync(ChromeTab tab, string method, object parameters, CancellationToken cancellationToken, bool extractRuntimeValue = false)
     {
-        if (string.IsNullOrWhiteSpace(tab.WebSocketDebuggerUrl))
-            throw new InvalidOperationException("The selected tab does not expose a DevTools WebSocket URL.");
-
+        if (string.IsNullOrWhiteSpace(tab.WebSocketDebuggerUrl)) throw new InvalidOperationException("The selected tab does not expose a DevTools WebSocket URL.");
         using var socket = new ClientWebSocket();
         await socket.ConnectAsync(new Uri(tab.WebSocketDebuggerUrl), cancellationToken);
-
-        var request = JsonSerializer.Serialize(new
-        {
-            id = 1,
-            method,
-            @params = parameters
-        });
-
+        var request = JsonSerializer.Serialize(new { id = 1, method, @params = parameters });
         var bytes = Encoding.UTF8.GetBytes(request);
         await socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
-
         var buffer = new byte[64 * 1024];
         using var stream = new MemoryStream();
         while (true)
         {
             var result = await socket.ReceiveAsync(buffer, cancellationToken);
-            if (result.MessageType == WebSocketMessageType.Close)
-                throw new InvalidOperationException("Chrome closed the DevTools connection.");
-
+            if (result.MessageType == WebSocketMessageType.Close) throw new InvalidOperationException("Chrome closed the DevTools connection.");
             stream.Write(buffer, 0, result.Count);
-            if (!result.EndOfMessage)
-                continue;
-
-            var payload = Encoding.UTF8.GetString(stream.ToArray());
-            stream.SetLength(0);
-            using var document = JsonDocument.Parse(payload);
-            var root = document.RootElement;
-
-            if (!root.TryGetProperty("id", out var id) || id.GetInt32() != 1)
-                continue;
-
-            if (root.TryGetProperty("error", out var error))
-                throw new InvalidOperationException($"Chrome DevTools error: {error}");
-
-            if (!extractRuntimeValue)
-                return root.TryGetProperty("result", out var commandResult)
-                    ? commandResult.Clone()
-                    : JsonDocument.Parse("null").RootElement.Clone();
-
+            if (!result.EndOfMessage) continue;
+            var payload = Encoding.UTF8.GetString(stream.ToArray()); stream.SetLength(0);
+            using var document = JsonDocument.Parse(payload); var root = document.RootElement;
+            if (!root.TryGetProperty("id", out var id) || id.GetInt32() != 1) continue;
+            if (root.TryGetProperty("error", out var error)) throw new InvalidOperationException($"Chrome DevTools error: {error}");
+            if (!extractRuntimeValue) return root.TryGetProperty("result", out var commandResult) ? commandResult.Clone() : JsonDocument.Parse("null").RootElement.Clone();
             var resultElement = root.GetProperty("result").GetProperty("result");
             if (resultElement.TryGetProperty("subtype", out var subtype) && subtype.GetString() == "error")
-            {
-                var description = resultElement.TryGetProperty("description", out var descriptionElement)
-                    ? descriptionElement.GetString()
-                    : "JavaScript evaluation failed.";
-                throw new InvalidOperationException(description);
-            }
-
-            if (!resultElement.TryGetProperty("value", out var value))
-                return JsonDocument.Parse("null").RootElement.Clone();
-
-            return value.Clone();
+                throw new InvalidOperationException(resultElement.TryGetProperty("description", out var d) ? d.GetString() : "JavaScript evaluation failed.");
+            return resultElement.TryGetProperty("value", out var value) ? value.Clone() : JsonDocument.Parse("null").RootElement.Clone();
         }
     }
 
     private static string FindChromePath()
     {
-        var candidates = new[]
-        {
+        var candidates = new[] {
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", "chrome.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe")
-        };
-
-        return candidates.FirstOrDefault(File.Exists)
-            ?? throw new FileNotFoundException("Google Chrome was not found in the standard Windows install locations.");
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe") };
+        return candidates.FirstOrDefault(File.Exists) ?? throw new FileNotFoundException("Google Chrome was not found in the standard Windows install locations.");
     }
 
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool IsWindow(IntPtr hWnd);
 }
