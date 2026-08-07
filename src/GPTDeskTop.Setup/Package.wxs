@@ -1,0 +1,49 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="GPTDeskTop"
+      Manufacturer="GPTDeskTop"
+      Version="1.3.0"
+      UpgradeCode="C1B178A2-68B4-4CD0-9AF1-42EBB27E4712"
+      Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of GPTDeskTop is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="GPTDeskTop" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="PROGRAMMENUDIR" Name="GPTDeskTop" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="GPTDeskTop" Level="1">
+      <ComponentGroupRef Id="ApplicationFiles" />
+      <ComponentRef Id="ApplicationShortcuts" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="ApplicationFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.PayloadDir)\**" Exclude="**\*.pdb;**\appdata.db" />
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <DirectoryRef Id="PROGRAMMENUDIR">
+      <Component Id="ApplicationShortcuts" Guid="7C637DE4-ED90-49D4-85E9-11410D19A893">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="GPTDeskTop"
+                  Description="GPTDeskTop Multi-Tab ChatGPT Monitor"
+                  Target="[INSTALLFOLDER]GPTDeskTop.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\GPTDeskTop"
+                       Name="Installed"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>
