@@ -1,7 +1,7 @@
 # GPTDeskTop Project Implementation Plan
 
 ## Current Objective
-Operate GPTDeskTop as a persistent multi-tab ChatGPT monitor manager. The application enumerates open debuggable Chrome tabs, allows any number of tabs to be added as saved monitors, gives every monitor its own automatic reply and enabled state, runs each monitor independently and concurrently, notifies the operator from the Windows taskbar whenever ChatGPT produces a new response, automatically recovers a monitored tab when ChatGPT returns an error response, and supports a persisted configurable delay before each automatic reply is sent.
+Operate GPTDeskTop as a persistent multi-tab ChatGPT monitor manager. The application enumerates open debuggable Chrome tabs, allows any number of tabs to be added as saved monitors, gives every monitor its own automatic reply and enabled state, runs each monitor independently and concurrently, notifies the operator from the Windows taskbar whenever ChatGPT produces a new response, automatically recovers a monitored tab when ChatGPT returns an error response, supports a persisted configurable delay before each automatic reply is sent, displays a visible application version in the home window, and can hide/show the dedicated monitor Chrome window without stopping monitoring.
 
 ## Architecture
 - **Open Tabs:** Chrome CDP discovery exposes Tab ID, Title and URL.
@@ -14,6 +14,8 @@ Operate GPTDeskTop as a persistent multi-tab ChatGPT monitor manager. The applic
 - **Notifications:** `TrayNotificationService` shows a Windows taskbar/tray balloon for every completed response and persists the chosen display duration in `AppSettings`.
 - **ChatGPT Error Recovery:** page/response errors are detected, stored before any recovery action, surfaced as an error balloon, and the affected tab alone is refreshed through CDP `Page.reload`.
 - **Reply Delay:** `ReplyDelaySeconds` is stored in `AppSettings`, loaded immediately before every send, and can be changed at runtime from the Settings dialog without restarting monitors.
+- **Version Identity:** project/assembly/file version is `1.2.0` and the home window/footer reads the assembly version at runtime.
+- **Chrome Visibility:** `Hide Chrome`/`Show Chrome` controls operate on the dedicated monitor Chrome window while CDP monitoring continues; the preferred hidden state is stored as `ChromeHidden` in `AppSettings`.
 
 ## Task Tracking Table
 
@@ -27,11 +29,13 @@ Operate GPTDeskTop as a persistent multi-tab ChatGPT monitor manager. The applic
 | DB-006 | Add Delete Selected Log and Clear History persistence actions | Backend / UI | Medium | Done | `Data/LocalDatabase.cs`, `UI/MainForm.cs` |
 | DB-007 | Persist notification balloon duration with default migration value | Backend / DBA | Medium | Done | `Data/LocalDatabase.cs`, `AppSettings` |
 | DB-008 | Persist `ReplyDelaySeconds` with default value 3 seconds and typed integer settings reader | Backend / DBA | High | Done | `Data/LocalDatabase.cs`, `AppSettings` |
+| DB-009 | Persist dedicated monitor Chrome hidden/visible preference as `ChromeHidden` | Backend / DBA | Medium | Done | `Data/LocalDatabase.cs`, `AppSettings` |
 | CHR-001 | Launch dedicated monitor Chrome profile with CDP | Browser Integration | High | Done | `Services/ChromeDevToolsService.cs` |
 | CHR-002 | Enumerate open Chrome tabs with ID/Title/URL | Browser Integration | High | Done | `Services/ChromeDevToolsService.cs` |
 | CHR-003 | Read ChatGPT assistant state and send prompt through DOM/CDP | Browser Integration | High | Done | `Services/ChromeDevToolsService.cs` |
 | CHR-004 | Detect visible ChatGPT page error messages and return error text with page state | Browser Integration | High | Done | `Services/ChromeDevToolsService.cs`, `Models/Models.cs` |
 | CHR-005 | Reload one selected Chrome tab through CDP `Page.reload` | Browser Integration | High | Done | `Services/ChromeDevToolsService.cs` |
+| CHR-006 | Hide/show the dedicated monitor Chrome window without terminating CDP or monitors | Browser Integration / UI | High | Done | `Services/ChromeDevToolsService.cs`, `UI/MainForm.cs` |
 | MON-001 | Replace single worker with independent worker dictionary keyed by Monitor ID | Backend Engineer | High | Done | `Services/ChatGptMonitorService.cs` |
 | MON-002 | Start/stop one monitor without affecting other monitors | Backend Engineer | High | Done | `Services/ChatGptMonitorService.cs` |
 | MON-003 | Start all enabled / stop all monitor workers | Backend / UI | High | Done | `Services/ChatGptMonitorService.cs`, `UI/MainForm.cs` |
@@ -52,6 +56,9 @@ Operate GPTDeskTop as a persistent multi-tab ChatGPT monitor manager. The applic
 | UI-007 | Start All Enabled / Stop All controls | UI / Backend | High | Done | `UI/MainForm.cs` |
 | UI-008 | Monitor-aware stored history grid | UI Developer | Medium | Done | `UI/MainForm.cs` |
 | UI-009 | Add Settings dialog for reply delay and balloon duration, persisted immediately | UI / Backend | High | Done | `UI/SettingsForm.cs`, `Services/TrayNotificationService.cs` |
+| UI-010 | Display assembly version in title bar and bold footer on home window | UI / Release Engineer | Medium | Done | `UI/MainForm.cs`, `GPTDeskTop.csproj` |
+| UI-011 | Add Hide Chrome / Show Chrome actions and preserve state across launches | UI / Browser Integration | High | Done | `UI/MainForm.cs`, `ChromeDevToolsService.cs`, `LocalDatabase.cs` |
+| REL-001 | Set project, assembly, and file version to 1.2.0 | Release Engineer | Medium | Done | `GPTDeskTop.csproj` |
 | QA-001 | Build with .NET 8 SDK on Windows | QA Engineer | High | Not Started | Whole solution |
 | QA-002 | Run 2+ ChatGPT tabs simultaneously and verify replies never cross tabs | QA Engineer | High | Not Started | Runtime |
 | QA-003 | Restart app/Chrome and verify saved monitors reload and URL fallback reconnects | QA Engineer | High | Not Started | Runtime / DB |
@@ -62,6 +69,8 @@ Operate GPTDeskTop as a persistent multi-tab ChatGPT monitor manager. The applic
 | QA-008 | Force a ChatGPT error and verify response is stored before Page.reload and only that tab refreshes | QA Engineer | High | Not Started | Runtime / DB / Chrome |
 | QA-009 | Set reply delay to 0, 3, 10, and 300 seconds and verify send timing plus Stop cancellation | QA Engineer | High | Not Started | Runtime / Settings |
 | QA-010 | Change reply delay while monitors are running and verify next send uses the new value without restart | QA Engineer | High | Not Started | Runtime / DB |
+| QA-011 | Hide monitor Chrome while 2+ monitors run and verify CDP polling/replies continue | QA Engineer | High | Not Started | Runtime / Chrome |
+| QA-012 | Restart app, verify version 1.2.0 is visible and saved ChromeHidden preference is reapplied on next launch | QA Engineer | Medium | Not Started | Runtime / UI / DB |
 
 ## Acceptance Criteria
 - Any number of open Chrome tabs can be added as saved monitors.
@@ -82,3 +91,6 @@ Operate GPTDeskTop as a persistent multi-tab ChatGPT monitor manager. The applic
 - Reply delay is configurable from 0 to 300 seconds, persisted as `ReplyDelaySeconds`, and applied before every automatic send.
 - Stopping a monitor during the delay cancels the pending send.
 - Before sending after a delay, GPTDeskTop rechecks the tab; if the response changed or generation restarted, the pending auto reply is cancelled and logged as `SendDelayCancelled`.
+- Home window visibly shows `GPTDeskTop v1.2.0` from the compiled assembly version.
+- Hide Chrome removes/minimizes the dedicated monitor Chrome window while background monitoring continues; Show Chrome restores it.
+- `ChromeHidden` survives application restart and is reapplied after launching Monitor Chrome.
