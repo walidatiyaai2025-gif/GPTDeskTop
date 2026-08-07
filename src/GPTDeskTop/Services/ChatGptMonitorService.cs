@@ -169,6 +169,26 @@ public sealed class ChatGptMonitorService
                         continue;
                     }
 
+                    var replyDelaySeconds = await _database.GetIntSettingAsync(
+                        "ReplyDelaySeconds", 3, 0, 300, cancellationToken);
+
+                    if (replyDelaySeconds > 0)
+                    {
+                        Activity?.Invoke(monitor.Id, $"{prefix} Waiting {replyDelaySeconds} second(s) before sending auto reply...");
+                        await Task.Delay(TimeSpan.FromSeconds(replyDelaySeconds), cancellationToken);
+
+                        var recheck = await _chrome.GetChatStateAsync(tab, cancellationToken);
+                        var latestText = GetEffectiveResponse(recheck);
+                        if (recheck.IsGenerating || !string.Equals(latestText, text, StringComparison.Ordinal))
+                        {
+                            Activity?.Invoke(monitor.Id, $"{prefix} Auto reply cancelled because page state changed during send delay.");
+                            await _database.AddLogAsync(
+                                "System", monitor.AutoReply, latestText, "SendDelayCancelled", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+                            HistoryChanged?.Invoke();
+                            continue;
+                        }
+                    }
+
                     var sent = await _chrome.SendChatMessageAsync(tab, monitor.AutoReply, cancellationToken);
                     if (sent)
                     {
