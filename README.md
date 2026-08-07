@@ -2,80 +2,86 @@
 
 .NET 8 WinForms persistent multi-tab monitor for ChatGPT pages opened in a dedicated Chrome/CDP session.
 
-Current application version: **1.4.0**.
+Current application version: **1.5.0**.
 
 ## Solution structure
 
-`GPTDeskTop.sln` now contains exactly three SDK-style projects that Visual Studio 2022 can open without WiX support:
+`GPTDeskTop.sln` contains exactly three SDK-style projects supported directly by Visual Studio 2022:
 
-1. `GPTDeskTop` - the main .NET 8 WinForms application.
-2. `GPTDeskTop.Publish` - builds a `win-x64` self-contained, single-file application payload under `Output\Publish`.
-3. `GPTDeskTop.Setup` - embeds that payload and produces the final standalone installer `Output\Setup\GPTDeskTop-Setup.exe`.
-
-The previous WiX `.wixproj` projects were removed because they appeared as Unsupported in Visual Studio environments without the WiX extension.
+1. `GPTDeskTop` - main .NET 8 WinForms application.
+2. `GPTDeskTop.Publish` - produces a `win-x64` self-contained single-file payload under `Output\Publish`.
+3. `GPTDeskTop.Setup` - embeds the payload and produces `Output\Setup\GPTDeskTop-Setup.exe`.
 
 ## Build Setup from Visual Studio
 
-1. Pull the latest `main` branch.
-2. Open `GPTDeskTop.sln` in Visual Studio 2022.
-3. Select `Release | x64`.
-4. Choose **Build > Build Solution**.
-5. Project dependencies build in this order:
-   - `GPTDeskTop`
-   - `GPTDeskTop.Publish`
-   - `GPTDeskTop.Setup`
-6. Final installer:
+Select `Release | x64`, then **Build > Build Solution**. Final installer:
 
 ```text
 Output\Setup\GPTDeskTop-Setup.exe
 ```
 
-Published application payload:
+The target PC does not need a separate .NET 8 runtime installation.
+
+## Multi-tab monitoring
+
+Every saved monitor persists its own Auto Reply, Reply Delay (`0-300` seconds), Monitor Timer (`1-60` seconds), Enabled state, Tab ID, title and URL. Selecting multiple open tabs opens a separate Monitor Settings dialog for each tab.
+
+Default values for newly added monitors are configured in **Settings** and stored in SQLite:
+
+- Default Auto Reply
+- Default Monitor Delay
+- Default Monitor Timer
+- Timeout Recovery Message
+- Balloon Duration
+- Balloon Sound Enabled
+- Balloon Sound Type
+
+## Message delivery timeout recovery
+
+The ChatGPT page state explicitly detects errors such as:
 
 ```text
-Output\Publish\GPTDeskTop.exe
-Output\Publish\appsettings.json
-Output\Publish\Version.txt
-Output\Publish\ReleaseNotes.txt
+Message delivery timed out. Please try again.
 ```
 
-Both the application payload and final Setup EXE are `win-x64` self-contained. The target Windows PC does not need a separate .NET 8 runtime installation.
+When this condition is detected:
 
-## Setup behavior
+1. The exact error text is saved to `MessageLogs` first.
+2. GPTDeskTop opens a new ChatGPT chat tab.
+3. It sends the configured Timeout Recovery Message (default `كمل`).
+4. The existing Saved Monitor record is moved to the new tab, preserving the same Monitor ID, per-tab Delay and Timer.
+5. The new tab immediately continues under the existing background monitor worker.
+6. The old timed-out tab is closed.
+7. Recovery and outbound message operations are stored in history.
 
-The installer installs GPTDeskTop for the current Windows user under:
+Other ChatGPT errors continue to use the normal single-tab refresh recovery flow.
 
-```text
-%LOCALAPPDATA%\Programs\GPTDeskTop
-```
+## Chrome lifecycle
 
-It creates Desktop and Start Menu shortcuts, registers GPTDeskTop in Windows Apps/Uninstall information, and copies an uninstall-capable setup executable into the install directory. Existing `appdata.db` data is not overwritten by upgrades and is preserved during uninstall.
+**Hide Chrome** hides the dedicated monitor Chrome while background monitoring continues. **Show Chrome** restores it.
 
-## Multi-tab workflow
+When GPTDeskTop itself closes, all tabs in the dedicated Monitor Chrome session are closed automatically after monitor workers stop.
 
-GPTDeskTop supports any number of independent saved monitors.
+## Fluent UI and context menus
 
-1. Click **Launch Monitor Chrome**.
-2. Open/sign in to ChatGPT and open every conversation you want to monitor.
-3. Click **Refresh Chrome Tabs**.
-4. Select one or more open tabs with Ctrl/Shift.
-5. Click **Add Selected Tab(s)**.
-6. A **Monitor Settings** dialog opens separately for every selected tab.
-7. Configure that tab's Auto Reply, Delay Before Send, Monitor Timer and Enabled state.
-8. Use **Start Selected** or **Start All Enabled**.
+The WinForms UI uses a Fluent/WinUI-inspired visual system: Segoe UI Variable typography, flat surfaces, accent actions, modern grid headers/selection and consistent primary/danger buttons.
 
-Every monitor persists its own Auto Reply, Reply Delay (`0-300` seconds), Monitor Timer (`1-60` seconds), Enabled state, Tab ID, title and exact URL.
+All grids expose right-click context menus:
 
-## Notifications, recovery and Chrome visibility
+- Open Tabs: Add selected tab(s), Refresh, Close selected tab.
+- Saved Monitors: Start, Stop, Edit Settings, Delete Monitor, Add selected open tab.
+- History: Refresh, Delete selected log, Clear all history.
 
-Every completed ChatGPT reply is saved to SQLite and shown as a Windows tray balloon. Error responses are saved first, then only the affected Chrome tab is refreshed. **Hide Chrome** hides the dedicated monitor Chrome window while monitoring continues; **Show Chrome** restores it.
+## Notifications
+
+Every completed ChatGPT response produces a Windows taskbar/tray balloon and is persisted in SQLite. Notification duration and application notification sound can be configured from Settings. Error replies use an error-style balloon and alert sound.
 
 ## Local database
 
-`appdata.db` is automatically created beside the installed executable and upgraded in place.
+`appdata.db` is automatically created beside the executable and upgraded in place.
 
-- `SavedMonitors`: tab identity, Auto Reply, per-tab ReplyDelaySeconds, per-tab TimerSeconds and Enabled state.
-- `AppSettings`: global application settings.
+- `SavedMonitors`: tab identity, Auto Reply, per-tab Delay/Timer and Enabled state.
+- `AppSettings`: defaults, notification settings, recovery message and Chrome preferences.
 - `MessageLogs`: inbound/outbound/system history with MonitorId, TabId and TabTitle.
 
 ## Developer run
