@@ -50,24 +50,25 @@ public sealed class ChromeDevToolsService
         return tabs.OrderBy(t => t.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
-    public Process LaunchMonitorChrome()
+    public Process LaunchMonitorChrome(string? startUrl = null)
     {
         var chromePath = FindChromePath();
         var profilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GPTDeskTop", "ChromeProfile");
         Directory.CreateDirectory(profilePath);
-        var arguments = $"--remote-debugging-port={_config.DebuggingPort} --user-data-dir=\"{profilePath}\" --new-window \"{_config.StartUrl}\"";
+        var url = string.IsNullOrWhiteSpace(startUrl) ? _config.StartUrl : startUrl;
+        var arguments = $"--remote-debugging-port={_config.DebuggingPort} --user-data-dir=\"{profilePath}\" --new-window \"{url}\"";
         _monitorChromeProcess = Process.Start(new ProcessStartInfo { FileName = chromePath, Arguments = arguments, UseShellExecute = true })
             ?? throw new InvalidOperationException("Chrome could not be started.");
         return _monitorChromeProcess;
     }
 
-    public async Task<ChromeTab> CreateNewChatTabAsync(CancellationToken cancellationToken = default)
+    public async Task<ChromeTab> CreateTabAsync(string url, CancellationToken cancellationToken = default)
     {
         var existing = await GetTabsAsync(cancellationToken);
         var controlTab = existing.FirstOrDefault() ?? throw new InvalidOperationException("Monitor Chrome has no controllable page.");
-        var result = await SendCommandAsync(controlTab, "Target.createTarget", new { url = _config.StartUrl }, cancellationToken);
+        var result = await SendCommandAsync(controlTab, "Target.createTarget", new { url }, cancellationToken);
         var targetId = result.TryGetProperty("targetId", out var id) ? id.GetString() : null;
-        if (string.IsNullOrWhiteSpace(targetId)) throw new InvalidOperationException("Chrome did not return a target ID for the new chat.");
+        if (string.IsNullOrWhiteSpace(targetId)) throw new InvalidOperationException("Chrome did not return a target ID for the new tab.");
 
         for (var attempt = 0; attempt < 40; attempt++)
         {
@@ -77,8 +78,11 @@ public sealed class ChromeDevToolsService
             var created = tabs.FirstOrDefault(t => string.Equals(t.Id, targetId, StringComparison.Ordinal));
             if (created is not null) return created;
         }
-        throw new TimeoutException("The new ChatGPT tab did not become ready in time.");
+        throw new TimeoutException("The new Chrome tab did not become ready in time.");
     }
+
+    public Task<ChromeTab> CreateNewChatTabAsync(CancellationToken cancellationToken = default)
+        => CreateTabAsync(_config.StartUrl, cancellationToken);
 
     public async Task<bool> CloseTabAsync(ChromeTab tab, CancellationToken cancellationToken = default)
     {
@@ -95,7 +99,6 @@ public sealed class ChromeDevToolsService
         List<ChromeTab> tabs;
         try { tabs = await GetTabsAsync(cancellationToken); }
         catch { return; }
-
         foreach (var tab in tabs)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -105,31 +108,30 @@ public sealed class ChromeDevToolsService
 
     public async Task<bool> HideMonitorChromeAsync(CancellationToken cancellationToken = default)
     {
-        // CDP window minimization is intentionally the primary path. Hiding the native
-        // Chrome HWND can cause Chrome to stop exposing/refreshing the expected window
-        // state on some systems, while minimized windows continue to execute normally.
         var changed = await SetAllBrowserWindowsStateAsync("minimized", cancellationToken);
-        if (changed) return true;
-
         var handle = await ResolveMonitorWindowHandleAsync(cancellationToken);
-        if (handle == IntPtr.Zero) return false;
-        _lastKnownWindowHandle = handle;
-        return ShowWindow(handle, SwHide);
+        if (handle != IntPtr.Zero)
+        {
+            _lastKnownWindowHandle = handle;
+            ShowWindow(handle, SwHide);
+            changed = true;
+        }
+        return changed;
     }
 
     public async Task<bool> ShowMonitorChromeAsync(CancellationToken cancellationToken = default)
     {
         var changed = await SetAllBrowserWindowsStateAsync("normal", cancellationToken);
-        if (changed) return true;
-
         var handle = _lastKnownWindowHandle;
         if (handle == IntPtr.Zero || !IsWindow(handle)) handle = await ResolveMonitorWindowHandleAsync(cancellationToken);
-        if (handle == IntPtr.Zero) return false;
-
-        _lastKnownWindowHandle = handle;
-        ShowWindow(handle, SwShow);
-        ShowWindow(handle, SwRestore);
-        return true;
+        if (handle != IntPtr.Zero)
+        {
+            _lastKnownWindowHandle = handle;
+            ShowWindow(handle, SwShow);
+            ShowWindow(handle, SwRestore);
+            changed = true;
+        }
+        return changed;
     }
 
     private async Task<IntPtr> ResolveMonitorWindowHandleAsync(CancellationToken cancellationToken)
@@ -165,8 +167,7 @@ public sealed class ChromeDevToolsService
             try
             {
                 var windowResult = await SendCommandAsync(tab, "Browser.getWindowForTarget", new { targetId = tab.Id }, cancellationToken);
-                if (windowResult.TryGetProperty("windowId", out var windowIdElement))
-                    windowIds.Add(windowIdElement.GetInt32());
+                if (windowResult.TryGetProperty("windowId", out var windowIdElement)) windowIds.Add(windowIdElement.GetInt32());
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -175,16 +176,11 @@ public sealed class ChromeDevToolsService
         }
 
         var changed = false;
-        var controlTab = tabs[0];
         foreach (var windowId in windowIds)
         {
             try
             {
-                await SendCommandAsync(controlTab, "Browser.setWindowBounds", new
-                {
-                    windowId,
-                    bounds = new { windowState = state }
-                }, cancellationToken);
+                await SendCommandAsync(tabs[0], "Browser.setWindowBounds", new { windowId, bounds = new { windowState = state } }, cancellationToken);
                 changed = true;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -192,7 +188,6 @@ public sealed class ChromeDevToolsService
                 ExceptionLogService.Log(ex, $"ChromeDevToolsService.SetWindowState({state})");
             }
         }
-
         return changed;
     }
 
@@ -257,7 +252,23 @@ public sealed class ChromeDevToolsService
         => await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
 
     private async Task<JsonElement> EvaluateAsync(ChromeTab tab, string expression, CancellationToken cancellationToken)
-        => await SendCommandAsync(tab, "Runtime.evaluate", new { expression, returnByValue = true, awaitPromise = true, userGesture = true }, cancellationToken, true);
+    {
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            try
+            {
+                return await SendCommandAsync(tab, "Runtime.evaluate", new { expression, returnByValue = true, awaitPromise = true, userGesture = true }, cancellationToken, true);
+            }
+            catch (InvalidOperationException ex) when (IsTransientPromiseCollected(ex) && attempt < 3)
+            {
+                await Task.Delay(120 * attempt, cancellationToken);
+            }
+        }
+        throw new InvalidOperationException("Runtime.evaluate failed after transient retry attempts.");
+    }
+
+    private static bool IsTransientPromiseCollected(Exception ex)
+        => ex.Message.Contains("Promise was collected", StringComparison.OrdinalIgnoreCase);
 
     private static async Task<JsonElement> SendCommandAsync(ChromeTab tab, string method, object parameters, CancellationToken cancellationToken, bool extractRuntimeValue = false)
     {
