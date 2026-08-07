@@ -20,6 +20,10 @@ internal static class Program
             var config = AppConfig.Load();
             database = new LocalDatabase(config.Database.FileName);
             database.InitializeAsync().GetAwaiter().GetResult();
+
+            if (database.GetSettingAsync("NoResponseRefreshSeconds").GetAwaiter().GetResult() is null)
+                database.SetSettingAsync("NoResponseRefreshSeconds", "180").GetAwaiter().GetResult();
+
             ExceptionLogService.Configure(database);
 
             Application.ThreadException += (_, e) =>
