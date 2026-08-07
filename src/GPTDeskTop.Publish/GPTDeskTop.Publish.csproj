@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>GPTDeskTop.Publish</AssemblyName>
+    <PublishRoot>$(MSBuildProjectDirectory)\..\..\Output\Publish</PublishRoot>
+    <AppProject>$(MSBuildProjectDirectory)\..\GPTDeskTop\GPTDeskTop.csproj</AppProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\GPTDeskTop\GPTDeskTop.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <Target Name="PreparePublishedApplication" AfterTargets="Build">
+    <RemoveDir Directories="$(PublishRoot)" Condition="Exists('$(PublishRoot)')" />
+    <MakeDir Directories="$(PublishRoot)" />
+    <Exec Command="dotnet publish &quot;$(AppProject)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o &quot;$(PublishRoot)&quot;" />
+    <WriteLinesToFile File="$(PublishRoot)\Version.txt" Lines="GPTDeskTop v1.4.0&#x0D;&#x0A;Runtime: win-x64 self-contained&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
+    <WriteLinesToFile File="$(PublishRoot)\ReleaseNotes.txt" Lines="GPTDeskTop v1.4.0&#x0D;&#x0A;- Three-project Visual Studio solution&#x0D;&#x0A;- SDK-style publish and setup projects&#x0D;&#x0A;- Per-monitor reply delay and monitor timer settings&#x0D;&#x0A;- Chrome hide/show and tray notifications" Overwrite="true" Encoding="UTF-8" />
+    <Message Text="GPTDeskTop publish payload created at $(PublishRoot)" Importance="high" />
+  </Target>
+</Project>
