@@ -105,27 +105,31 @@ public sealed class ChromeDevToolsService
 
     public async Task<bool> HideMonitorChromeAsync(CancellationToken cancellationToken = default)
     {
+        // CDP window minimization is intentionally the primary path. Hiding the native
+        // Chrome HWND can cause Chrome to stop exposing/refreshing the expected window
+        // state on some systems, while minimized windows continue to execute normally.
+        var changed = await SetAllBrowserWindowsStateAsync("minimized", cancellationToken);
+        if (changed) return true;
+
         var handle = await ResolveMonitorWindowHandleAsync(cancellationToken);
-        if (handle != IntPtr.Zero)
-        {
-            _lastKnownWindowHandle = handle;
-            return ShowWindow(handle, SwHide);
-        }
-        return await SetBrowserWindowStateAsync("minimized", cancellationToken);
+        if (handle == IntPtr.Zero) return false;
+        _lastKnownWindowHandle = handle;
+        return ShowWindow(handle, SwHide);
     }
 
     public async Task<bool> ShowMonitorChromeAsync(CancellationToken cancellationToken = default)
     {
+        var changed = await SetAllBrowserWindowsStateAsync("normal", cancellationToken);
+        if (changed) return true;
+
         var handle = _lastKnownWindowHandle;
         if (handle == IntPtr.Zero || !IsWindow(handle)) handle = await ResolveMonitorWindowHandleAsync(cancellationToken);
-        if (handle != IntPtr.Zero)
-        {
-            _lastKnownWindowHandle = handle;
-            ShowWindow(handle, SwShow);
-            ShowWindow(handle, SwRestore);
-            return true;
-        }
-        return await SetBrowserWindowStateAsync("normal", cancellationToken);
+        if (handle == IntPtr.Zero) return false;
+
+        _lastKnownWindowHandle = handle;
+        ShowWindow(handle, SwShow);
+        ShowWindow(handle, SwRestore);
+        return true;
     }
 
     private async Task<IntPtr> ResolveMonitorWindowHandleAsync(CancellationToken cancellationToken)
@@ -148,14 +152,48 @@ public sealed class ChromeDevToolsService
         return _lastKnownWindowHandle != IntPtr.Zero && IsWindow(_lastKnownWindowHandle) ? _lastKnownWindowHandle : IntPtr.Zero;
     }
 
-    private async Task<bool> SetBrowserWindowStateAsync(string state, CancellationToken cancellationToken)
+    private async Task<bool> SetAllBrowserWindowsStateAsync(string state, CancellationToken cancellationToken)
     {
-        var tab = (await GetTabsAsync(cancellationToken)).FirstOrDefault();
-        if (tab is null) return false;
-        var windowResult = await SendCommandAsync(tab, "Browser.getWindowForTarget", new { targetId = tab.Id }, cancellationToken);
-        if (!windowResult.TryGetProperty("windowId", out var windowIdElement)) return false;
-        await SendCommandAsync(tab, "Browser.setWindowBounds", new { windowId = windowIdElement.GetInt32(), bounds = new { windowState = state } }, cancellationToken);
-        return true;
+        List<ChromeTab> tabs;
+        try { tabs = await GetTabsAsync(cancellationToken); }
+        catch { return false; }
+        if (tabs.Count == 0) return false;
+
+        var windowIds = new HashSet<int>();
+        foreach (var tab in tabs)
+        {
+            try
+            {
+                var windowResult = await SendCommandAsync(tab, "Browser.getWindowForTarget", new { targetId = tab.Id }, cancellationToken);
+                if (windowResult.TryGetProperty("windowId", out var windowIdElement))
+                    windowIds.Add(windowIdElement.GetInt32());
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                ExceptionLogService.Log(ex, "ChromeDevToolsService.GetWindowForTarget", null, tab.Id, tab.Title);
+            }
+        }
+
+        var changed = false;
+        var controlTab = tabs[0];
+        foreach (var windowId in windowIds)
+        {
+            try
+            {
+                await SendCommandAsync(controlTab, "Browser.setWindowBounds", new
+                {
+                    windowId,
+                    bounds = new { windowState = state }
+                }, cancellationToken);
+                changed = true;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                ExceptionLogService.Log(ex, $"ChromeDevToolsService.SetWindowState({state})");
+            }
+        }
+
+        return changed;
     }
 
     public async Task<ChatPageState> GetChatStateAsync(ChromeTab tab, CancellationToken cancellationToken = default)
@@ -251,13 +289,19 @@ public sealed class ChromeDevToolsService
 
     private static string FindChromePath()
     {
-        var candidates = new[] {
+        var candidates = new[]
+        {
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", "chrome.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe") };
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe")
+        };
         return candidates.FirstOrDefault(File.Exists) ?? throw new FileNotFoundException("Google Chrome was not found in the standard Windows install locations.");
     }
 
-    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindow(IntPtr hWnd);
 }
