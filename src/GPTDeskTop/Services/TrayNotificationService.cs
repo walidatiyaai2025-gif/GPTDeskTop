@@ -1,3 +1,4 @@
+using System.Media;
 using GPTDeskTop.Data;
 using GPTDeskTop.UI;
 
@@ -10,13 +11,13 @@ public sealed class TrayNotificationService : IDisposable
     private readonly NotifyIcon _notifyIcon;
     private readonly ToolStripMenuItem _durationMenu;
     private int _durationSeconds = 8;
+    private bool _soundEnabled = true;
+    private string _soundType = "Asterisk";
     private bool _disposed;
 
     public TrayNotificationService(ChatGptMonitorService monitor, LocalDatabase database)
     {
-        _monitor = monitor;
-        _database = database;
-
+        _monitor = monitor; _database = database;
         _durationMenu = new ToolStripMenuItem("Balloon duration");
         foreach (var seconds in new[] { 3, 5, 8, 10, 15, 30 })
         {
@@ -24,70 +25,56 @@ public sealed class TrayNotificationService : IDisposable
             item.Click += async (_, _) => await SetDurationAsync(seconds);
             _durationMenu.DropDownItems.Add(item);
         }
-
         var settingsItem = new ToolStripMenuItem("Settings...");
         settingsItem.Click += async (_, _) => await OpenSettingsAsync();
-
-        var menu = new ContextMenuStrip();
+        var menu = FluentTheme.CreateMenu();
         menu.Items.Add(new ToolStripMenuItem("GPTDeskTop notifications") { Enabled = false });
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(settingsItem);
-        menu.Items.Add(_durationMenu);
-
-        _notifyIcon = new NotifyIcon
-        {
-            Icon = SystemIcons.Information,
-            Text = "GPTDeskTop Chat Monitor",
-            Visible = true,
-            ContextMenuStrip = menu
-        };
-
+        menu.Items.Add(new ToolStripSeparator()); menu.Items.Add(settingsItem); menu.Items.Add(_durationMenu);
+        _notifyIcon = new NotifyIcon { Icon = SystemIcons.Information, Text = "GPTDeskTop Chat Monitor", Visible = true, ContextMenuStrip = menu };
         _monitor.ResponseReceived += OnResponseReceived;
     }
 
-    public async Task InitializeAsync()
+    public async Task InitializeAsync() => await ReloadSettingsAsync();
+
+    private async Task ReloadSettingsAsync()
     {
         _durationSeconds = await _database.GetIntSettingAsync("NotificationDurationSeconds", 8, 1, 60);
+        _soundEnabled = !string.Equals(await _database.GetSettingAsync("NotificationSoundEnabled"), "0", StringComparison.Ordinal);
+        _soundType = await _database.GetSettingAsync("NotificationSoundType") ?? "Asterisk";
         UpdateMenuChecks();
     }
 
     private void OnResponseReceived(long monitorId, string title, string response, bool isError)
     {
-        if (_disposed)
-            return;
-
+        if (_disposed) return;
         try
         {
-            var caption = isError
-                ? $"GPTDeskTop - ERROR - Monitor #{monitorId}"
-                : $"GPTDeskTop - Reply - Monitor #{monitorId}";
-
+            if (_soundEnabled) PlaySound(isError ? "Exclamation" : _soundType);
+            var caption = isError ? $"GPTDeskTop - ERROR - Monitor #{monitorId}" : $"GPTDeskTop - Reply - Monitor #{monitorId}";
             var safeTitle = string.IsNullOrWhiteSpace(title) ? "ChatGPT" : title.Trim();
-            var body = $"{safeTitle}\n{Shorten(response, 220)}";
-            var icon = isError ? ToolTipIcon.Error : ToolTipIcon.Info;
-            _notifyIcon.ShowBalloonTip(_durationSeconds * 1000, caption, body, icon);
+            _notifyIcon.ShowBalloonTip(_durationSeconds * 1000, caption, $"{safeTitle}\n{Shorten(response, 220)}", isError ? ToolTipIcon.Error : ToolTipIcon.Info);
         }
-        catch
+        catch { }
+    }
+
+    private static void PlaySound(string type)
+    {
+        switch (type.ToLowerInvariant())
         {
-            // Notifications must never interrupt monitor workers.
+            case "exclamation": SystemSounds.Exclamation.Play(); break;
+            case "beep": SystemSounds.Beep.Play(); break;
+            case "hand": SystemSounds.Hand.Play(); break;
+            default: SystemSounds.Asterisk.Play(); break;
         }
     }
 
     private async Task OpenSettingsAsync()
     {
         using var form = new SettingsForm(_database);
-        if (form.ShowDialog() != DialogResult.OK)
-            return;
-
-        _durationSeconds = await _database.GetIntSettingAsync("NotificationDurationSeconds", 8, 1, 60);
-        var replyDelay = await _database.GetIntSettingAsync("ReplyDelaySeconds", 3, 0, 300);
-        UpdateMenuChecks();
-
-        _notifyIcon.ShowBalloonTip(
-            Math.Min(_durationSeconds, 5) * 1000,
-            "GPTDeskTop Settings Saved",
-            $"Reply delay: {replyDelay} second(s). Notification duration: {_durationSeconds} second(s).",
-            ToolTipIcon.Info);
+        if (form.ShowDialog() != DialogResult.OK) return;
+        await ReloadSettingsAsync();
+        if (_soundEnabled) PlaySound(_soundType);
+        _notifyIcon.ShowBalloonTip(Math.Min(_durationSeconds, 5) * 1000, "GPTDeskTop", "Settings saved.", ToolTipIcon.Info);
     }
 
     private async Task SetDurationAsync(int seconds)
@@ -95,20 +82,12 @@ public sealed class TrayNotificationService : IDisposable
         _durationSeconds = Math.Clamp(seconds, 1, 60);
         await _database.SetSettingAsync("NotificationDurationSeconds", _durationSeconds.ToString());
         UpdateMenuChecks();
-        _notifyIcon.ShowBalloonTip(
-            Math.Min(_durationSeconds, 5) * 1000,
-            "GPTDeskTop",
-            $"Notification duration saved: {_durationSeconds} seconds.",
-            ToolTipIcon.Info);
     }
 
     private void UpdateMenuChecks()
     {
         foreach (ToolStripItem raw in _durationMenu.DropDownItems)
-        {
-            if (raw is ToolStripMenuItem item && item.Tag is int seconds)
-                item.Checked = seconds == _durationSeconds;
-        }
+            if (raw is ToolStripMenuItem item && item.Tag is int seconds) item.Checked = seconds == _durationSeconds;
     }
 
     private static string Shorten(string text, int max)
@@ -119,11 +98,7 @@ public sealed class TrayNotificationService : IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
-            return;
-        _disposed = true;
-        _monitor.ResponseReceived -= OnResponseReceived;
-        _notifyIcon.Visible = false;
-        _notifyIcon.Dispose();
+        if (_disposed) return;
+        _disposed = true; _monitor.ResponseReceived -= OnResponseReceived; _notifyIcon.Visible = false; _notifyIcon.Dispose();
     }
 }
