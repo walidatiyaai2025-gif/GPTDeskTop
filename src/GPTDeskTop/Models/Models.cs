@@ -22,6 +22,8 @@ public sealed class SavedMonitor
     public string Title { get; set; } = string.Empty;
     public string Url { get; set; } = string.Empty;
     public string AutoReply { get; set; } = "كمل";
+    public int ReplyDelaySeconds { get; set; } = 3;
+    public int TimerSeconds { get; set; } = 1;
     public bool Enabled { get; set; } = true;
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
