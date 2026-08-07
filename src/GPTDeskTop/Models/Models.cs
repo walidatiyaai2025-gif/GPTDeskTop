@@ -12,7 +12,8 @@ public sealed class ChromeTab
 public sealed record ChatPageState(
     int AssistantCount,
     string LastAssistantText,
-    bool IsGenerating);
+    bool IsGenerating,
+    string ErrorText);
 
 public sealed class SavedMonitor
 {
