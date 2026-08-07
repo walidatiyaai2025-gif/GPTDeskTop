@@ -98,8 +98,12 @@ public sealed class ChatGptMonitorService
     private async Task MonitorLoopAsync(SavedMonitor monitor, ChromeTab tab, CancellationToken cancellationToken)
     {
         var prefix = $"[{monitor.Title}]";
+        var timerSeconds = Math.Clamp(monitor.TimerSeconds, 1, 60);
+        var replyDelaySeconds = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300);
+
         Activity?.Invoke(monitor.Id, $"{prefix} Monitoring Tab ID {tab.Id}");
         Activity?.Invoke(monitor.Id, $"{prefix} Auto reply: {monitor.AutoReply}");
+        Activity?.Invoke(monitor.Id, $"{prefix} Timer: {timerSeconds}s | Reply delay: {replyDelaySeconds}s");
 
         try
         {
@@ -108,7 +112,7 @@ public sealed class ChatGptMonitorService
             var candidateText = string.Empty;
             var candidateSince = DateTimeOffset.MinValue;
 
-            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(Math.Max(300, _config.PollIntervalMilliseconds)));
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(timerSeconds));
             while (await timer.WaitForNextTickAsync(cancellationToken))
             {
                 try
@@ -168,9 +172,6 @@ public sealed class ChatGptMonitorService
                         }
                         continue;
                     }
-
-                    var replyDelaySeconds = await _database.GetIntSettingAsync(
-                        "ReplyDelaySeconds", 3, 0, 300, cancellationToken);
 
                     if (replyDelaySeconds > 0)
                     {
