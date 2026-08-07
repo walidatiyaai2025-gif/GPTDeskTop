@@ -71,7 +71,33 @@ public sealed class ChromeDevToolsService
                 const last = messages.length ? (messages[messages.length - 1].innerText || '').trim() : '';
                 const stopButton = document.querySelector('button[data-testid="stop-button"]') ||
                     [...document.querySelectorAll('button')].find(b => /stop generating|stop|إيقاف/i.test(b.getAttribute('aria-label') || ''));
-                return { assistantCount: messages.length, lastAssistantText: last, isGenerating: !!stopButton };
+
+                const candidates = [
+                    ...document.querySelectorAll('[role="alert"]'),
+                    ...document.querySelectorAll('[data-testid*="error"]'),
+                    ...document.querySelectorAll('[class*="error"]')
+                ];
+                const errorPattern = /something went wrong|there was an error|network error|failed to (generate|load)|unable to (generate|load)|error generating|حدث خطأ|خطأ في الشبكة|تعذر/i;
+                let errorText = '';
+                for (const element of candidates) {
+                    const text = (element.innerText || element.textContent || '').trim();
+                    if (text && errorPattern.test(text)) {
+                        errorText = text;
+                        break;
+                    }
+                }
+                if (!errorText) {
+                    const visibleText = (document.body?.innerText || '').slice(-12000);
+                    const match = visibleText.match(/(Something went wrong[^\n]*|There was an error[^\n]*|Network error[^\n]*|Failed to generate[^\n]*|Unable to generate[^\n]*|حدث خطأ[^\n]*|خطأ في الشبكة[^\n]*|تعذر[^\n]*)/i);
+                    errorText = match ? match[1].trim() : '';
+                }
+
+                return {
+                    assistantCount: messages.length,
+                    lastAssistantText: last,
+                    isGenerating: !!stopButton,
+                    errorText
+                };
             })()
             """;
 
@@ -79,7 +105,8 @@ public sealed class ChromeDevToolsService
         return new ChatPageState(
             value.TryGetProperty("assistantCount", out var count) ? count.GetInt32() : 0,
             value.TryGetProperty("lastAssistantText", out var text) ? text.GetString() ?? string.Empty : string.Empty,
-            value.TryGetProperty("isGenerating", out var generating) && generating.GetBoolean());
+            value.TryGetProperty("isGenerating", out var generating) && generating.GetBoolean(),
+            value.TryGetProperty("errorText", out var error) ? error.GetString() ?? string.Empty : string.Empty);
     }
 
     public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default)
@@ -124,7 +151,28 @@ public sealed class ChromeDevToolsService
         return value.ValueKind == JsonValueKind.True;
     }
 
+    public async Task ReloadTabAsync(ChromeTab tab, CancellationToken cancellationToken = default)
+    {
+        await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
+    }
+
     private async Task<JsonElement> EvaluateAsync(ChromeTab tab, string expression, CancellationToken cancellationToken)
+    {
+        return await SendCommandAsync(tab, "Runtime.evaluate", new
+        {
+            expression,
+            returnByValue = true,
+            awaitPromise = true,
+            userGesture = true
+        }, cancellationToken, extractRuntimeValue: true);
+    }
+
+    private static async Task<JsonElement> SendCommandAsync(
+        ChromeTab tab,
+        string method,
+        object parameters,
+        CancellationToken cancellationToken,
+        bool extractRuntimeValue = false)
     {
         if (string.IsNullOrWhiteSpace(tab.WebSocketDebuggerUrl))
             throw new InvalidOperationException("The selected tab does not expose a DevTools WebSocket URL.");
@@ -135,14 +183,8 @@ public sealed class ChromeDevToolsService
         var request = JsonSerializer.Serialize(new
         {
             id = 1,
-            method = "Runtime.evaluate",
-            @params = new
-            {
-                expression,
-                returnByValue = true,
-                awaitPromise = true,
-                userGesture = true
-            }
+            method,
+            @params = parameters
         });
 
         var bytes = Encoding.UTF8.GetBytes(request);
@@ -170,6 +212,11 @@ public sealed class ChromeDevToolsService
 
             if (root.TryGetProperty("error", out var error))
                 throw new InvalidOperationException($"Chrome DevTools error: {error}");
+
+            if (!extractRuntimeValue)
+                return root.TryGetProperty("result", out var commandResult)
+                    ? commandResult.Clone()
+                    : JsonDocument.Parse("null").RootElement.Clone();
 
             var resultElement = root.GetProperty("result").GetProperty("result");
             if (resultElement.TryGetProperty("subtype", out var subtype) && subtype.GetString() == "error")
