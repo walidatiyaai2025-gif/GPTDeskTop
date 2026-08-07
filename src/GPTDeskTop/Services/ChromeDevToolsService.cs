@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.WebSockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using GPTDeskTop.Configuration;
@@ -9,8 +10,14 @@ namespace GPTDeskTop.Services;
 
 public sealed class ChromeDevToolsService
 {
+    private const int SwHide = 0;
+    private const int SwShow = 5;
+    private const int SwRestore = 9;
+
     private readonly HttpClient _httpClient;
     private readonly ChromeConfig _config;
+    private Process? _monitorChromeProcess;
+    private IntPtr _lastKnownWindowHandle = IntPtr.Zero;
 
     public ChromeDevToolsService(HttpClient httpClient, ChromeConfig config)
     {
@@ -55,12 +62,91 @@ public sealed class ChromeDevToolsService
         Directory.CreateDirectory(profilePath);
 
         var arguments = $"--remote-debugging-port={_config.DebuggingPort} --user-data-dir=\"{profilePath}\" --new-window \"{_config.StartUrl}\"";
-        return Process.Start(new ProcessStartInfo
+        _monitorChromeProcess = Process.Start(new ProcessStartInfo
         {
             FileName = chromePath,
             Arguments = arguments,
             UseShellExecute = true
         }) ?? throw new InvalidOperationException("Chrome could not be started.");
+
+        return _monitorChromeProcess;
+    }
+
+    public async Task<bool> HideMonitorChromeAsync(CancellationToken cancellationToken = default)
+    {
+        var handle = await ResolveMonitorWindowHandleAsync(cancellationToken);
+        if (handle != IntPtr.Zero)
+        {
+            _lastKnownWindowHandle = handle;
+            return ShowWindow(handle, SwHide);
+        }
+
+        return await SetBrowserWindowStateAsync("minimized", cancellationToken);
+    }
+
+    public async Task<bool> ShowMonitorChromeAsync(CancellationToken cancellationToken = default)
+    {
+        var handle = _lastKnownWindowHandle;
+        if (handle == IntPtr.Zero || !IsWindow(handle))
+            handle = await ResolveMonitorWindowHandleAsync(cancellationToken);
+
+        if (handle != IntPtr.Zero)
+        {
+            _lastKnownWindowHandle = handle;
+            ShowWindow(handle, SwShow);
+            ShowWindow(handle, SwRestore);
+            return true;
+        }
+
+        return await SetBrowserWindowStateAsync("normal", cancellationToken);
+    }
+
+    private async Task<IntPtr> ResolveMonitorWindowHandleAsync(CancellationToken cancellationToken)
+    {
+        if (_monitorChromeProcess is not null)
+        {
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    if (_monitorChromeProcess.HasExited)
+                        break;
+                    _monitorChromeProcess.Refresh();
+                    if (_monitorChromeProcess.MainWindowHandle != IntPtr.Zero)
+                        return _monitorChromeProcess.MainWindowHandle;
+                }
+                catch
+                {
+                    break;
+                }
+                await Task.Delay(100, cancellationToken);
+            }
+        }
+
+        return _lastKnownWindowHandle != IntPtr.Zero && IsWindow(_lastKnownWindowHandle)
+            ? _lastKnownWindowHandle
+            : IntPtr.Zero;
+    }
+
+    private async Task<bool> SetBrowserWindowStateAsync(string state, CancellationToken cancellationToken)
+    {
+        var tabs = await GetTabsAsync(cancellationToken);
+        var tab = tabs.FirstOrDefault();
+        if (tab is null)
+            return false;
+
+        var windowResult = await SendCommandAsync(tab, "Browser.getWindowForTarget", new { targetId = tab.Id }, cancellationToken);
+        if (!windowResult.TryGetProperty("windowId", out var windowIdElement))
+            return false;
+
+        var windowId = windowIdElement.GetInt32();
+        await SendCommandAsync(tab, "Browser.setWindowBounds", new
+        {
+            windowId,
+            bounds = new { windowState = state }
+        }, cancellationToken);
+        return true;
     }
 
     public async Task<ChatPageState> GetChatStateAsync(ChromeTab tab, CancellationToken cancellationToken = default)
@@ -246,4 +332,11 @@ public sealed class ChromeDevToolsService
         return candidates.FirstOrDefault(File.Exists)
             ?? throw new FileNotFoundException("Google Chrome was not found in the standard Windows install locations.");
     }
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindow(IntPtr hWnd);
 }
