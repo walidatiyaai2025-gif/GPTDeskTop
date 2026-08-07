@@ -23,6 +23,8 @@ internal static class Program
 
         var chrome = new ChromeDevToolsService(httpClient, config.Chrome);
         var monitor = new ChatGptMonitorService(chrome, database, config.Monitoring);
+        using var notifications = new TrayNotificationService(monitor, database);
+        notifications.InitializeAsync().GetAwaiter().GetResult();
 
         Application.Run(new MainForm(chrome, monitor, database));
     }
