@@ -2,7 +2,7 @@
 
 .NET 8 WinForms persistent multi-tab monitor for ChatGPT pages opened in a dedicated Chrome/CDP session.
 
-Current application version: **1.5.0**.
+Current application version: **1.6.0**.
 
 ## Solution structure
 
@@ -20,69 +20,53 @@ Select `Release | x64`, then **Build > Build Solution**. Final installer:
 Output\Setup\GPTDeskTop-Setup.exe
 ```
 
-The target PC does not need a separate .NET 8 runtime installation.
+## Monitoring and settings
 
-## Multi-tab monitoring
+Every saved monitor keeps its own Auto Reply, Reply Delay (`0-300` seconds), Monitor Timer (`1-60` seconds), Enabled state, Tab ID, title and URL.
 
-Every saved monitor persists its own Auto Reply, Reply Delay (`0-300` seconds), Monitor Timer (`1-60` seconds), Enabled state, Tab ID, title and URL. Selecting multiple open tabs opens a separate Monitor Settings dialog for each tab.
-
-Default values for newly added monitors are configured in **Settings** and stored in SQLite:
+Global Settings stored in SQLite include:
 
 - Default Auto Reply
 - Default Monitor Delay
 - Default Monitor Timer
+- No-response refresh timeout in seconds (default `180`, i.e. 3 minutes)
 - Timeout Recovery Message
 - Balloon Duration
-- Balloon Sound Enabled
-- Balloon Sound Type
+- Balloon Sound Enabled / Sound Type
+
+If a running monitor receives no new assistant response for `NoResponseRefreshSeconds`, GPTDeskTop refreshes only that tab, records `NoResponseRefresh` in history, resets the watchdog, and continues monitoring.
+
+## Exception diagnostics
+
+GPTDeskTop now captures application/UI/task/monitor exceptions. Full exception text and stack trace are stored in two places:
+
+- **Stored History** inside the application with status `Exception`.
+- `logs\exceptions-YYYYMMDD.log` beside the application executable.
+
+A startup failure also falls back to `startup-error.log` if the database cannot be initialized.
+
+## Monitor status indicator
+
+The Saved Monitors Status column displays:
+
+- `🟢 Running` while that monitor worker is active.
+- `🔴 Stopped` when it is not running.
 
 ## Message delivery timeout recovery
 
-The ChatGPT page state explicitly detects errors such as:
+For `Message delivery timed out. Please try again.` GPTDeskTop saves the error first, opens a fresh ChatGPT tab, sends the configured recovery message (default `كمل`), moves the same Monitor ID to the new tab, continues monitoring and closes the old timed-out tab.
 
-```text
-Message delivery timed out. Please try again.
-```
-
-When this condition is detected:
-
-1. The exact error text is saved to `MessageLogs` first.
-2. GPTDeskTop opens a new ChatGPT chat tab.
-3. It sends the configured Timeout Recovery Message (default `كمل`).
-4. The existing Saved Monitor record is moved to the new tab, preserving the same Monitor ID, per-tab Delay and Timer.
-5. The new tab immediately continues under the existing background monitor worker.
-6. The old timed-out tab is closed.
-7. Recovery and outbound message operations are stored in history.
-
-Other ChatGPT errors continue to use the normal single-tab refresh recovery flow.
+Other ChatGPT errors use single-tab refresh recovery.
 
 ## Chrome lifecycle
 
-**Hide Chrome** hides the dedicated monitor Chrome while background monitoring continues. **Show Chrome** restores it.
+**Hide Chrome** now uses Chrome DevTools window minimization for all dedicated monitor windows before native-window fallback. This keeps CDP/JavaScript execution alive while hiding/minimizing the monitor Chrome session. **Show Chrome** restores those windows.
 
-When GPTDeskTop itself closes, all tabs in the dedicated Monitor Chrome session are closed automatically after monitor workers stop.
+When GPTDeskTop closes, the monitor workers stop and dedicated monitor tabs are closed.
 
 ## Fluent UI and context menus
 
-The WinForms UI uses a Fluent/WinUI-inspired visual system: Segoe UI Variable typography, flat surfaces, accent actions, modern grid headers/selection and consistent primary/danger buttons.
-
-All grids expose right-click context menus:
-
-- Open Tabs: Add selected tab(s), Refresh, Close selected tab.
-- Saved Monitors: Start, Stop, Edit Settings, Delete Monitor, Add selected open tab.
-- History: Refresh, Delete selected log, Clear all history.
-
-## Notifications
-
-Every completed ChatGPT response produces a Windows taskbar/tray balloon and is persisted in SQLite. Notification duration and application notification sound can be configured from Settings. Error replies use an error-style balloon and alert sound.
-
-## Local database
-
-`appdata.db` is automatically created beside the executable and upgraded in place.
-
-- `SavedMonitors`: tab identity, Auto Reply, per-tab Delay/Timer and Enabled state.
-- `AppSettings`: defaults, notification settings, recovery message and Chrome preferences.
-- `MessageLogs`: inbound/outbound/system history with MonitorId, TabId and TabTitle.
+The WinForms UI uses a Fluent/WinUI-inspired visual system. Open Tabs, Saved Monitors and History grids expose right-click actions for their relevant add/start/stop/edit/delete/refresh operations.
 
 ## Developer run
 
