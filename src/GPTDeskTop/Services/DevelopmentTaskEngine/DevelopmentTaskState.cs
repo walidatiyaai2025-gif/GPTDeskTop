@@ -10,7 +10,7 @@ public enum DevelopmentTaskEngineStatus
     Faulted
 }
 
-public sealed class DevelopmentTaskState
+public sealed class DevelopmentTaskState : EventArgs
 {
     public string PlanId { get; set; } = "default-development-plan";
     public string PlanTitle { get; set; } = "Development Plan";
