@@ -5,6 +5,7 @@ namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 public sealed class DevelopmentTaskEngine : IAsyncDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly SemaphoreSlim _stateFileGate = new(1, 1);
     private readonly string _statePath;
     private readonly string _messagesPath;
     private readonly TimeSpan _workWindow;
@@ -56,7 +57,6 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         {
             _cts?.Cancel();
             _state.Status = DevelopmentTaskEngineStatus.Stopped;
-            // Keep the message index and chat checkpoint intact. A later ResumeAsync starts a fresh work window.
             _state.WorkWindowStartedAt = null;
             _state.CoolingStartedAt = null;
             await SaveStateAsync(cancellationToken).ConfigureAwait(false);
@@ -77,7 +77,6 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
             if (messages.Count == 0) throw new InvalidOperationException("No development task messages are configured.");
             _state.TotalMessages = messages.Count;
 
-            // Stopped/Paused are explicit resumes: preserve the checkpoint but start a fresh work window.
             if (_state.Status is DevelopmentTaskEngineStatus.Stopped or DevelopmentTaskEngineStatus.Paused)
             {
                 _state.Status = DevelopmentTaskEngineStatus.Working;
@@ -146,7 +145,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
             while (!cancellationToken.IsCancellationRequested)
             {
                 var messages = await LoadMessagesAsync(cancellationToken).ConfigureAwait(false);
-                if (messages.Count == 0) throw new InvalidOperationException("No development task messages are configured.");
+                if (messages.Count == 0) return;
                 _state.TotalMessages = messages.Count;
 
                 if (_state.CurrentMessageIndex >= messages.Count)
@@ -157,36 +156,37 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
                     return;
                 }
 
+                if (_state.Status == DevelopmentTaskEngineStatus.Working)
+                {
+                    var started = _state.WorkWindowStartedAt ?? DateTimeOffset.UtcNow;
+                    _state.WorkWindowStartedAt = started;
+                    var remaining = _workWindow - (DateTimeOffset.UtcNow - started);
+                    if (remaining <= TimeSpan.Zero)
+                    {
+                        _state.Status = DevelopmentTaskEngineStatus.Cooling;
+                        _state.CoolingStartedAt ??= DateTimeOffset.UtcNow;
+                        await SaveStateAsync(cancellationToken).ConfigureAwait(false);
+                        PublishState();
+                        CoolingStarted?.Invoke(this, EventArgs.Empty);
+                        continue;
+                    }
+
+                    var message = BuildPlanMessage(messages[_state.CurrentMessageIndex], _state);
+                    MessageReady?.Invoke(this, message);
+                    await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
                 if (_state.Status == DevelopmentTaskEngineStatus.Cooling)
                 {
                     await RunCoolingAsync(cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
-                if (_state.Status is DevelopmentTaskEngineStatus.Stopped or DevelopmentTaskEngineStatus.Paused)
+                if (_state.Status is DevelopmentTaskEngineStatus.Paused or DevelopmentTaskEngineStatus.Stopped or DevelopmentTaskEngineStatus.Faulted)
                     return;
 
-                _state.WorkWindowStartedAt ??= DateTimeOffset.UtcNow;
-                if (DateTimeOffset.UtcNow - _state.WorkWindowStartedAt.Value >= _workWindow)
-                {
-                    _state.Status = DevelopmentTaskEngineStatus.Cooling;
-                    _state.CoolingStartedAt = DateTimeOffset.UtcNow;
-                    await SaveStateAsync(cancellationToken).ConfigureAwait(false);
-                    PublishState();
-                    CoolingStarted?.Invoke(this, EventArgs.Empty);
-                    continue;
-                }
-
-                var message = BuildPlanMessage(messages[_state.CurrentMessageIndex], _state);
-                MessageReady?.Invoke(this, message);
-                _state.LastCheckpointAt = DateTimeOffset.UtcNow;
-                _state.Revision++;
-                await SaveStateAsync(cancellationToken).ConfigureAwait(false);
-                PublishState();
-
-                // The verified-send integration owns delivery. It must call AdvanceAsync only after success.
                 await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
-                return;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -233,17 +233,31 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
 
     private async Task LoadStateAsync(CancellationToken cancellationToken)
     {
-        if (!File.Exists(_statePath)) return;
-        await using var stream = File.OpenRead(_statePath);
-        _state = await JsonSerializer.DeserializeAsync<DevelopmentTaskState>(stream, cancellationToken: cancellationToken).ConfigureAwait(false) ?? new DevelopmentTaskState();
+        await _stateFileGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!File.Exists(_statePath)) return;
+            await using var stream = File.OpenRead(_statePath);
+            _state = await JsonSerializer.DeserializeAsync<DevelopmentTaskState>(stream, cancellationToken: cancellationToken).ConfigureAwait(false) ?? new DevelopmentTaskState();
+        }
+        finally { _stateFileGate.Release(); }
     }
 
     private async Task SaveStateAsync(CancellationToken cancellationToken)
     {
-        var directory = Path.GetDirectoryName(_statePath);
-        if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-        await using var stream = File.Create(_statePath);
-        await JsonSerializer.SerializeAsync(stream, _state, new JsonSerializerOptions { WriteIndented = true }, cancellationToken).ConfigureAwait(false);
+        await _stateFileGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var directory = Path.GetDirectoryName(_statePath);
+            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+            var temporaryPath = _statePath + ".tmp";
+            await using (var stream = File.Create(temporaryPath))
+            {
+                await JsonSerializer.SerializeAsync(stream, _state, new JsonSerializerOptions { WriteIndented = true }, cancellationToken).ConfigureAwait(false);
+            }
+            File.Move(temporaryPath, _statePath, true);
+        }
+        finally { _stateFileGate.Release(); }
     }
 
     private void PublishState() => StateChanged?.Invoke(this, _state);
@@ -253,6 +267,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         _cts?.Cancel();
         _cts?.Dispose();
         _gate.Dispose();
+        _stateFileGate.Dispose();
         await Task.CompletedTask;
     }
 
