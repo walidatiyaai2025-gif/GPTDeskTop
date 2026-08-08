@@ -96,6 +96,17 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
+    /// <summary>Restores a checkpointed position without resetting delivery identity.</summary>
+    public void RestorePosition(int messageIndex, int completedMessages, DevelopmentTaskEngineStatus status)
+    {
+        if (messageIndex < 0) throw new ArgumentOutOfRangeException(nameof(messageIndex));
+        if (completedMessages < 0) throw new ArgumentOutOfRangeException(nameof(completedMessages));
+        _state.CurrentMessageIndex = messageIndex;
+        _state.CompletedMessages = completedMessages;
+        _state.Status = status;
+        _lastEmittedMessageIndex = null;
+    }
+
     public async Task CheckpointAsync(string? monitorId, string? tabId, CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
