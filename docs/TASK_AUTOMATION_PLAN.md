@@ -13,10 +13,12 @@
 
 ## Phase 2 — Runtime integration
 
-- [ ] Surface Working/Cooling/Paused state in the main UI.
-- [ ] Add Pause/Resume/Run-now controls.
-- [ ] Add visible current message and next message preview.
-- [ ] Add per-monitor opt-in.
+- [x] Surface Working/Cooling/Paused/Stopped/Faulted state in the main automation control UI.
+- [x] Add Pause/Resume/Run-now/Stop controls.
+- [x] Add visible current message and next message preview.
+- [x] Add explicit per-monitor opt-in; non-opted-in monitors are excluded by the worker.
+- [x] Persist per-monitor development plan ID and title.
+- [x] Reload the editable message catalog at every work cycle without restarting the application.
 - [ ] Restore open-chat targets after a normal restart when the saved tab is unavailable.
 
 ## Phase 3 — Validation
@@ -26,3 +28,5 @@
 - [ ] Verify one message is delivered per work cycle.
 - [ ] Verify cooling survives process restart without resetting the message index.
 - [ ] Verify 10-message catalog can be edited without recompiling.
+- [ ] Verify unchecked monitors never receive development-plan messages.
+- [ ] Verify plan ID/title placeholders are resolved per monitor.
