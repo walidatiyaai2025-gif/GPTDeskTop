@@ -24,20 +24,7 @@ internal static class Program
             if (database.GetSettingAsync("NoResponseRefreshSeconds").GetAwaiter().GetResult() is null)
                 database.SetSettingAsync("NoResponseRefreshSeconds", "180").GetAwaiter().GetResult();
 
-            var previousClean = database.GetSettingAsync("LastShutdownClean").GetAwaiter().GetResult();
-            if (string.Equals(previousClean, "0", StringComparison.Ordinal))
-            {
-                var crashes = database.GetIntSettingAsync("CrashCount", 0, 0, int.MaxValue).GetAwaiter().GetResult();
-                database.SetSettingAsync("CrashCount", (crashes + 1).ToString()).GetAwaiter().GetResult();
-                database.SetSettingAsync("CrashRecoveryPending", "1").GetAwaiter().GetResult();
-            }
-            else if (previousClean is null)
-            {
-                database.SetSettingAsync("CrashCount", "0").GetAwaiter().GetResult();
-                database.SetSettingAsync("CrashRecoveryPending", "0").GetAwaiter().GetResult();
-            }
-
-            database.SetSettingAsync("LastShutdownClean", "0").GetAwaiter().GetResult();
+            CrashRecoveryStateService.PrepareStartupAsync(database).GetAwaiter().GetResult();
             ExceptionLogService.Configure(database);
 
             Application.ThreadException += (_, e) => ExceptionLogService.Log(e.Exception, "Application.ThreadException");
@@ -77,7 +64,7 @@ internal static class Program
 
             mainForm.FormClosed += (_, _) =>
             {
-                try { database.SetSettingAsync("LastShutdownClean", "1").GetAwaiter().GetResult(); }
+                try { CrashRecoveryStateService.MarkCleanShutdownAsync(database).GetAwaiter().GetResult(); }
                 catch (Exception ex) { ExceptionLogService.Log(ex, "Program.MarkCleanShutdown"); }
             };
 
