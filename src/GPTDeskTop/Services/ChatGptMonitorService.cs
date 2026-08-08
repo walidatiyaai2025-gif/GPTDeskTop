@@ -94,7 +94,6 @@ public sealed class ChatGptMonitorService
             var candidateSince = DateTimeOffset.MinValue;
             var lastResponseActivity = DateTimeOffset.UtcNow;
 
-            // Apply the preferred model once at monitor startup. Auto means no UI interaction.
             await ApplyModelRouteAsync(monitor, tab, recovery: false, contextRotation: false, cancellationToken);
 
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(timerSeconds));
@@ -164,7 +163,7 @@ public sealed class ChatGptMonitorService
 
                         var oldTab = tab;
                         var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
-                        await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+                        await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken);
 
                         await ApplyModelRouteAsync(monitor, newTab, recovery: false, contextRotation: true, cancellationToken);
 
@@ -173,9 +172,9 @@ public sealed class ChatGptMonitorService
                         var startMessage = string.IsNullOrWhiteSpace(handoffMessage)
                             ? (string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage)
                             : handoffMessage;
-                        var sent = await _chrome.SendChatMessageAsync(newTab, startMessage, cancellationToken);
+                        var sent = await SendWhenReadyAsync(monitor.Id, newTab, startMessage, cancellationToken);
                         if (!sent)
-                            throw new InvalidOperationException("New ChatGPT chat opened but the rotation start message could not be sent.");
+                            throw new InvalidOperationException("New ChatGPT chat opened but the rotation handoff could not be sent after waiting for the composer.");
 
                         monitor.RotationCount++;
                         monitor.TabId = newTab.Id;
@@ -208,12 +207,12 @@ public sealed class ChatGptMonitorService
                         var recoveryMessage = await _database.GetSettingAsync("TimeoutRecoveryMessage", cancellationToken) ?? "كمل";
                         var oldTab = tab;
                         var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
-                        await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+                        await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken);
 
                         await ApplyModelRouteAsync(monitor, newTab, recovery: true, contextRotation: false, cancellationToken);
 
-                        var sent = await _chrome.SendChatMessageAsync(newTab, recoveryMessage, cancellationToken);
-                        if (!sent) throw new InvalidOperationException("New chat opened but the recovery message could not be sent.");
+                        var sent = await SendWhenReadyAsync(monitor.Id, newTab, recoveryMessage, cancellationToken);
+                        if (!sent) throw new InvalidOperationException("New chat opened but the recovery message could not be sent after waiting for the composer.");
 
                         monitor.TabId = newTab.Id;
                         monitor.Title = string.IsNullOrWhiteSpace(newTab.Title) ? "Recovered ChatGPT Chat" : newTab.Title;
@@ -267,7 +266,7 @@ public sealed class ChatGptMonitorService
                         }
                     }
 
-                    var autoSent = await _chrome.SendChatMessageAsync(tab, monitor.AutoReply, cancellationToken);
+                    var autoSent = await SendWhenReadyAsync(monitor.Id, tab, monitor.AutoReply, cancellationToken);
                     await _database.AddLogAsync("Outbound", monitor.AutoReply, string.Empty, autoSent ? "Sent" : "Failed", monitor.Id, tab.Id, monitor.Title, cancellationToken);
                     HistoryChanged?.Invoke();
                     lastResponseActivity = DateTimeOffset.UtcNow;
@@ -318,6 +317,58 @@ public sealed class ChatGptMonitorService
             }
             RunningStateChanged?.Invoke();
         }
+    }
+
+    private async Task WaitForChatReadyAsync(long monitorId, ChromeTab tab, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        Exception? last = null;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var state = await _chrome.GetChatStateAsync(tab, cancellationToken);
+                if (!state.IsGenerating)
+                {
+                    Activity?.Invoke(monitorId, $"[{tab.Title}] New Chat is ready for input.");
+                    return;
+                }
+            }
+            catch (Exception ex) when (IsTransientChromeException(ex))
+            {
+                last = ex;
+            }
+            await Task.Delay(500, cancellationToken);
+        }
+
+        throw new TimeoutException($"New Chat was not ready for input within 30 seconds.{(last is null ? string.Empty : $" Last CDP error: {last.Message}")}");
+    }
+
+    private async Task<bool> SendWhenReadyAsync(long monitorId, ChromeTab tab, string message, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        var attempt = 0;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            attempt++;
+            try
+            {
+                if (await _chrome.SendChatMessageAsync(tab, message, cancellationToken))
+                {
+                    Activity?.Invoke(monitorId, $"Message accepted by ChatGPT composer on attempt {attempt}.");
+                    return true;
+                }
+            }
+            catch (Exception ex) when (IsTransientChromeException(ex))
+            {
+                Activity?.Invoke(monitorId, $"Composer not ready / CDP transient error on attempt {attempt}; waiting before retry.");
+            }
+            await Task.Delay(750, cancellationToken);
+        }
+
+        return false;
     }
 
     private async Task ApplyModelRouteAsync(SavedMonitor monitor, ChromeTab tab, bool recovery, bool contextRotation, CancellationToken cancellationToken)
