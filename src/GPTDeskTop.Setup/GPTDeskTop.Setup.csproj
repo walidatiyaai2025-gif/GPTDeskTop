@@ -18,7 +18,6 @@
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
 
-  <!-- No ProjectReference to GPTDeskTop or any build helper. Setup creates payload by path. -->
   <Target Name="PrepareInstallerPayload" BeforeTargets="PrepareResources">
     <MakeDir Directories="$(PublishDir)" />
     <Exec Command="dotnet publish &quot;$(AppProject)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o &quot;$(PublishDir)&quot;" />
@@ -31,8 +30,11 @@
     </ItemGroup>
   </Target>
 
-  <Target Name="EnsureSetupOutput" BeforeTargets="Build"><MakeDir Directories="$(SetupOutput)" /></Target>
-  <Target Name="CreateStandaloneSetup" AfterTargets="Build" Condition="'$(SetupPackaging)' != 'true' AND '$(Configuration)' == 'Release'">
+  <Target Name="EnsureSetupOutput" BeforeTargets="Build">
+    <MakeDir Directories="$(SetupOutput)" />
+  </Target>
+
+  <Target Name="CreateStandaloneSetup" AfterTargets="Build" Condition="'$(Configuration)' == 'Release' AND '$(SetupPackaging)' != 'true'">
     <Exec Command="dotnet publish &quot;$(MSBuildProjectFullPath)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -p:SetupPackaging=true -o &quot;$(SetupOutput)\Final&quot;" />
     <Copy SourceFiles="$(SetupOutput)\Final\GPTDeskTop-Setup.exe" DestinationFiles="$(SetupOutput)\GPTDeskTop-Setup.exe" />
     <WriteLinesToFile File="$(SetupOutput)\Version.txt" Lines="GPTDeskTop Setup v1.7.1&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />

@@ -7,6 +7,7 @@ public sealed class AppConfig
     public ChromeConfig Chrome { get; set; } = new();
     public MonitoringConfig Monitoring { get; set; } = new();
     public DatabaseConfig Database { get; set; } = new();
+    public TaskAutomationConfig TaskAutomation { get; set; } = new();
 
     public static AppConfig Load()
     {
@@ -39,4 +40,15 @@ public sealed class MonitoringConfig
 public sealed class DatabaseConfig
 {
     public string FileName { get; set; } = "appdata.db";
+}
+
+public sealed class TaskAutomationConfig
+{
+    public bool Enabled { get; set; } = true;
+    public bool ResumeOnStartup { get; set; } = true;
+    public int WorkWindowMinutes { get; set; } = 10;
+    public int CoolingWindowMinutes { get; set; } = 5;
+    public int MaxMessagesPerWindow { get; set; } = 10;
+    public string MessageCatalogFile { get; set; } = "task-messages.json";
+    public string DevelopmentPlanFile { get; set; } = "docs/DEVELOPMENT_PLAN.md";
 }

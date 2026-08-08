@@ -62,26 +62,35 @@ internal static class Program
             // look as if it had failed to load. Show the UI first and recover asynchronously.
             var mainForm = new MainForm(chrome, monitor, database);
             using var metrics = new HomeMetricsService(mainForm, database, monitor);
+            var taskAutomation = new TaskAutomationService(chrome, database, config.TaskAutomation);
 
             mainForm.Shown += async (_, _) =>
             {
                 try
                 {
                     await CrashRecoveryService.RecoverIfPendingAsync(chrome, monitor, database);
+
+                    if (config.TaskAutomation.Enabled && config.TaskAutomation.ResumeOnStartup)
+                        await taskAutomation.StartAsync();
                 }
                 catch (Exception ex)
                 {
-                    await ExceptionLogService.LogAsync(ex, "Program.BackgroundCrashRecovery");
+                    await ExceptionLogService.LogAsync(ex, "Program.BackgroundStartupRecovery");
                 }
             };
 
             mainForm.FormClosed += (_, _) =>
             {
-                try { database.SetSettingAsync("LastShutdownClean", "1").GetAwaiter().GetResult(); }
+                try
+                {
+                    taskAutomation.StopAsync().GetAwaiter().GetResult();
+                    database.SetSettingAsync("LastShutdownClean", "1").GetAwaiter().GetResult();
+                }
                 catch (Exception ex) { ExceptionLogService.Log(ex, "Program.MarkCleanShutdown"); }
             };
 
             Application.Run(mainForm);
+            taskAutomation.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
