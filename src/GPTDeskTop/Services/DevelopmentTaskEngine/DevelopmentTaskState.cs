@@ -25,6 +25,17 @@ public sealed class DevelopmentTaskState : EventArgs
     public string? LastTabId { get; set; }
     public int LastDeliveredMessageIndex { get; set; } = -1;
     public string? LastDeliveredMessageFingerprint { get; set; }
+    public Dictionary<string, DevelopmentTaskDeliveryReceipt> DeliveryReceipts { get; set; } = new(StringComparer.Ordinal);
     public string? LastError { get; set; }
+    public long Revision { get; set; }
+}
+
+public sealed class DevelopmentTaskDeliveryReceipt
+{
+    public string MonitorId { get; set; } = string.Empty;
+    public string TabId { get; set; } = string.Empty;
+    public int MessageIndex { get; set; } = -1;
+    public string Fingerprint { get; set; } = string.Empty;
+    public DateTimeOffset DeliveredAt { get; set; }
     public long Revision { get; set; }
 }
