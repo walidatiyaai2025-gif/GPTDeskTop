@@ -46,33 +46,39 @@ public sealed class DevelopmentTaskMonitorTargetFactory
             if (!resolution.Found || resolution.Tab is null)
             {
                 await _database.AddLogAsync(
-                    "System",
-                    string.Empty,
-                    resolution.Reason,
-                    "DevelopmentMonitorTabUnavailable",
-                    monitor.Id,
-                    monitor.TabId,
-                    monitor.Title,
-                    cancellationToken).ConfigureAwait(false);
+                    "System", string.Empty, resolution.Reason,
+                    "DevelopmentMonitorTabUnavailable", monitor.Id,
+                    monitor.TabId, monitor.Title, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
             var monitorId = monitor.Id.ToString();
             var tab = resolution.Tab;
+
+            // Persist a recreated Chrome target only after exact conversation-URL
+            // rebinding succeeds. Never use a title as an identity fallback.
+            if (string.Equals(resolution.MatchType, "PersistedConversationUrl", StringComparison.Ordinal)
+                && !string.Equals(monitor.TabId, tab.Id, StringComparison.Ordinal))
+            {
+                monitor.TabId = tab.Id;
+                monitor.Url = tab.Url;
+                await _database.SaveMonitorAsync(monitor, cancellationToken).ConfigureAwait(false);
+
+                await _database.AddLogAsync(
+                    "System", "PersistedConversationUrl", tab.Url,
+                    "DevelopmentMonitorTargetIdUpdated", monitor.Id,
+                    tab.Id, monitor.Title, cancellationToken).ConfigureAwait(false);
+            }
+
             recipients.Add(new DevelopmentTaskMonitorRecipient(
                 monitorId,
                 tab.Id,
                 message => SendVerifiedAsync(tab, message)));
 
             await _database.AddLogAsync(
-                "System",
-                resolution.MatchType,
-                tab.Url,
-                "DevelopmentMonitorRebound",
-                monitor.Id,
-                tab.Id,
-                monitor.Title,
-                cancellationToken).ConfigureAwait(false);
+                "System", resolution.MatchType, tab.Url,
+                "DevelopmentMonitorRebound", monitor.Id,
+                tab.Id, monitor.Title, cancellationToken).ConfigureAwait(false);
         }
 
         return recipients;
