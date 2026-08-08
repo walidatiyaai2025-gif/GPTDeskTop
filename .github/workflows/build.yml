@@ -50,7 +50,8 @@ jobs:
           if ($recovery -notmatch 'LaunchMonitorChrome') { throw 'Recovery does not relaunch monitor Chrome.' }
           if ($recovery -notmatch 'SendChatMessageVerifiedAsync') { throw 'Recovery message is not verified before success.' }
           if ($recovery -notmatch 'CrashRecoverySendFailed') { throw 'Recovery send failure is not logged.' }
-          if ($recovery -notmatch 'CrashRecoveryPending=1') { throw 'Recovery retry marker contract is missing.' }
+          if ($recovery -notmatch 'SetSettingAsync\("CrashRecoveryPending",\s*"0"') { throw 'Recovery success does not clear the pending marker.' }
+          if ($recovery -notmatch 'SetSettingAsync\("CrashRecoveryPending",\s*"1"') { throw 'Recovery retry marker is not explicitly persisted on failure.' }
           if ($recovery -notmatch 'StartMonitorAsync') { throw 'Enabled recovered monitors are not restarted.' }
           Write-Host 'Crash recovery invariants passed.'
 
