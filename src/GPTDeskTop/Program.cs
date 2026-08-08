@@ -85,11 +85,7 @@ internal static class Program
                     if (config.TaskAutomation.Enabled && config.TaskAutomation.ResumeOnStartup)
                     {
                         var phase = await database.GetSettingAsync("TaskAutomation.Phase");
-                        var resumeAllowed = string.Equals(phase, "Working", StringComparison.OrdinalIgnoreCase)
-                            || string.Equals(phase, "Cooling", StringComparison.OrdinalIgnoreCase)
-                            || string.Equals(phase, "Paused", StringComparison.OrdinalIgnoreCase);
-
-                        if (resumeAllowed)
+                        if (TaskAutomationStartupPolicy.ShouldResume(phase))
                             await taskAutomation.StartAsync();
                     }
                 }
