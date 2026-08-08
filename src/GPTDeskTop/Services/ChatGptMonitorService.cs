@@ -83,7 +83,7 @@ public sealed class ChatGptMonitorService
         var noResponseSeconds = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600, cancellationToken);
         var transientFailures = 0;
 
-        Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Timer {timerSeconds}s | Delay {replyDelaySeconds}s | No-response refresh {noResponseSeconds}s | Reply: {monitor.AutoReply}");
+        Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Timer {timerSeconds}s | Delay {replyDelaySeconds}s | No-response refresh {noResponseSeconds}s | Rotation {(monitor.ConversationRotationEnabled ? "ON" : "OFF")} | Reply: {monitor.AutoReply}");
 
         try
         {
@@ -141,9 +141,55 @@ public sealed class ChatGptMonitorService
                     candidateSince = DateTimeOffset.MinValue;
 
                     var isError = !string.IsNullOrWhiteSpace(state.ErrorText) || IsErrorResponse(text);
-                    await _database.AddLogAsync("Inbound", string.Empty, text, isError ? "Error" : "Detected", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+                    await _database.AddLogAsync("Inbound", string.Empty, text, IsConversationContextLimit(text) ? "ConversationLimit" : isError ? "Error" : "Detected", monitor.Id, tab.Id, monitor.Title, cancellationToken);
                     HistoryChanged?.Invoke();
                     ResponseReceived?.Invoke(monitor.Id, monitor.Title, text, isError);
+
+                    if (monitor.ConversationRotationEnabled && IsConversationContextLimit(text))
+                    {
+                        if (monitor.MaxConversationRotations > 0 && monitor.RotationCount >= monitor.MaxConversationRotations)
+                        {
+                            Activity?.Invoke(monitor.Id, $"{prefix} Conversation limit detected, but maximum rotations ({monitor.MaxConversationRotations}) has been reached. Monitor remains stopped on the current chat.");
+                            await _database.AddLogAsync("System", monitor.NewChatStartMessage, text, "RotationLimitReached", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+                            continue;
+                        }
+
+                        Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT reported a conversation/context limit. Rotating to a new chat...");
+                        if (monitor.NewChatDelaySeconds > 0)
+                            await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(monitor.NewChatDelaySeconds, 0, 600)), cancellationToken);
+
+                        var oldTab = tab;
+                        var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
+                        await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+                        var startMessage = string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage;
+                        var sent = await _chrome.SendChatMessageAsync(newTab, startMessage, cancellationToken);
+                        if (!sent)
+                            throw new InvalidOperationException("New ChatGPT chat opened but the rotation start message could not be sent.");
+
+                        monitor.RotationCount++;
+                        monitor.TabId = newTab.Id;
+                        monitor.Title = string.IsNullOrWhiteSpace(newTab.Title) ? $"ChatGPT Chat #{monitor.RotationCount + 1}" : newTab.Title;
+                        monitor.Url = newTab.Url;
+                        await _database.SaveMonitorAsync(monitor, cancellationToken);
+                        await _database.AddConversationRotationAsync(monitor.Id, oldTab.Id, newTab.Id, "ConversationContextLimit", startMessage, cancellationToken);
+                        await _database.AddLogAsync("System", startMessage, text, "RotatedToNewChat", monitor.Id, newTab.Id, monitor.Title, cancellationToken);
+                        await _database.AddLogAsync("Outbound", startMessage, string.Empty, "RotationStartSent", monitor.Id, newTab.Id, monitor.Title, cancellationToken);
+                        HistoryChanged?.Invoke();
+
+                        tab = newTab;
+                        lastHandledText = string.Empty;
+                        lastResponseActivity = DateTimeOffset.UtcNow;
+                        candidateText = string.Empty;
+                        candidateSince = DateTimeOffset.MinValue;
+                        Activity?.Invoke(monitor.Id, $"{prefix} Rotation #{monitor.RotationCount} complete. Monitoring the new ChatGPT conversation under the same Monitor ID.");
+
+                        try { await _chrome.CloseTabAsync(oldTab, cancellationToken); }
+                        catch (Exception closeEx) when (IsTransientChromeException(closeEx)) { Activity?.Invoke(monitor.Id, $"Old chat close was deferred after rotation: {closeEx.Message}"); }
+
+                        if (monitor.RotationCooldownSeconds > 0)
+                            await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(monitor.RotationCooldownSeconds, 0, 3600)), cancellationToken);
+                        continue;
+                    }
 
                     if (isError && IsDeliveryTimeout(text))
                     {
@@ -265,10 +311,7 @@ public sealed class ChatGptMonitorService
         Exception? last = null;
         for (var attempt = 1; attempt <= 3; attempt++)
         {
-            try
-            {
-                return await _chrome.GetChatStateAsync(tab, cancellationToken);
-            }
+            try { return await _chrome.GetChatStateAsync(tab, cancellationToken); }
             catch (Exception ex) when (IsTransientChromeException(ex))
             {
                 last = ex;
@@ -276,7 +319,6 @@ public sealed class ChatGptMonitorService
                 await Task.Delay(500 * attempt, cancellationToken);
             }
         }
-
         throw last ?? new InvalidOperationException("Unable to read the ChatGPT tab state.");
     }
 
@@ -295,6 +337,19 @@ public sealed class ChatGptMonitorService
 
     private static bool IsDeliveryTimeout(string text)
         => text.Contains("message delivery timed out", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsConversationContextLimit(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        string[] markers =
+        {
+            "conversation is too long", "conversation is too large", "context length",
+            "context window", "maximum context", "conversation limit", "start a new chat",
+            "this conversation has reached", "reached the maximum length",
+            "المحادثة طويلة جدًا", "طول المحادثة", "حد المحادثة", "ابدأ محادثة جديدة"
+        };
+        return markers.Any(marker => text.Contains(marker, StringComparison.OrdinalIgnoreCase));
+    }
 
     private static bool IsErrorResponse(string text)
     {
