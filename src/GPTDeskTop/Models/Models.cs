@@ -27,6 +27,16 @@ public sealed class SavedMonitor
     public int ReplyDelaySeconds { get; set; } = 3;
     public int TimerSeconds { get; set; } = 1;
     public bool Enabled { get; set; } = true;
+
+    // Conversation rotation is intentionally limited to an actual conversation/context-limit
+    // signal exposed by ChatGPT. It does not attempt to predict or bypass account usage quotas.
+    public bool ConversationRotationEnabled { get; set; } = true;
+    public string NewChatStartMessage { get; set; } = "كمل";
+    public int NewChatDelaySeconds { get; set; } = 30;
+    public int RotationCooldownSeconds { get; set; } = 60;
+    public int MaxConversationRotations { get; set; } = 0; // 0 = unlimited for this monitor session
+    public int RotationCount { get; set; }
+
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 
