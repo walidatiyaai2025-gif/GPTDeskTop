@@ -28,6 +28,19 @@ jobs:
       - name: Runtime automation tests
         run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
 
+      - name: Validate CDP delivery reliability invariants
+        shell: pwsh
+        run: |
+          $chrome = Get-Content src/GPTDeskTop/Services/ChromeDevToolsService.cs -Raw
+          $monitor = Get-Content src/GPTDeskTop/Services/ChatGptMonitorService.cs -Raw
+          if ($chrome -notmatch 'Promise was collected') { throw 'Transient Promise-collected retry handling is missing.' }
+          if ($chrome -notmatch 'attempt <= 3') { throw 'Runtime.evaluate retry bound is missing.' }
+          if ($chrome -notmatch 'GetUserMessageSnapshotAsync') { throw 'Verified-send snapshot guard is missing.' }
+          if ($chrome -notmatch 'current\.Count > before\.Count') { throw 'Verified-send pre-send duplicate guard is missing.' }
+          if ($chrome -notmatch 'after\.Count > before\.Count') { throw 'Verified-send post-send receipt check is missing.' }
+          if ($monitor -notmatch 'SendChatMessageVerifiedAsync') { throw 'Monitor worker is not using verified delivery.' }
+          Write-Host 'CDP delivery reliability invariants passed.'
+
       - name: Build application
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj --configuration Release --no-restore
 
