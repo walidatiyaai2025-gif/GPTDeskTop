@@ -24,6 +24,9 @@ internal static class Program
             if (database.GetSettingAsync("NoResponseRefreshSeconds").GetAwaiter().GetResult() is null)
                 database.SetSettingAsync("NoResponseRefreshSeconds", "180").GetAwaiter().GetResult();
 
+            database.SetSettingAsync("TaskAutomation.WorkWindowMinutes", config.TaskAutomation.WorkWindowMinutes.ToString()).GetAwaiter().GetResult();
+            database.SetSettingAsync("TaskAutomation.CoolingWindowMinutes", config.TaskAutomation.CoolingWindowMinutes.ToString()).GetAwaiter().GetResult();
+
             var previousClean = database.GetSettingAsync("LastShutdownClean").GetAwaiter().GetResult();
             if (string.Equals(previousClean, "0", StringComparison.Ordinal))
             {
@@ -60,9 +63,21 @@ internal static class Program
             // IMPORTANT: Never block startup on Chrome/CDP recovery. The tray icon used to
             // appear while RecoverIfPendingAsync was waiting for Chrome, making the main form
             // look as if it had failed to load. Show the UI first and recover asynchronously.
+            var taskAutomation = new TaskAutomationService(chrome, database, config.TaskAutomation);
             var mainForm = new MainForm(chrome, monitor, database);
             using var metrics = new HomeMetricsService(mainForm, database, monitor);
-            var taskAutomation = new TaskAutomationService(chrome, database, config.TaskAutomation);
+
+            // F12 opens the dedicated automation control center without changing the
+            // completed MainForm layout. This also keeps the control center available
+            // while the main window is busy with monitor operations.
+            mainForm.KeyPreview = true;
+            mainForm.KeyDown += (_, e) =>
+            {
+                if (e.KeyCode != Keys.F12) return;
+                e.Handled = true;
+                using var form = new DevelopmentAutomationForm(taskAutomation, database);
+                form.ShowDialog(mainForm);
+            };
 
             mainForm.Shown += async (_, _) =>
             {
