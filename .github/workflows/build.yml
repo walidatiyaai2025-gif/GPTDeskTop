@@ -56,3 +56,28 @@ jobs:
           if ($file -notmatch 'if \(!sent\)') { throw 'New-chat send result is not validated.' }
           if ($file -notmatch 'CloseTabAsync\(oldTab') { throw 'Old chat is not closed after successful rotation.' }
           Write-Host 'Rotation safety invariants passed.'
+
+      - name: Package release
+        shell: pwsh
+        run: |
+          $publish = Join-Path $PWD 'Output/Publish'
+          $setup = Join-Path $PWD 'Output/Setup/GPTDeskTop-Setup.exe'
+          $release = Join-Path $PWD 'Output/Release'
+          New-Item -ItemType Directory -Force -Path $release | Out-Null
+          Copy-Item $setup (Join-Path $release 'GPTDeskTop-Setup.exe') -Force
+          Copy-Item (Join-Path $publish 'GPTDeskTop.exe') (Join-Path $release 'GPTDeskTop.exe') -Force
+          Copy-Item (Join-Path $publish 'task-messages.json') (Join-Path $release 'task-messages.json') -Force
+          if (Test-Path (Join-Path $publish 'appsettings.json')) { Copy-Item (Join-Path $publish 'appsettings.json') (Join-Path $release 'appsettings.json') -Force }
+          $version = (Get-Item $setup).VersionInfo.ProductVersion
+          if ([string]::IsNullOrWhiteSpace($version)) { $version = '1.8.1' }
+          Set-Content (Join-Path $release 'Version.txt') "GPTDeskTop $version" -Encoding UTF8
+          Compress-Archive -Path (Join-Path $release '*') -DestinationPath (Join-Path $PWD 'Output/GPTDeskTop-Release.zip') -Force
+          if (-not (Test-Path (Join-Path $PWD 'Output/GPTDeskTop-Release.zip'))) { throw 'Release ZIP was not created.' }
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-Release
+          path: Output/GPTDeskTop-Release.zip
+          if-no-files-found: error
+          retention-days: 14
