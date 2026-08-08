@@ -67,9 +67,9 @@ internal static class Program
             var mainForm = new MainForm(chrome, monitor, database);
             using var metrics = new HomeMetricsService(mainForm, database, monitor);
 
-            // F12 opens the dedicated automation control center without changing the
-            // completed MainForm layout. This also keeps the control center available
-            // while the main window is busy with monitor operations.
+            // Phase 2: expose the automation control center from the existing toolbar.
+            // F12 remains available as a keyboard shortcut for power users.
+            DevelopmentAutomationLauncher.Attach(mainForm, taskAutomation, database);
             mainForm.KeyPreview = true;
             mainForm.KeyDown += (_, e) =>
             {
