@@ -8,6 +8,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GPTDeskTop.Build", "src\GPT
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GPTDeskTop.Setup", "src\GPTDeskTop.Setup\GPTDeskTop.Setup.csproj", "{9E40B81C-B809-453D-B72A-4C17D878DB12}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GPTDeskTop.RuntimeTests", "tests\GPTDeskTop.RuntimeTests\GPTDeskTop.RuntimeTests.csproj", "{D6D0F4A4-DB2C-4C4B-9A90-5F1B8E20D6A1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -27,9 +29,6 @@ Global
 		{B0A2D2C9-2E1D-4A8E-99D3-184A3E357A21}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{B0A2D2C9-2E1D-4A8E-99D3-184A3E357A21}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{B0A2D2C9-2E1D-4A8E-99D3-184A3E357A21}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{B0A2D2C9-2E1D-4A8E-99D3-184A3E357A21}.Release|Any CPU.Build.0 = Release|Any CPU
-		{B0A2D2C9-2E1D-4A8E-99D3-184A3E357A21}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{B0A2D2C9-2E1D-4A8E-99D3-184A3E357A21}.Debug|x64.Build.0 = Debug|Any CPU
 		{B0A2D2C9-2E1D-4A8E-99D3-184A3E357A21}.Release|x64.ActiveCfg = Release|Any CPU
 		{B0A2D2C9-2E1D-4A8E-99D3-184A3E357A21}.Release|x64.Build.0 = Release|Any CPU
 		{9E40B81C-B809-453D-B72A-4C17D878DB12}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
@@ -40,5 +39,13 @@ Global
 		{9E40B81C-B809-453D-B72A-4C17D878DB12}.Debug|x64.Build.0 = Debug|Any CPU
 		{9E40B81C-B809-453D-B72A-4C17D878DB12}.Release|x64.ActiveCfg = Release|Any CPU
 		{9E40B81C-B809-453D-B72A-4C17D878DB12}.Release|x64.Build.0 = Release|Any CPU
+		{D6D0F4A4-DB2C-4C4B-9A90-5F1B8E20D6A1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D6D0F4A4-DB2C-4C4B-9A90-5F1B8E20D6A1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D6D0F4A4-DB2C-4C4B-9A90-5F1B8E20D6A1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D6D0F4A4-DB2C-4C4B-9A90-5F1B8E20D6A1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D6D0F4A4-DB2C-4C4B-9A90-5F1B8E20D6A1}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D6D0F4A4-DB2C-4C4B-9A90-5F1B8E20D6A1}.Debug|x64.Build.0 = Debug|Any CPU
+		{D6D0F4A4-DB2C-4C4B-9A90-5F1B8E20D6A1}.Release|x64.ActiveCfg = Release|Any CPU
+		{D6D0F4A4-DB2C-4C4B-9A90-5F1B8E20D6A1}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
