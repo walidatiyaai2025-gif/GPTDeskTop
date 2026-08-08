@@ -17,24 +17,33 @@ jobs:
           fetch-depth: 0
 
       - name: Patch monitor rotation
-        shell: python
         run: |
+          python - <<'PY'
           from pathlib import Path
+          import re
+
           p = Path('src/GPTDeskTop/Services/ChatGptMonitorService.cs')
           s = p.read_text(encoding='utf-8')
-          old = '''                        var startMessage = string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage;
-                        var sent = await _chrome.SendChatMessageAsync(newTab, startMessage, cancellationToken);'''
-          new = '''                        var handoffService = new ConversationHandoffService(_database);
-                        var handoffMessage = await handoffService.BuildAsync(monitor, text, oldTab, cancellationToken);
-                        var startMessage = string.IsNullOrWhiteSpace(handoffMessage)
-                            ? (string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage)
-                            : handoffMessage;
-                        var sent = await _chrome.SendChatMessageAsync(newTab, startMessage, cancellationToken);'''
-          if old not in s:
-              raise SystemExit('Expected rotation block was not found; refusing to modify the file.')
+
           if 'handoffService.BuildAsync(monitor, text, oldTab' in s:
-              raise SystemExit('Handoff is already integrated.')
-          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+              print('Handoff already integrated.')
+              raise SystemExit(0)
+
+          pattern = r'(?m)^(?P<i>\s*)var startMessage = string\.IsNullOrWhiteSpace\(monitor\.NewChatStartMessage\) \? "كمل" : monitor\.NewChatStartMessage;\n(?P=i)var sent = await _chrome\.SendChatMessageAsync\(newTab, startMessage, cancellationToken\);'
+          replacement = r'''\g<i>var handoffService = new ConversationHandoffService(_database);
+          \g<i>var handoffMessage = await handoffService.BuildAsync(monitor, text, oldTab, cancellationToken);
+          \g<i>var startMessage = string.IsNullOrWhiteSpace(handoffMessage)
+          \g<i>    ? (string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage)
+          \g<i>    : handoffMessage;
+          \g<i>var sent = await _chrome.SendChatMessageAsync(newTab, startMessage, cancellationToken);'''
+
+          updated, count = re.subn(pattern, replacement, s, count=1)
+          if count != 1:
+              raise SystemExit('Expected rotation send block was not found; refusing to modify the file.')
+
+          p.write_text(updated, encoding='utf-8')
+          print('Conversation handoff integrated into context rotation.')
+          PY
 
       - name: Validate solution
         run: dotnet build GPTDeskTop.sln --configuration Release --no-restore
