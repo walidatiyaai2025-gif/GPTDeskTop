@@ -103,6 +103,54 @@ public sealed class ChromeDevToolsService
         }
     }
 
+    /// <summary>
+    /// Best-effort selection of a visible ChatGPT model. If the requested label cannot be
+    /// found, the current model is left untouched. This intentionally never retries rapidly
+    /// and never attempts to bypass a usage or rate limit.
+    /// </summary>
+    public async Task<bool> TrySelectModelAsync(ChromeTab tab, string modelLabel, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(modelLabel) || string.Equals(modelLabel.Trim(), "Auto", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var labelLiteral = JsonSerializer.Serialize(modelLabel.Trim());
+        var expression = $$"""
+            (() => {
+                const requested = {{labelLiteral}}.trim().toLowerCase();
+                const normalize = value => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                const visible = element => {
+                    const r = element.getBoundingClientRect();
+                    const s = getComputedStyle(element);
+                    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                };
+                const elements = [...document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"]')];
+                const modelButton = elements.find(e => {
+                    if (!visible(e)) return false;
+                    const label = normalize(e.getAttribute('aria-label'));
+                    const text = normalize(e.innerText || e.textContent);
+                    return /model|م\u0648\u062f\u064a\u0644|reasoning|thinking|instant/i.test(label + ' ' + text);
+                });
+                if (modelButton) modelButton.click();
+
+                const items = [...document.querySelectorAll('[role="menuitem"],[role="option"],button')];
+                const target = items.find(e => visible(e) && normalize(e.innerText || e.textContent).includes(requested));
+                if (!target) return false;
+                target.click();
+                return true;
+            })()
+            """;
+        try
+        {
+            var result = await EvaluateAsync(tab, expression, cancellationToken, awaitPromise: false);
+            return result.ValueKind == JsonValueKind.True;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ExceptionLogService.Log(ex, "ChromeDevToolsService.TrySelectModel", null, tab.Id, tab.Title);
+            return false;
+        }
+    }
+
     public async Task<bool> HideMonitorChromeAsync(CancellationToken cancellationToken = default)
     {
         var changed = await SetAllBrowserWindowsStateAsync("minimized", cancellationToken);
@@ -328,6 +376,5 @@ public sealed class ChromeDevToolsService
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindow(IntPtr hWnd);
 }
