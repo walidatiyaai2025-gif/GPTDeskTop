@@ -24,8 +24,12 @@ internal static class Program
             if (database.GetSettingAsync("NoResponseRefreshSeconds").GetAwaiter().GetResult() is null)
                 database.SetSettingAsync("NoResponseRefreshSeconds", "180").GetAwaiter().GetResult();
 
-            database.SetSettingAsync("TaskAutomation.WorkWindowMinutes", config.TaskAutomation.WorkWindowMinutes.ToString()).GetAwaiter().GetResult();
-            database.SetSettingAsync("TaskAutomation.CoolingWindowMinutes", config.TaskAutomation.CoolingWindowMinutes.ToString()).GetAwaiter().GetResult();
+            // Seed task-automation defaults only once. Do not overwrite values that the
+            // user has changed from the automation control center on every application start.
+            if (database.GetSettingAsync("TaskAutomation.WorkWindowMinutes").GetAwaiter().GetResult() is null)
+                database.SetSettingAsync("TaskAutomation.WorkWindowMinutes", config.TaskAutomation.WorkWindowMinutes.ToString()).GetAwaiter().GetResult();
+            if (database.GetSettingAsync("TaskAutomation.CoolingWindowMinutes").GetAwaiter().GetResult() is null)
+                database.SetSettingAsync("TaskAutomation.CoolingWindowMinutes", config.TaskAutomation.CoolingWindowMinutes.ToString()).GetAwaiter().GetResult();
 
             var previousClean = database.GetSettingAsync("LastShutdownClean").GetAwaiter().GetResult();
             if (string.Equals(previousClean, "0", StringComparison.Ordinal))
