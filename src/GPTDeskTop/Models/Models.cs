@@ -34,8 +34,14 @@ public sealed class SavedMonitor
     public string NewChatStartMessage { get; set; } = "كمل";
     public int NewChatDelaySeconds { get; set; } = 30;
     public int RotationCooldownSeconds { get; set; } = 60;
-    public int MaxConversationRotations { get; set; } = 0; // 0 = unlimited for this monitor session
+    public int MaxConversationRotations { get; set; } = 0;
     public int RotationCount { get; set; }
+
+    // Conservative model routing. Labels are matched against the visible ChatGPT model picker.
+    // "Auto" means leave the currently selected ChatGPT model unchanged.
+    public bool ModelRoutingEnabled { get; set; } = false;
+    public string PreferredModel { get; set; } = "Auto";
+    public string FallbackModel { get; set; } = "Auto";
 
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
