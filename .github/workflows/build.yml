@@ -23,6 +23,20 @@ jobs:
         run: dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
       - name: Runtime automation tests
         run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
+      - name: Validate development task lifecycle invariants
+        shell: pwsh
+        run: |
+          $engine = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs -Raw
+          $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskEngineEmissionTests.cs -Raw
+          if ($engine -notmatch '_lastEmittedMessageIndex') { throw 'Message emission checkpoint guard is missing.' }
+          if ($engine -notmatch '_lastEmittedMessageIndex = null') { throw 'Emission guard reset is missing.' }
+          if ($engine -notmatch 'TimeSpan.FromMinutes\(10\)') { throw 'Default 10-minute work window is missing.' }
+          if ($engine -notmatch 'TimeSpan.FromMinutes\(5\)') { throw 'Default 5-minute cooling window is missing.' }
+          if ($engine -notmatch 'CoolingStarted') { throw 'Cooling transition event is missing.' }
+          if ($engine -notmatch 'CoolingCompleted') { throw 'Cooling completion event is missing.' }
+          if ($tests -notmatch 'CurrentMessageIsEmittedOnceUntilExplicitAdvance') { throw 'Single-emission regression test is missing.' }
+          if ($tests -notmatch 'WorkWindowTransitionsToCoolingAndThenBackToWorking') { throw 'Work/cooling lifecycle regression test is missing.' }
+          Write-Host 'Development task lifecycle invariants passed.'
       - name: Validate CDP delivery reliability invariants
         shell: pwsh
         run: |
@@ -64,7 +78,6 @@ jobs:
           if ($recovery -notmatch 'CrashRecovery\.\{recoveryId\}\.Monitor\.\{saved\.Id\}\.Success') { throw 'Per-monitor success marker is missing.' }
           if ($tests -notmatch 'PartialFailureKeepsSuccessfulMonitorIdempotentOnRetry') { throw 'Partial-failure regression test is missing.' }
           if ($tests -notmatch 'OneFailedMonitorMustNotPreventAnotherSuccessfulMonitorFromStarting') { throw 'Monitor isolation regression test is missing.' }
-          Write-Host 'Multi-monitor recovery invariants passed.'
       - name: Build application
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj --configuration Release --no-restore
       - name: Build setup
