@@ -62,7 +62,7 @@ public sealed class DevelopmentTaskMonitorTargetFactory
             recipients.Add(new DevelopmentTaskMonitorRecipient(
                 monitorId,
                 tab.Id,
-                message => SendVerifiedAsync(monitor, tab, message)));
+                message => SendVerifiedAsync(tab, message)));
 
             await _database.AddLogAsync(
                 "System",
@@ -78,7 +78,7 @@ public sealed class DevelopmentTaskMonitorTargetFactory
         return recipients;
     }
 
-    private async Task<bool> SendVerifiedAsync(SavedMonitor monitor, ChromeTab tab, string message)
+    private async Task<bool> SendVerifiedAsync(ChromeTab tab, string message)
     {
         var state = await _chrome.GetChatStateAsync(tab).ConfigureAwait(false);
         if (state.IsGenerating || !string.IsNullOrWhiteSpace(state.ErrorText))
