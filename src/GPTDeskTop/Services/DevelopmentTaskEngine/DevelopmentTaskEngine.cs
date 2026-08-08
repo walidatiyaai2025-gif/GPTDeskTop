@@ -19,7 +19,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         _workWindow = workWindow ?? TimeSpan.FromMinutes(10);
         _coolingWindow = coolingWindow ?? TimeSpan.FromMinutes(5);
         _statePath = statePath ?? Path.Combine(AppContext.BaseDirectory, "data", "development-task-state.json");
-        _messagesPath = messagesPath ?? Path.Combine(AppContext.BaseDirectory, "task-messages.json");
+        _messagesPath = messagesPath ?? Path.Combine(AppContext.BaseDirectory, "data", "development-task-messages.json");
     }
 
     public DevelopmentTaskState State => _state;
