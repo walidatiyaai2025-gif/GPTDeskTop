@@ -21,22 +21,18 @@ jobs:
         run: dotnet restore GPTDeskTop.sln
       - name: Restore runtime tests
         run: dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
-      - name: Runtime automation tests
-        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
-      - name: Validate development task lifecycle invariants
+      - name: Validate editable development message catalog
         shell: pwsh
         run: |
+          $catalog = Get-Content data/development-task-messages.json -Raw | ConvertFrom-Json
+          if ($null -eq $catalog.messages) { throw 'Development message catalog is missing messages.' }
+          if ($catalog.messages.Count -ne 10) { throw "Expected exactly 10 development messages, found $($catalog.messages.Count)." }
+          if (($catalog.messages | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) { throw 'Development message catalog contains an empty message.' }
           $engine = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs -Raw
-          $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskEngineEmissionTests.cs -Raw
-          if ($engine -notmatch '_lastEmittedMessageIndex') { throw 'Message emission checkpoint guard is missing.' }
-          if ($engine -notmatch '_lastEmittedMessageIndex = null') { throw 'Emission guard reset is missing.' }
-          if ($engine -notmatch 'TimeSpan.FromMinutes\(10\)') { throw 'Default 10-minute work window is missing.' }
-          if ($engine -notmatch 'TimeSpan.FromMinutes\(5\)') { throw 'Default 5-minute cooling window is missing.' }
-          if ($engine -notmatch 'CoolingStarted') { throw 'Cooling transition event is missing.' }
-          if ($engine -notmatch 'CoolingCompleted') { throw 'Cooling completion event is missing.' }
-          if ($tests -notmatch 'CurrentMessageIsEmittedOnceUntilExplicitAdvance') { throw 'Single-emission regression test is missing.' }
-          if ($tests -notmatch 'WorkWindowTransitionsToCoolingAndThenBackToWorking') { throw 'Work/cooling lifecycle regression test is missing.' }
-          Write-Host 'Development task lifecycle invariants passed.'
+          if ($engine -notmatch 'data", "development-task-messages\.json') { throw 'Development engine is not using the editable message catalog.' }
+          Write-Host 'Editable development message catalog passed.'
+      - name: Runtime automation tests
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
       - name: Validate CDP delivery reliability invariants
         shell: pwsh
         run: |
