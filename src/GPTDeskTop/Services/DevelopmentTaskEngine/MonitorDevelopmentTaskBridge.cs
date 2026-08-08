@@ -4,12 +4,13 @@ namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
 /// <summary>
 /// Connects the development-plan engine to a specific saved Monitor/Chrome tab.
-/// The engine can advance only after the monitor's verified sender confirms receipt.
+/// The engine can advance only after the monitor is running and CDP verifies receipt.
 /// </summary>
 public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
 {
     private readonly DevelopmentTaskEngine _engine;
     private readonly ChatGptMonitorService _monitorService;
+    private readonly ChromeDevToolsService _chrome;
     private readonly SavedMonitor _monitor;
     private readonly ChromeTab _tab;
     private DevelopmentTaskDeliveryCoordinator? _coordinator;
@@ -18,11 +19,13 @@ public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
     public MonitorDevelopmentTaskBridge(
         DevelopmentTaskEngine engine,
         ChatGptMonitorService monitorService,
+        ChromeDevToolsService chrome,
         SavedMonitor monitor,
         ChromeTab tab)
     {
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _monitorService = monitorService ?? throw new ArgumentNullException(nameof(monitorService));
+        _chrome = chrome ?? throw new ArgumentNullException(nameof(chrome));
         _monitor = monitor ?? throw new ArgumentNullException(nameof(monitor));
         _tab = tab ?? throw new ArgumentNullException(nameof(tab));
     }
@@ -33,20 +36,13 @@ public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
     public void Attach()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        _coordinator ??= new DevelopmentTaskDeliveryCoordinator(
-            _engine,
-            (message, cancellationToken) => SendVerifiedAsync(message, cancellationToken));
+        _coordinator ??= new DevelopmentTaskDeliveryCoordinator(_engine, SendVerifiedAsync);
     }
 
     private async Task<bool> SendVerifiedAsync(string message, CancellationToken cancellationToken)
     {
-        if (_disposed) return false;
-        if (!_monitorService.IsMonitorRunning(_monitor.Id)) return false;
-        return await _monitorService.SendDevelopmentTaskMessageVerifiedAsync(
-            _monitor.Id,
-            _tab,
-            message,
-            cancellationToken).ConfigureAwait(false);
+        if (_disposed || !_monitorService.IsMonitorRunning(_monitor.Id)) return false;
+        return await _chrome.SendChatMessageVerifiedAsync(_tab, message, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
