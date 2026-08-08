@@ -45,9 +45,10 @@ public sealed class DatabaseConfig
 public sealed class TaskAutomationConfig
 {
     public bool Enabled { get; set; } = true;
+    public bool ResumeOnStartup { get; set; } = true;
     public int WorkWindowMinutes { get; set; } = 10;
     public int CoolingWindowMinutes { get; set; } = 5;
-    public bool ResumeOnStartup { get; set; } = true;
-    public bool PersistCheckpoints { get; set; } = true;
+    public int MaxMessagesPerWindow { get; set; } = 10;
     public string MessageCatalogFile { get; set; } = "task-messages.json";
+    public string DevelopmentPlanFile { get; set; } = "docs/DEVELOPMENT_PLAN.md";
 }
