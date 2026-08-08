@@ -14,7 +14,6 @@ public sealed class DevelopmentTaskDeliveryCoordinatorTests
             var statePath = Path.Combine(root, "state.json");
             await File.WriteAllTextAsync(messagesPath, "{\"Messages\":[\"first\",\"second\"]}");
             await using var engine = new DevelopmentTaskEngine(TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(5), statePath, messagesPath);
-            await engine.StartAsync("p", "Plan");
 
             var delivered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             await using var coordinator = new DevelopmentTaskDeliveryCoordinator(engine, (_, _) =>
@@ -23,6 +22,7 @@ public sealed class DevelopmentTaskDeliveryCoordinatorTests
                 return Task.FromResult(false);
             });
 
+            await engine.StartAsync("p", "Plan");
             await WaitForAsync(() => delivered.Task.IsCompleted);
             Assert.Equal(0, engine.State.CurrentMessageIndex);
         }
@@ -39,7 +39,6 @@ public sealed class DevelopmentTaskDeliveryCoordinatorTests
             var statePath = Path.Combine(root, "state.json");
             await File.WriteAllTextAsync(messagesPath, "{\"Messages\":[\"first\",\"second\"]}");
             await using var engine = new DevelopmentTaskEngine(TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(5), statePath, messagesPath);
-            await engine.StartAsync("p", "Plan");
 
             var sendCount = 0;
             var advanced = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -50,6 +49,7 @@ public sealed class DevelopmentTaskDeliveryCoordinatorTests
                 return Task.FromResult(true);
             });
 
+            await engine.StartAsync("p", "Plan");
             await WaitForAsync(() => advanced.Task.IsCompleted);
             await Task.Delay(350);
 
