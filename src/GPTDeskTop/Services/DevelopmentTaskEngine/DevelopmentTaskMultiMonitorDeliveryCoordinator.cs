@@ -28,6 +28,12 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
 
     private void OnMessageReady(object? sender, string message) => _ = DeliverAsync(message);
 
+    public Task DeliverCurrentMessageAsync(string message)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return DeliverAsync(message);
+    }
+
     private async Task DeliverAsync(string message)
     {
         if (_disposed) return;
