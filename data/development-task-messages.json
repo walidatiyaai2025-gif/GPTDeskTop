@@ -1,0 +1,14 @@
+{
+  "messages": [
+    "Continue the current development plan for {planTitle}. Work on the next logical implementation step and verify the result before moving on.",
+    "Continue implementing {planTitle}. Pick the next unfinished task, make the code change, and validate it without repeating completed work.",
+    "Resume the current development plan. Inspect the existing implementation, fix the highest-priority remaining issue, and keep the work aligned with the plan.",
+    "Continue the development work for {planTitle}. Take the next actionable task, implement it, and leave the project in a validated state.",
+    "Keep progressing on the current plan. Reuse completed architecture, address the next real blocker or task, and verify the change.",
+    "Continue from the current project state. Work on the next planned development item and check for regressions before advancing.",
+    "Proceed with the next unfinished development task for {planTitle}. Do not redo completed work; implement and validate the next logical change.",
+    "Continue the engineering plan. Review the current state, select the highest-value remaining task, implement it, and verify the outcome.",
+    "Resume development on the current plan. Solve the next actionable issue, preserve existing behavior, and validate the implementation.",
+    "Continue the plan from the current checkpoint. Complete the next development task, verify it, and then prepare for the following task."
+  ]
+}
