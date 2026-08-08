@@ -41,7 +41,9 @@ public sealed class LocalDatabase
                     Enabled INTEGER NOT NULL DEFAULT 1, ConversationRotationEnabled INTEGER NOT NULL DEFAULT 1,
                     NewChatStartMessage TEXT NOT NULL DEFAULT 'كمل', NewChatDelaySeconds INTEGER NOT NULL DEFAULT 30,
                     RotationCooldownSeconds INTEGER NOT NULL DEFAULT 60, MaxConversationRotations INTEGER NOT NULL DEFAULT 0,
-                    RotationCount INTEGER NOT NULL DEFAULT 0, CreatedAt TEXT NOT NULL, UpdatedAt TEXT NOT NULL
+                    RotationCount INTEGER NOT NULL DEFAULT 0, ModelRoutingEnabled INTEGER NOT NULL DEFAULT 0,
+                    PreferredModel TEXT NOT NULL DEFAULT 'Auto', FallbackModel TEXT NOT NULL DEFAULT 'Auto',
+                    CreatedAt TEXT NOT NULL, UpdatedAt TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS ConversationRotations (
                     Id INTEGER PRIMARY KEY AUTOINCREMENT, MonitorId INTEGER NOT NULL,
@@ -61,6 +63,9 @@ public sealed class LocalDatabase
                 INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('DefaultNewChatDelaySeconds', '30');
                 INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('DefaultRotationCooldownSeconds', '60');
                 INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('DefaultMaxConversationRotations', '0');
+                INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('DefaultModelRoutingEnabled', '0');
+                INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('DefaultPreferredModel', 'Auto');
+                INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('DefaultFallbackModel', 'Auto');
                 INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('HandoffEnabled', '1');
                 INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('HandoffMaxChars', '7000');
                 INSERT OR IGNORE INTO AppSettings(Key, Value) VALUES ('TimeoutRecoveryMessage', 'كمل');
@@ -82,6 +87,9 @@ public sealed class LocalDatabase
         await EnsureColumnAsync(connection, "SavedMonitors", "RotationCooldownSeconds", "INTEGER NOT NULL DEFAULT 60");
         await EnsureColumnAsync(connection, "SavedMonitors", "MaxConversationRotations", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(connection, "SavedMonitors", "RotationCount", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, "SavedMonitors", "ModelRoutingEnabled", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, "SavedMonitors", "PreferredModel", "TEXT NOT NULL DEFAULT 'Auto'");
+        await EnsureColumnAsync(connection, "SavedMonitors", "FallbackModel", "TEXT NOT NULL DEFAULT 'Auto'");
     }
 
     private static async Task EnsureColumnAsync(SqliteConnection connection, string table, string column, string definition)
@@ -103,8 +111,8 @@ public sealed class LocalDatabase
         if (monitor.Id <= 0)
         {
             command.CommandText = """
-                INSERT INTO SavedMonitors(TabId,Title,Url,AutoReply,ReplyDelaySeconds,TimerSeconds,Enabled,ConversationRotationEnabled,NewChatStartMessage,NewChatDelaySeconds,RotationCooldownSeconds,MaxConversationRotations,RotationCount,CreatedAt,UpdatedAt)
-                VALUES($tabId,$title,$url,$autoReply,$replyDelay,$timer,$enabled,$rotationEnabled,$message,$newChatDelay,$cooldown,$maxRotations,$rotationCount,$createdAt,$updatedAt); SELECT last_insert_rowid();
+                INSERT INTO SavedMonitors(TabId,Title,Url,AutoReply,ReplyDelaySeconds,TimerSeconds,Enabled,ConversationRotationEnabled,NewChatStartMessage,NewChatDelaySeconds,RotationCooldownSeconds,MaxConversationRotations,RotationCount,ModelRoutingEnabled,PreferredModel,FallbackModel,CreatedAt,UpdatedAt)
+                VALUES($tabId,$title,$url,$autoReply,$replyDelay,$timer,$enabled,$rotationEnabled,$message,$newChatDelay,$cooldown,$maxRotations,$rotationCount,$modelRouting,$preferredModel,$fallbackModel,$createdAt,$updatedAt); SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$createdAt", now.ToString("O"));
         }
@@ -113,7 +121,7 @@ public sealed class LocalDatabase
             command.CommandText = """
                 UPDATE SavedMonitors SET TabId=$tabId,Title=$title,Url=$url,AutoReply=$autoReply,ReplyDelaySeconds=$replyDelay,TimerSeconds=$timer,Enabled=$enabled,
                 ConversationRotationEnabled=$rotationEnabled,NewChatStartMessage=$message,NewChatDelaySeconds=$newChatDelay,RotationCooldownSeconds=$cooldown,
-                MaxConversationRotations=$maxRotations,RotationCount=$rotationCount,UpdatedAt=$updatedAt WHERE Id=$id; SELECT $id;
+                MaxConversationRotations=$maxRotations,RotationCount=$rotationCount,ModelRoutingEnabled=$modelRouting,PreferredModel=$preferredModel,FallbackModel=$fallbackModel,UpdatedAt=$updatedAt WHERE Id=$id; SELECT $id;
                 """;
             command.Parameters.AddWithValue("$id", monitor.Id);
         }
@@ -122,6 +130,7 @@ public sealed class LocalDatabase
         command.Parameters.AddWithValue("$enabled", monitor.Enabled ? 1 : 0); command.Parameters.AddWithValue("$rotationEnabled", monitor.ConversationRotationEnabled ? 1 : 0);
         command.Parameters.AddWithValue("$message", monitor.NewChatStartMessage ?? "كمل"); command.Parameters.AddWithValue("$newChatDelay", monitor.NewChatDelaySeconds);
         command.Parameters.AddWithValue("$cooldown", monitor.RotationCooldownSeconds); command.Parameters.AddWithValue("$maxRotations", monitor.MaxConversationRotations); command.Parameters.AddWithValue("$rotationCount", monitor.RotationCount);
+        command.Parameters.AddWithValue("$modelRouting", monitor.ModelRoutingEnabled ? 1 : 0); command.Parameters.AddWithValue("$preferredModel", monitor.PreferredModel ?? "Auto"); command.Parameters.AddWithValue("$fallbackModel", monitor.FallbackModel ?? "Auto");
         command.Parameters.AddWithValue("$updatedAt", now.ToString("O"));
         monitor.Id = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)); monitor.UpdatedAt = now.ToLocalTime(); if (monitor.CreatedAt == default) monitor.CreatedAt = now.ToLocalTime(); return monitor.Id;
     }
@@ -129,11 +138,12 @@ public sealed class LocalDatabase
     public async Task<List<SavedMonitor>> GetSavedMonitorsAsync(CancellationToken cancellationToken = default)
     {
         var result = new List<SavedMonitor>(); await using var connection = new SqliteConnection(_connectionString); await connection.OpenAsync(cancellationToken); await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT Id,TabId,Title,Url,AutoReply,ReplyDelaySeconds,TimerSeconds,Enabled,ConversationRotationEnabled,NewChatStartMessage,NewChatDelaySeconds,RotationCooldownSeconds,MaxConversationRotations,RotationCount,CreatedAt,UpdatedAt FROM SavedMonitors ORDER BY Id;";
+        command.CommandText = "SELECT Id,TabId,Title,Url,AutoReply,ReplyDelaySeconds,TimerSeconds,Enabled,ConversationRotationEnabled,NewChatStartMessage,NewChatDelaySeconds,RotationCooldownSeconds,MaxConversationRotations,RotationCount,ModelRoutingEnabled,PreferredModel,FallbackModel,CreatedAt,UpdatedAt FROM SavedMonitors ORDER BY Id;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken)) result.Add(new SavedMonitor {
             Id=reader.GetInt64(0),TabId=reader.GetString(1),Title=reader.GetString(2),Url=reader.GetString(3),AutoReply=reader.GetString(4),ReplyDelaySeconds=Math.Clamp(reader.GetInt32(5),0,300),TimerSeconds=Math.Clamp(reader.GetInt32(6),1,60),Enabled=reader.GetInt64(7)!=0,
-            ConversationRotationEnabled=reader.GetInt64(8)!=0,NewChatStartMessage=reader.GetString(9),NewChatDelaySeconds=Math.Clamp(reader.GetInt32(10),0,600),RotationCooldownSeconds=Math.Clamp(reader.GetInt32(11),0,3600),MaxConversationRotations=Math.Clamp(reader.GetInt32(12),0,1000),RotationCount=Math.Max(0,reader.GetInt32(13)),CreatedAt=ParseLocal(reader.GetString(14)),UpdatedAt=ParseLocal(reader.GetString(15))
+            ConversationRotationEnabled=reader.GetInt64(8)!=0,NewChatStartMessage=reader.GetString(9),NewChatDelaySeconds=Math.Clamp(reader.GetInt32(10),0,600),RotationCooldownSeconds=Math.Clamp(reader.GetInt32(11),0,3600),MaxConversationRotations=Math.Clamp(reader.GetInt32(12),0,1000),RotationCount=Math.Max(0,reader.GetInt32(13)),
+            ModelRoutingEnabled=reader.GetInt64(14)!=0,PreferredModel=reader.GetString(15),FallbackModel=reader.GetString(16),CreatedAt=ParseLocal(reader.GetString(17)),UpdatedAt=ParseLocal(reader.GetString(18))
         });
         return result;
     }
