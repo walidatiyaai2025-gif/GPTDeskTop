@@ -63,11 +63,6 @@ internal static class Program
             var mainForm = new MainForm(chrome, monitor, database);
             using var metrics = new HomeMetricsService(mainForm, database, monitor);
             var taskAutomation = new TaskAutomationService(chrome, database, config.TaskAutomation);
-            taskAutomation.Activity += message =>
-            {
-                try { mainForm.BeginInvoke(() => mainForm.SetTaskAutomationStatus(message)); }
-                catch { }
-            };
 
             mainForm.Shown += async (_, _) =>
             {
