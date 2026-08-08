@@ -87,7 +87,7 @@ public sealed class ChatGptMonitorService
 
         try
         {
-            var initial = await GetChatStateWithRetryAsync(tab, cancellationToken);
+            var initial = await GetChatStateWithRetryAsync(monitor.Id, tab, cancellationToken);
             var lastHandledText = GetEffectiveResponse(initial);
             var candidateText = string.Empty;
             var candidateSince = DateTimeOffset.MinValue;
@@ -260,7 +260,7 @@ public sealed class ChatGptMonitorService
         }
     }
 
-    private async Task<ChatPageState> GetChatStateWithRetryAsync(ChromeTab tab, CancellationToken cancellationToken)
+    private async Task<ChatPageState> GetChatStateWithRetryAsync(long monitorId, ChromeTab tab, CancellationToken cancellationToken)
     {
         Exception? last = null;
         for (var attempt = 1; attempt <= 3; attempt++)
@@ -272,7 +272,7 @@ public sealed class ChatGptMonitorService
             catch (Exception ex) when (IsTransientChromeException(ex))
             {
                 last = ex;
-                Activity?.Invoke(0, $"Initial Chrome/CDP connection retry {attempt}/3: {ex.GetType().Name}");
+                Activity?.Invoke(monitorId, $"Initial Chrome/CDP connection retry {attempt}/3: {ex.GetType().Name}");
                 await Task.Delay(500 * attempt, cancellationToken);
             }
         }
