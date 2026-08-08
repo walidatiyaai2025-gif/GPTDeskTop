@@ -31,7 +31,9 @@ public sealed class DevelopmentAutomationControlForm : Form
         Size = new Size(1040, 720);
         BuildUi();
         FluentTheme.Apply(this);
-        FluentTheme.StyleButton(Controls.Find("RunNowButton", true).OfType<Button>().First(), primary: true);
+        var runNowButton = Controls.Find("RunNowButton", true).OfType<Button>().FirstOrDefault();
+        if (runNowButton is not null)
+            FluentTheme.StyleButton(runNowButton, primary: true);
         WireEvents();
         _refreshTimer.Start();
         Shown += async (_, _) => await RefreshAllAsync();
@@ -77,8 +79,9 @@ public sealed class DevelopmentAutomationControlForm : Form
         planPanel.Controls.Add(_planId, 1, 0);
         planPanel.Controls.Add(new Label { Text = "Plan Title", Dock = DockStyle.Fill, ForeColor = FluentTheme.Muted, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
         planPanel.Controls.Add(_planTitle, 1, 1);
-        planPanel.Controls.Add(new Label { Text = "Select a monitor, edit its plan metadata, then press Save Selection. Unchecked monitors are never targeted by the development-plan worker.", Dock = DockStyle.Fill, ForeColor = FluentTheme.Muted, AutoEllipsis = true }, 0, 2);
-        planPanel.SetColumnSpan(planPanel.GetControlFromPosition(0, 2), 2);
+        var hint = new Label { Text = "Select a monitor, edit its plan metadata, then press Save Selection. Unchecked monitors are never targeted by the development-plan worker.", Dock = DockStyle.Fill, ForeColor = FluentTheme.Muted, AutoEllipsis = true };
+        planPanel.Controls.Add(hint, 0, 2);
+        planPanel.SetColumnSpan(hint, 2);
         root.Controls.Add(planPanel, 1, 0);
 
         AddRow(root, 1, "Phase", _phase);
