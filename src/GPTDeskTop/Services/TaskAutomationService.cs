@@ -7,7 +7,8 @@ namespace GPTDeskTop.Services;
 /// <summary>
 /// Executes the editable development-plan message catalog in bounded work/cooling windows.
 /// State is persisted before and after delivery so a restart resumes the same monitors
-/// from their next undelivered message. This is cooperative pacing and does not bypass
+/// from their next undelivered message. Development-plan automation is explicitly opt-in
+/// per saved monitor through AppSettings. This is cooperative pacing and does not bypass
 /// external quotas, access controls, or platform protections.
 /// </summary>
 public sealed class TaskAutomationService : IAsyncDisposable
@@ -17,11 +18,14 @@ public sealed class TaskAutomationService : IAsyncDisposable
     private const string CoolingStartedKey = "TaskAutomation.CoolingStartedUtc";
     private const string LastCycleKey = "TaskAutomation.LastCycleCompletedUtc";
     private const string LastSentCountKey = "TaskAutomation.LastCycleSentCount";
+    private const string CurrentMonitorKey = "TaskAutomation.CurrentMonitorId";
+    private const string CurrentMessageKey = "TaskAutomation.CurrentMessage";
+    private const string NextMessageKey = "TaskAutomation.NextMessage";
 
     private readonly ChromeDevToolsService _chrome;
     private readonly LocalDatabase _database;
     private readonly TaskAutomationConfig _config;
-    private readonly TaskMessageCatalog _catalog;
+    private readonly string _catalogPath;
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private CancellationTokenSource? _runCts;
     private Task? _worker;
@@ -37,11 +41,9 @@ public sealed class TaskAutomationService : IAsyncDisposable
         _chrome = chrome;
         _database = database;
         _config = config;
-
-        var catalogPath = Path.IsPathRooted(config.MessageCatalogFile)
+        _catalogPath = Path.IsPathRooted(config.MessageCatalogFile)
             ? config.MessageCatalogFile
             : Path.Combine(AppContext.BaseDirectory, config.MessageCatalogFile);
-        _catalog = TaskMessageCatalog.Load(catalogPath);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -52,7 +54,8 @@ public sealed class TaskAutomationService : IAsyncDisposable
             if (!_config.Enabled || IsRunning)
                 return;
 
-            if (_catalog.Messages.Count == 0)
+            var catalog = LoadCatalog();
+            if (catalog.Messages.Count == 0)
             {
                 Activity?.Invoke("Task automation disabled: message catalog is empty.");
                 return;
@@ -87,8 +90,6 @@ public sealed class TaskAutomationService : IAsyncDisposable
                 _runCts = null;
             }
 
-            // Preserve Working/Cooling timestamps so the next startup can resume
-            // the persisted phase instead of resetting the schedule.
             Activity?.Invoke("Task automation stopped for application shutdown; checkpoint state preserved.");
         }
         finally
@@ -96,6 +97,8 @@ public sealed class TaskAutomationService : IAsyncDisposable
             _lifecycle.Release();
         }
     }
+
+    private TaskMessageCatalog LoadCatalog() => TaskMessageCatalog.Load(_catalogPath);
 
     private async Task RunAsync(CancellationToken cancellationToken)
     {
@@ -107,6 +110,13 @@ public sealed class TaskAutomationService : IAsyncDisposable
             while (!cancellationToken.IsCancellationRequested)
             {
                 var phase = await _database.GetSettingAsync(PhaseKey, cancellationToken).ConfigureAwait(false);
+
+                if (string.Equals(phase, "Paused", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(phase, "Stopped", StringComparison.OrdinalIgnoreCase))
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
 
                 if (string.Equals(phase, "Cooling", StringComparison.OrdinalIgnoreCase))
                 {
@@ -126,14 +136,12 @@ public sealed class TaskAutomationService : IAsyncDisposable
                     await BeginCoolingAsync(cancellationToken).ConfigureAwait(false);
                     if (coolingWindow > TimeSpan.Zero)
                         continue;
-
                     await BeginNewWorkWindowAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                await RunOneWorkCycleAsync(workStarted.Value, workWindow, cancellationToken).ConfigureAwait(false);
+                var cycleStarted = workStarted.Value;
+                await RunOneWorkCycleAsync(cycleStarted, workWindow, cancellationToken).ConfigureAwait(false);
 
-                // A work cycle contains one logical development-plan message per monitor.
-                // The monitor's own message index advances only after verified delivery.
                 var refreshedStart = await GetTimestampAsync(WorkStartedKey, cancellationToken).ConfigureAwait(false);
                 if (refreshedStart is null || DateTimeOffset.UtcNow - refreshedStart.Value >= workWindow)
                 {
@@ -144,8 +152,6 @@ public sealed class TaskAutomationService : IAsyncDisposable
                 }
                 else
                 {
-                    // Do not send another development-plan message in the same work window.
-                    // Sleep until the window ends while remaining restart/cancellation safe.
                     var remaining = workWindow - (DateTimeOffset.UtcNow - refreshedStart.Value);
                     if (remaining > TimeSpan.Zero)
                         await Task.Delay(remaining, cancellationToken).ConfigureAwait(false);
@@ -154,7 +160,6 @@ public sealed class TaskAutomationService : IAsyncDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Normal shutdown/pause path.
         }
         catch (Exception ex)
         {
@@ -172,14 +177,27 @@ public sealed class TaskAutomationService : IAsyncDisposable
     {
         await _database.SetSettingAsync(PhaseKey, "Working", cancellationToken).ConfigureAwait(false);
 
+        var catalog = LoadCatalog();
+        if (catalog.Messages.Count == 0)
+        {
+            Activity?.Invoke("Work window skipped: task message catalog is empty.");
+            return;
+        }
+
         var monitors = await _database.GetSavedMonitorsAsync(cancellationToken).ConfigureAwait(false);
-        var targets = monitors
-            .Where(m => m.Enabled && !string.IsNullOrWhiteSpace(m.TabId))
-            .ToList();
+        var targets = new List<SavedMonitor>();
+        foreach (var monitor in monitors.Where(m => m.Enabled && !string.IsNullOrWhiteSpace(m.TabId)))
+        {
+            if (await IsDevelopmentAutomationEnabledAsync(monitor.Id, cancellationToken).ConfigureAwait(false))
+                targets.Add(monitor);
+        }
 
         if (targets.Count == 0)
         {
-            Activity?.Invoke("Work window active: no enabled saved ChatGPT monitors with an active Tab ID.");
+            await _database.SetSettingAsync(CurrentMonitorKey, string.Empty, cancellationToken).ConfigureAwait(false);
+            await _database.SetSettingAsync(CurrentMessageKey, "No monitor is opted in to Development Automation.", cancellationToken).ConfigureAwait(false);
+            await _database.SetSettingAsync(NextMessageKey, string.Empty, cancellationToken).ConfigureAwait(false);
+            Activity?.Invoke("Work window active: no enabled saved monitor has Development Automation opt-in.");
             return;
         }
 
@@ -193,8 +211,17 @@ public sealed class TaskAutomationService : IAsyncDisposable
                 break;
 
             var tab = tabs.FirstOrDefault(t => string.Equals(t.Id, monitor.TabId, StringComparison.Ordinal));
-            var index = await GetMonitorMessageIndexAsync(monitor.Id, cancellationToken).ConfigureAwait(false);
-            var message = BuildMessage(index);
+            var index = await GetMonitorMessageIndexAsync(monitor.Id, catalog.Messages.Count, cancellationToken).ConfigureAwait(false);
+            var planId = await GetMonitorSettingAsync(monitor.Id, "PlanId", "default-development-plan", cancellationToken).ConfigureAwait(false);
+            var planTitle = await GetMonitorSettingAsync(monitor.Id, "PlanTitle", "GPTDeskTop Development Plan", cancellationToken).ConfigureAwait(false);
+            var message = BuildMessage(catalog, index, planId, planTitle);
+            var nextMessage = BuildMessage(catalog, (index + 1) % catalog.Messages.Count, planId, planTitle);
+
+            await _database.SetSettingAsync($"TaskAutomation.Checkpoint.{monitor.Id}.CurrentMessage", message, cancellationToken).ConfigureAwait(false);
+            await _database.SetSettingAsync($"TaskAutomation.Checkpoint.{monitor.Id}.NextMessage", nextMessage, cancellationToken).ConfigureAwait(false);
+            await _database.SetSettingAsync(CurrentMonitorKey, monitor.Id.ToString(), cancellationToken).ConfigureAwait(false);
+            await _database.SetSettingAsync(CurrentMessageKey, message, cancellationToken).ConfigureAwait(false);
+            await _database.SetSettingAsync(NextMessageKey, nextMessage, cancellationToken).ConfigureAwait(false);
 
             if (tab is null)
             {
@@ -226,10 +253,10 @@ public sealed class TaskAutomationService : IAsyncDisposable
 
                 if (sent)
                 {
-                    var nextIndex = (index + 1) % _catalog.Messages.Count;
+                    var nextIndex = (index + 1) % catalog.Messages.Count;
                     await SaveCheckpointAsync(monitor.Id, index, "Sent", message, cancellationToken, nextIndex).ConfigureAwait(false);
                     sentCount++;
-                    Activity?.Invoke($"[{monitor.Title}] message {index + 1}/{_catalog.Messages.Count} delivered; next={nextIndex + 1}.");
+                    Activity?.Invoke($"[{monitor.Title}] plan '{planTitle}' message {index + 1}/{catalog.Messages.Count} delivered; next={nextIndex + 1}.");
                 }
                 else
                 {
@@ -252,25 +279,38 @@ public sealed class TaskAutomationService : IAsyncDisposable
 
         await _database.SetSettingAsync(LastCycleKey, DateTimeOffset.UtcNow.ToString("O"), cancellationToken).ConfigureAwait(false);
         await _database.SetSettingAsync(LastSentCountKey, sentCount.ToString(), cancellationToken).ConfigureAwait(false);
-        await _database.SetSettingAsync("TaskAutomation.LastCatalogCount", _catalog.Messages.Count.ToString(), cancellationToken).ConfigureAwait(false);
+        await _database.SetSettingAsync("TaskAutomation.LastCatalogCount", catalog.Messages.Count.ToString(), cancellationToken).ConfigureAwait(false);
     }
 
-    private string BuildMessage(int index)
+    private async Task<bool> IsDevelopmentAutomationEnabledAsync(long monitorId, CancellationToken cancellationToken)
     {
-        var template = _catalog.Messages[index % _catalog.Messages.Count];
-        return template
-            .Replace("{planId}", "default-development-plan", StringComparison.OrdinalIgnoreCase)
-            .Replace("{planTitle}", "GPTDeskTop Development Plan", StringComparison.OrdinalIgnoreCase)
-            .Replace("{step}", (index + 1).ToString(), StringComparison.OrdinalIgnoreCase)
-            .Replace("{total}", _catalog.Messages.Count.ToString(), StringComparison.OrdinalIgnoreCase);
+        var value = await _database.GetSettingAsync($"TaskAutomation.Monitor.{monitorId}.Enabled", cancellationToken).ConfigureAwait(false);
+        return string.Equals(value, "1", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<int> GetMonitorMessageIndexAsync(long monitorId, CancellationToken cancellationToken)
+    private async Task<string> GetMonitorSettingAsync(long monitorId, string name, string defaultValue, CancellationToken cancellationToken)
+    {
+        var value = await _database.GetSettingAsync($"TaskAutomation.Monitor.{monitorId}.{name}", cancellationToken).ConfigureAwait(false);
+        return string.IsNullOrWhiteSpace(value) ? defaultValue : value.Trim();
+    }
+
+    private static string BuildMessage(TaskMessageCatalog catalog, int index, string planId, string planTitle)
+    {
+        var template = catalog.Messages[index % catalog.Messages.Count];
+        return template
+            .Replace("{planId}", planId, StringComparison.OrdinalIgnoreCase)
+            .Replace("{planTitle}", planTitle, StringComparison.OrdinalIgnoreCase)
+            .Replace("{step}", (index + 1).ToString(), StringComparison.OrdinalIgnoreCase)
+            .Replace("{total}", catalog.Messages.Count.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<int> GetMonitorMessageIndexAsync(long monitorId, int catalogCount, CancellationToken cancellationToken)
     {
         var raw = await _database.GetSettingAsync($"TaskAutomation.Monitor.{monitorId}.NextMessageIndex", cancellationToken).ConfigureAwait(false);
         if (!int.TryParse(raw, out var index))
             index = 0;
-        return Math.Clamp(index, 0, Math.Max(0, _catalog.Messages.Count - 1));
+        return Math.Clamp(index, 0, Math.Max(0, catalogCount - 1));
     }
 
     private async Task SaveCheckpointAsync(
