@@ -12,6 +12,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
     private readonly TimeSpan _coolingWindow;
     private CancellationTokenSource? _cts;
     private DevelopmentTaskState _state = new();
+    private int? _lastEmittedMessageIndex;
 
     public DevelopmentTaskEngine(TimeSpan? workWindow = null, TimeSpan? coolingWindow = null, string? statePath = null, string? messagesPath = null)
     {
@@ -43,6 +44,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
             _state.WorkWindowStartedAt = DateTimeOffset.UtcNow;
             _state.CoolingStartedAt = null;
             _state.LastError = null;
+            _lastEmittedMessageIndex = null;
             await SaveStateAsync(cancellationToken).ConfigureAwait(false);
             PublishState();
             RestartWorker(cancellationToken);
@@ -59,6 +61,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
             _state.Status = DevelopmentTaskEngineStatus.Stopped;
             _state.WorkWindowStartedAt = null;
             _state.CoolingStartedAt = null;
+            _lastEmittedMessageIndex = null;
             await SaveStateAsync(cancellationToken).ConfigureAwait(false);
             PublishState();
         }
@@ -89,6 +92,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
             }
 
             _state.LastError = null;
+            _lastEmittedMessageIndex = null;
             await SaveStateAsync(cancellationToken).ConfigureAwait(false);
             PublishState();
             RestartWorker(cancellationToken);
@@ -121,16 +125,11 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
             _state.CompletedMessages = _state.CurrentMessageIndex;
             _state.LastCheckpointAt = DateTimeOffset.UtcNow;
             _state.Revision++;
+            _lastEmittedMessageIndex = null;
             await SaveStateAsync(cancellationToken).ConfigureAwait(false);
             PublishState();
         }
         finally { _gate.Release(); }
-
-        // The worker started by StartAsync/ResumeAsync already owns the run loop.
-        // Starting another uncancellable loop here creates a second worker that can
-        // outlive the engine and overwrite persisted Cooling/Working state during
-        // shutdown or restart. The existing worker will observe the advanced index
-        // on its next iteration.
     }
 
     private void RestartWorker(CancellationToken cancellationToken)
@@ -168,14 +167,19 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
                     {
                         _state.Status = DevelopmentTaskEngineStatus.Cooling;
                         _state.CoolingStartedAt ??= DateTimeOffset.UtcNow;
+                        _lastEmittedMessageIndex = null;
                         await SaveStateAsync(cancellationToken).ConfigureAwait(false);
                         PublishState();
                         CoolingStarted?.Invoke(this, EventArgs.Empty);
                         continue;
                     }
 
-                    var message = BuildPlanMessage(messages[_state.CurrentMessageIndex], _state);
-                    MessageReady?.Invoke(this, message);
+                    if (_lastEmittedMessageIndex != _state.CurrentMessageIndex)
+                    {
+                        var message = BuildPlanMessage(messages[_state.CurrentMessageIndex], _state);
+                        _lastEmittedMessageIndex = _state.CurrentMessageIndex;
+                        MessageReady?.Invoke(this, message);
+                    }
                     await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -215,6 +219,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         _state.Status = DevelopmentTaskEngineStatus.Working;
         _state.WorkWindowStartedAt = DateTimeOffset.UtcNow;
         _state.CoolingStartedAt = null;
+        _lastEmittedMessageIndex = null;
         await SaveStateAsync(cancellationToken).ConfigureAwait(false);
         PublishState();
         CoolingCompleted?.Invoke(this, EventArgs.Empty);
