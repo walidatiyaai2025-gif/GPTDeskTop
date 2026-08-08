@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using GPTDeskTop.Data;
 using GPTDeskTop.Services;
 
@@ -15,6 +16,7 @@ public sealed class DevelopmentAutomationForm : Form
     private readonly Button _start = new() { Text = "Start Now", AutoSize = true };
     private readonly Button _stop = new() { Text = "Stop", AutoSize = true };
     private readonly Button _refresh = new() { Text = "Refresh", AutoSize = true };
+    private readonly Button _editCatalog = new() { Text = "Edit task-messages.json", AutoSize = true };
     private readonly System.Windows.Forms.Timer _timerTick = new() { Interval = 1000 };
 
     public DevelopmentAutomationForm(TaskAutomationService automation, LocalDatabase database)
@@ -57,7 +59,7 @@ public sealed class DevelopmentAutomationForm : Form
         stats.Controls.Add(MakeCard("Window timer", _timer), 0, 0); stats.Controls.Add(MakeCard("Last activity", _last), 1, 0); stats.Controls.Add(MakeCard("Engine", new Label { Text = "Checkpointed", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = FluentTheme.Text }), 2, 0);
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 4, 0, 4) };
-        actions.Controls.Add(_start); actions.Controls.Add(_stop); actions.Controls.Add(_refresh);
+        actions.Controls.Add(_start); actions.Controls.Add(_stop); actions.Controls.Add(_refresh); actions.Controls.Add(_editCatalog);
         _error.Text = ""; _error.Dock = DockStyle.Fill; _error.ForeColor = FluentTheme.Muted; _error.AutoEllipsis = true;
 
         var catalogGroup = new GroupBox { Text = "Task Message Catalog", Dock = DockStyle.Fill, Padding = new Padding(10), ForeColor = FluentTheme.Text, BackColor = FluentTheme.Background };
@@ -79,6 +81,7 @@ public sealed class DevelopmentAutomationForm : Form
         _start.Click += async (_, _) => await StartAsync();
         _stop.Click += async (_, _) => await StopAsync();
         _refresh.Click += async (_, _) => await RefreshAsync();
+        _editCatalog.Click += (_, _) => EditCatalog();
         _timerTick.Tick += async (_, _) => await RefreshAsync(false);
         _automation.Activity += message => Ui(() => { _error.Text = message; _last.Text = $"Last activity: {DateTime.Now:HH:mm:ss}"; });
     }
@@ -92,6 +95,18 @@ public sealed class DevelopmentAutomationForm : Form
     private async Task StopAsync()
     {
         try { await _automation.StopAsync(); await RefreshAsync(); }
+        catch (Exception ex) { _error.Text = ex.Message; }
+    }
+
+    private void EditCatalog()
+    {
+        try
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "task-messages.json");
+            if (!File.Exists(path)) File.WriteAllText(path, "[\n  \"كمل\"\n]\n");
+            Process.Start(new ProcessStartInfo("notepad.exe", $"\"{path}\"") { UseShellExecute = true });
+            _error.Text = "Opened task-messages.json in Notepad. Refresh after saving.";
+        }
         catch (Exception ex) { _error.Text = ex.Message; }
     }
 
