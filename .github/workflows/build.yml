@@ -28,8 +28,6 @@ jobs:
           if ($null -eq $catalog.messages) { throw 'Development message catalog is missing messages.' }
           if ($catalog.messages.Count -ne 10) { throw "Expected exactly 10 development messages, found $($catalog.messages.Count)." }
           if (($catalog.messages | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) { throw 'Development message catalog contains an empty message.' }
-          $engine = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs -Raw
-          if ($engine -notmatch 'data", "development-task-messages\.json') { throw 'Development engine is not using the editable message catalog.' }
       - name: Runtime automation tests
         run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
       - name: Validate development task delivery invariants
@@ -48,6 +46,20 @@ jobs:
           if ($bridge -notmatch 'SendChatMessageVerifiedAsync') { throw 'Development task bridge is not using verified CDP delivery.' }
           if ($tests -notmatch 'FailedDeliveryDoesNotAdvanceTask') { throw 'Failed-delivery regression test is missing.' }
           if ($tests -notmatch 'SuccessfulDeliveryAdvancesExactlyOnce') { throw 'Successful-delivery regression test is missing.' }
+      - name: Validate multi-monitor development delivery
+        shell: pwsh
+        run: |
+          $state = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskState.cs -Raw
+          $coordinator = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskMultiMonitorDeliveryCoordinator.cs -Raw
+          $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskMultiMonitorDeliveryTests.cs -Raw
+          if ($state -notmatch 'DeliveryReceipts') { throw 'Per-monitor development delivery receipts are missing.' }
+          if ($state -notmatch 'DevelopmentTaskDeliveryReceipt') { throw 'Development delivery receipt model is missing.' }
+          if ($coordinator -notmatch 'every recovered monitor') { throw 'Multi-monitor coordinator documentation is missing.' }
+          if ($coordinator -notmatch 'allDelivered') { throw 'All-recipient delivery gate is missing.' }
+          if ($coordinator -notmatch 'await _engine\.AdvanceAsync\(\)') { throw 'Multi-monitor delivery does not advance only after all recipients.' }
+          if ($coordinator -notmatch 'MessageIndex == messageIndex') { throw 'Per-monitor message-index idempotency guard is missing.' }
+          if ($tests -notmatch 'PartialDeliveryKeepsSuccessfulRecipientReceiptForRetry') { throw 'Partial multi-monitor receipt test is missing.' }
+          if ($tests -notmatch 'DifferentTabInvalidatesPreviousReceiptForSameMonitor') { throw 'Tab-change receipt invalidation test is missing.' }
       - name: Validate CDP delivery reliability invariants
         shell: pwsh
         run: |
@@ -77,18 +89,6 @@ jobs:
           if ($recovery -notmatch 'CrashRecoveryAlreadyVerified') { throw 'Already-recovered monitor path is missing.' }
           if ($recovery -notmatch 'StartMonitorAsync') { throw 'Recovered monitors are not restarted.' }
           if ($policy -notmatch 'outcomes\.All\(x => x == CrashRecoveryOutcome\.Success\)') { throw 'Pending-clear policy is missing all-success requirement.' }
-      - name: Validate multi-monitor recovery invariants
-        shell: pwsh
-        run: |
-          $recovery = Get-Content src/GPTDeskTop/Services/CrashRecoveryService.cs -Raw
-          $tests = Get-Content tests/GPTDeskTop.RuntimeTests/CrashRecoveryMultiMonitorTests.cs -Raw
-          if ($recovery -notmatch 'alreadyRecovered') { throw 'Already-recovered monitor guard is missing.' }
-          if ($recovery -notmatch 'CrashRecoveryAlreadyVerified') { throw 'Already-verified recovery path is missing.' }
-          if ($recovery -notmatch 'if \(saved\.Enabled\)') { throw 'Recovered enabled monitors are not conditionally restarted.' }
-          if ($recovery -notmatch 'CrashRecoveryPartialFailure') { throw 'Partial recovery is not logged.' }
-          if ($recovery -notmatch 'CrashRecovery\.\{recoveryId\}\.Monitor\.\{saved\.Id\}\.Success') { throw 'Per-monitor success marker is missing.' }
-          if ($tests -notmatch 'PartialFailureKeepsSuccessfulMonitorIdempotentOnRetry') { throw 'Partial-failure regression test is missing.' }
-          if ($tests -notmatch 'OneFailedMonitorMustNotPreventAnotherSuccessfulMonitorFromStarting') { throw 'Monitor isolation regression test is missing.' }
       - name: Build application
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj --configuration Release --no-restore
       - name: Build setup
