@@ -1,0 +1,36 @@
+name: Development Task Recovery
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  recovery:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Restore runtime tests
+        run: dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+      - name: Run restart recovery tests
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true --filter FullyQualifiedName~DevelopmentTaskRecoveryTests
+      - name: Validate recovery contract
+        shell: pwsh
+        run: |
+          $recovery = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskRecoveryService.cs -Raw
+          $engine = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs -Raw
+          if ($recovery -notmatch 'LastMonitorId') { throw 'Monitor checkpoint identity is missing.' }
+          if ($recovery -notmatch 'LastTabId') { throw 'Tab checkpoint identity is missing.' }
+          if ($recovery -notmatch 'LastDeliveredMessageIndex') { throw 'Delivered message index recovery is missing.' }
+          if ($recovery -notmatch 'LastDeliveredMessageFingerprint') { throw 'Delivery fingerprint recovery is missing.' }
+          if ($recovery -notmatch 'RestorePosition') { throw 'Engine position restore is missing.' }
+          if ($engine -notmatch 'public void RestorePosition') { throw 'Engine RestorePosition API is missing.' }
+          if ($engine -notmatch '_lastEmittedMessageIndex = null') { throw 'Recovery does not reset emission guard.' }
+          Write-Host 'Development task restart recovery contract passed.'
