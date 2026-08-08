@@ -1,3 +1,4 @@
+using System.Net.WebSockets;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
@@ -80,6 +81,7 @@ public sealed class ChatGptMonitorService
         var timerSeconds = Math.Clamp(monitor.TimerSeconds, 1, 60);
         var replyDelaySeconds = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300);
         var noResponseSeconds = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600, cancellationToken);
+        var transientFailures = 0;
 
         Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Timer {timerSeconds}s | Delay {replyDelaySeconds}s | No-response refresh {noResponseSeconds}s | Reply: {monitor.AutoReply}");
 
@@ -99,6 +101,7 @@ public sealed class ChatGptMonitorService
                     var prefix = $"[{monitor.Title}]";
                     var state = await _chrome.GetChatStateAsync(tab, cancellationToken);
                     var text = GetEffectiveResponse(state);
+                    transientFailures = 0;
 
                     noResponseSeconds = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600, cancellationToken);
                     if ((DateTimeOffset.UtcNow - lastResponseActivity).TotalSeconds >= noResponseSeconds)
@@ -190,7 +193,7 @@ public sealed class ChatGptMonitorService
                             lastResponseActivity = DateTimeOffset.UtcNow;
                             await Task.Delay(Math.Max(1500, _config.DelayAfterSendMilliseconds), cancellationToken);
                         }
-                        catch (Exception refreshEx) when (refreshEx is not OperationCanceledException)
+                        catch (Exception refreshEx) when (refreshEx is not OperationCanceledException && !IsTransientChromeException(refreshEx))
                         {
                             ExceptionLogService.Log(refreshEx, "Monitor.RefreshAfterError", monitor.Id, tab.Id, monitor.Title);
                             await _database.AddLogAsync("System", "Page.reload", refreshEx.ToString(), "RefreshFailed", monitor.Id, tab.Id, monitor.Title, cancellationToken);
@@ -223,6 +226,20 @@ public sealed class ChatGptMonitorService
                 {
                     throw;
                 }
+                catch (Exception ex) when (IsTransientChromeException(ex))
+                {
+                    transientFailures++;
+                    if (transientFailures <= 3)
+                    {
+                        Activity?.Invoke(monitor.Id, $"CDP connection transient ({transientFailures}/3): {ex.GetType().Name}. Retrying...");
+                    }
+                    else if (transientFailures == 4)
+                    {
+                        Activity?.Invoke(monitor.Id, "CDP connection is still unavailable. Continuing background retry without treating it as an application crash.");
+                    }
+
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(5000, 750 * transientFailures)), cancellationToken);
+                }
                 catch (Exception ex)
                 {
                     Activity?.Invoke(monitor.Id, $"Monitor exception logged: {ex.GetType().Name}: {ex.Message}");
@@ -232,7 +249,7 @@ public sealed class ChatGptMonitorService
                 }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && !IsTransientChromeException(ex))
         {
             await ExceptionLogService.LogAsync(ex, "ChatGptMonitorService.WorkerFatal", monitor.Id, tab.Id, monitor.Title);
             Activity?.Invoke(monitor.Id, $"Monitor worker stopped by exception: {ex.Message}");
@@ -247,6 +264,16 @@ public sealed class ChatGptMonitorService
             RunningStateChanged?.Invoke();
         }
     }
+
+    private static bool IsTransientChromeException(Exception ex)
+        => ex is WebSocketException
+           || ex is TimeoutException
+           || ex is TaskCanceledException
+           || ex is IOException
+           || ex.Message.Contains("Chrome closed the DevTools connection", StringComparison.OrdinalIgnoreCase)
+           || ex.Message.Contains("Promise was collected", StringComparison.OrdinalIgnoreCase)
+           || ex.Message.Contains("connection was forcibly closed", StringComparison.OrdinalIgnoreCase)
+           || ex.Message.Contains("unable to connect", StringComparison.OrdinalIgnoreCase);
 
     private static string GetEffectiveResponse(ChatPageState state)
         => !string.IsNullOrWhiteSpace(state.ErrorText) ? state.ErrorText.Trim() : state.LastAssistantText.Trim();
