@@ -9,16 +9,17 @@
     <AppProject>$(MSBuildProjectDirectory)\..\GPTDeskTop\GPTDeskTop.csproj</AppProject>
   </PropertyGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\GPTDeskTop\GPTDeskTop.csproj" ReferenceOutputAssembly="false" />
-  </ItemGroup>
+  <!-- Intentionally no ProjectReference to GPTDeskTop here. The application is
+       published explicitly by the target below. This avoids desktop TFM
+       compatibility validation in Visual Studio while keeping the publish step deterministic. -->
 
   <Target Name="PreparePublishedApplication" AfterTargets="Build">
     <RemoveDir Directories="$(PublishRoot)" Condition="Exists('$(PublishRoot)')" />
     <MakeDir Directories="$(PublishRoot)" />
     <Exec Command="dotnet publish &quot;$(AppProject)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o &quot;$(PublishRoot)&quot;" />
+    <Error Condition="!Exists('$(PublishRoot)\GPTDeskTop.exe')" Text="GPTDeskTop publish did not produce $(PublishRoot)\GPTDeskTop.exe" />
     <WriteLinesToFile File="$(PublishRoot)\Version.txt" Lines="GPTDeskTop v1.7.0&#x0D;&#x0A;Runtime: win-x64 self-contained&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
-    <WriteLinesToFile File="$(PublishRoot)\ReleaseNotes.txt" Lines="GPTDeskTop v1.7.0&#x0D;&#x0A;- Retry transient Chrome DevTools Promise was collected errors&#x0D;&#x0A;- Detect unclean shutdown and auto-recover saved monitor tabs&#x0D;&#x0A;- Auto restart once after fatal crash with loop guard&#x0D;&#x0A;- Crash Count and Monitor Count home cards&#x0D;&#x0A;- Green/red monitor status lamp&#x0D;&#x0A;- Existing 180-second no-response watchdog retained&#x0D;&#x0A;- Fix Publish project target framework mismatch with Windows desktop app" Overwrite="true" Encoding="UTF-8" />
+    <WriteLinesToFile File="$(PublishRoot)\ReleaseNotes.txt" Lines="GPTDeskTop v1.7.0&#x0D;&#x0A;- Retry transient Chrome DevTools Promise was collected errors&#x0D;&#x0A;- Detect unclean shutdown and auto-recover saved monitor tabs&#x0D;&#x0A;- Auto restart once after fatal crash with loop guard&#x0D;&#x0A;- Crash Count and Monitor Count home cards&#x0D;&#x0A;- Green/red monitor status lamp&#x0D;&#x0A;- Existing 180-second no-response watchdog retained&#x0D;&#x0A;- Remove Publish-to-App ProjectReference to eliminate TFM validation failure" Overwrite="true" Encoding="UTF-8" />
     <Message Text="GPTDeskTop publish payload created at $(PublishRoot)" Importance="high" />
   </Target>
 </Project>
