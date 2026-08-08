@@ -61,6 +61,17 @@ jobs:
           if ($policy -notmatch 'outcomes\.All\(x => x == CrashRecoveryOutcome\.Success\)') { throw 'Pending-clear policy is missing all-success requirement.' }
           Write-Host 'Crash recovery invariants passed.'
 
+      - name: Validate multi-monitor recovery invariants
+        shell: pwsh
+        run: |
+          $recovery = Get-Content src/GPTDeskTop/Services/CrashRecoveryService.cs -Raw
+          if ($recovery -notmatch 'alreadyRecovered') { throw 'Already-recovered monitor guard is missing.' }
+          if ($recovery -notmatch 'CrashRecoveryAlreadyVerified') { throw 'Already-verified recovery path is missing.' }
+          if ($recovery -notmatch 'if \(saved\.Enabled\)') { throw 'Recovered enabled monitors are not conditionally restarted.' }
+          if ($recovery -notmatch 'CrashRecoveryPartialFailure') { throw 'Partial multi-monitor recovery is not logged.' }
+          if ($recovery -notmatch 'CrashRecovery\.\{recoveryId\}\.Monitor\.\{saved\.Id\}\.Success') { throw 'Per-monitor success marker is missing.' }
+          Write-Host 'Multi-monitor recovery invariants passed.'
+
       - name: Build application
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj --configuration Release --no-restore
 
