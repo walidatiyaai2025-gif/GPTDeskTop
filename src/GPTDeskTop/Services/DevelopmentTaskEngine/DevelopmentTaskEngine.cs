@@ -36,7 +36,6 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
             await LoadStateAsync(cancellationToken).ConfigureAwait(false);
             var messages = await LoadMessagesAsync(cancellationToken).ConfigureAwait(false);
             if (messages.Count == 0) throw new InvalidOperationException("No development task messages are configured.");
-
             _state.PlanId = planId;
             _state.PlanTitle = planTitle;
             _state.TotalMessages = messages.Count;
@@ -75,11 +74,9 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         {
             await LoadStateAsync(cancellationToken).ConfigureAwait(false);
             if (_state.Status == DevelopmentTaskEngineStatus.Completed) return;
-
             var messages = await LoadMessagesAsync(cancellationToken).ConfigureAwait(false);
             if (messages.Count == 0) throw new InvalidOperationException("No development task messages are configured.");
             _state.TotalMessages = messages.Count;
-
             if (_state.Status is DevelopmentTaskEngineStatus.Stopped or DevelopmentTaskEngineStatus.Paused)
             {
                 _state.Status = DevelopmentTaskEngineStatus.Working;
@@ -90,7 +87,6 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
             {
                 _state.WorkWindowStartedAt = DateTimeOffset.UtcNow;
             }
-
             _state.LastError = null;
             _lastEmittedMessageIndex = null;
             await SaveStateAsync(cancellationToken).ConfigureAwait(false);
@@ -107,6 +103,23 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         {
             _state.LastMonitorId = monitorId;
             _state.LastTabId = tabId;
+            _state.LastCheckpointAt = DateTimeOffset.UtcNow;
+            _state.Revision++;
+            await SaveStateAsync(cancellationToken).ConfigureAwait(false);
+            PublishState();
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task CheckpointDeliveredAsync(string monitorId, string tabId, string fingerprint, CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            _state.LastMonitorId = monitorId;
+            _state.LastTabId = tabId;
+            _state.LastDeliveredMessageIndex = _state.CurrentMessageIndex;
+            _state.LastDeliveredMessageFingerprint = fingerprint;
             _state.LastCheckpointAt = DateTimeOffset.UtcNow;
             _state.Revision++;
             await SaveStateAsync(cancellationToken).ConfigureAwait(false);
@@ -149,7 +162,6 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
                 var messages = await LoadMessagesAsync(cancellationToken).ConfigureAwait(false);
                 if (messages.Count == 0) return;
                 _state.TotalMessages = messages.Count;
-
                 if (_state.CurrentMessageIndex >= messages.Count)
                 {
                     _state.Status = DevelopmentTaskEngineStatus.Completed;
@@ -157,7 +169,6 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
                     PublishState();
                     return;
                 }
-
                 if (_state.Status == DevelopmentTaskEngineStatus.Working)
                 {
                     var started = _state.WorkWindowStartedAt ?? DateTimeOffset.UtcNow;
@@ -173,7 +184,6 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
                         CoolingStarted?.Invoke(this, EventArgs.Empty);
                         continue;
                     }
-
                     if (_lastEmittedMessageIndex != _state.CurrentMessageIndex)
                     {
                         var message = BuildPlanMessage(messages[_state.CurrentMessageIndex], _state);
@@ -183,16 +193,12 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
                     await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
                     continue;
                 }
-
                 if (_state.Status == DevelopmentTaskEngineStatus.Cooling)
                 {
                     await RunCoolingAsync(cancellationToken).ConfigureAwait(false);
                     continue;
                 }
-
-                if (_state.Status is DevelopmentTaskEngineStatus.Paused or DevelopmentTaskEngineStatus.Stopped or DevelopmentTaskEngineStatus.Faulted)
-                    return;
-
+                if (_state.Status is DevelopmentTaskEngineStatus.Paused or DevelopmentTaskEngineStatus.Stopped or DevelopmentTaskEngineStatus.Faulted) return;
                 await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
             }
         }
@@ -212,10 +218,8 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         _state.CoolingStartedAt = started;
         await SaveStateAsync(cancellationToken).ConfigureAwait(false);
         PublishState();
-
         var remaining = _coolingWindow - (DateTimeOffset.UtcNow - started);
         if (remaining > TimeSpan.Zero) await Task.Delay(remaining, cancellationToken).ConfigureAwait(false);
-
         _state.Status = DevelopmentTaskEngineStatus.Working;
         _state.WorkWindowStartedAt = DateTimeOffset.UtcNow;
         _state.CoolingStartedAt = null;
