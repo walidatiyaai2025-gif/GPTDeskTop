@@ -93,6 +93,8 @@ public sealed class DevelopmentTaskEngineTests
                 messagesPath: messagesPath))
             {
                 await first.StartAsync("plan-3", "Plan Three");
+                await Task.Delay(60);
+                await first.AdvanceAsync();
                 await WaitForAsync(() => first.State.Status == DevelopmentTaskEngineStatus.Cooling, TimeSpan.FromSeconds(2));
                 Assert.NotNull(first.State.CoolingStartedAt);
             }
@@ -106,7 +108,7 @@ public sealed class DevelopmentTaskEngineTests
 
             Assert.Equal(DevelopmentTaskEngineStatus.Cooling, resumed.State.Status);
             Assert.NotNull(resumed.State.CoolingStartedAt);
-            Assert.Equal(0, resumed.State.CurrentMessageIndex);
+            Assert.Equal(1, resumed.State.CurrentMessageIndex);
         }
         finally
         {
