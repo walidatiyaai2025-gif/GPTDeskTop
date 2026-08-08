@@ -22,6 +22,13 @@ public static class CrashRecoveryService
             return;
         }
 
+        var recoveryId = await database.GetSettingAsync("CrashRecovery.RecoveryId", cancellationToken);
+        if (string.IsNullOrWhiteSpace(recoveryId))
+        {
+            recoveryId = Guid.NewGuid().ToString("N");
+            await database.SetSettingAsync("CrashRecovery.RecoveryId", recoveryId, cancellationToken);
+        }
+
         var recoveryMessage = await database.GetSettingAsync("TimeoutRecoveryMessage", cancellationToken) ?? "كمل";
         if (string.IsNullOrWhiteSpace(recoveryMessage)) recoveryMessage = "كمل";
 
@@ -45,16 +52,35 @@ public static class CrashRecoveryService
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var saved = monitors[index];
-                ChromeTab tab;
+                var successKey = $"CrashRecovery.{recoveryId}.Monitor.{saved.Id}.Success";
+                var alreadyRecovered = string.Equals(
+                    await database.GetSettingAsync(successKey, cancellationToken),
+                    "1",
+                    StringComparison.Ordinal);
 
+                ChromeTab tab;
                 if (index == 0 && firstTab is not null)
-                {
                     tab = firstTab;
-                }
                 else
                 {
                     var url = string.IsNullOrWhiteSpace(saved.Url) ? "https://chatgpt.com/" : saved.Url;
                     tab = await chrome.CreateTabAsync(url, cancellationToken);
+                }
+
+                // A monitor that already recovered successfully during this incident
+                // must never receive the recovery message again on the retry startup.
+                // We only restore its monitoring loop on the new tab.
+                if (alreadyRecovered)
+                {
+                    outcomes.Add(CrashRecoveryOutcome.Success);
+                    saved.TabId = tab.Id;
+                    saved.Title = string.IsNullOrWhiteSpace(tab.Title) ? saved.Title : tab.Title;
+                    saved.Url = string.IsNullOrWhiteSpace(tab.Url) ? saved.Url : tab.Url;
+                    await database.SaveMonitorAsync(saved, cancellationToken);
+                    await database.AddLogAsync("System", recoveryMessage, string.Empty, "CrashRecoveryAlreadyVerified", saved.Id, tab.Id, saved.Title, cancellationToken);
+                    if (saved.Enabled)
+                        await monitorService.StartMonitorAsync(saved, tab);
+                    continue;
                 }
 
                 var sent = await SendWithRetryAsync(chrome, tab, recoveryMessage, cancellationToken);
@@ -76,6 +102,9 @@ public static class CrashRecoveryService
                     saved.Title,
                     cancellationToken);
 
+                if (sent)
+                    await database.SetSettingAsync(successKey, "1", cancellationToken);
+
                 if (CrashRecoveryOutcomePolicy.ShouldStartMonitor(outcome, saved.Enabled))
                     await monitorService.StartMonitorAsync(saved, tab);
             }
@@ -83,6 +112,7 @@ public static class CrashRecoveryService
             if (CrashRecoveryOutcomePolicy.ShouldClearPending(outcomes))
             {
                 await database.SetSettingAsync("CrashRecoveryPending", "0", cancellationToken);
+                await database.SetSettingAsync("CrashRecovery.RecoveryId", string.Empty, cancellationToken);
                 await database.AddLogAsync("System", "CrashRecovery", string.Empty, "CrashRecoveryCompleted", cancellationToken: cancellationToken);
             }
             else
@@ -115,7 +145,6 @@ public static class CrashRecoveryService
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("Promise was collected", StringComparison.OrdinalIgnoreCase))
             {
-                // ChatGPT is still rebuilding its DOM; retry after a short delay.
             }
         }
         return false;
