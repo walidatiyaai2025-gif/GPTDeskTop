@@ -4,11 +4,12 @@
 Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with independent per-tab timing, SQLite persistence, tray notifications, automatic timeout/crash recovery, Chrome lifecycle control, Fluent/WinUI-inspired WinForms UX, persistent exception diagnostics, and a Visual Studio-buildable standalone Setup EXE.
 
 ## Architecture
-- **Application:** .NET 8 WinForms, version `1.7.0`.
+- **Application:** .NET 8 WinForms, version `1.8.0`.
 - **Browser:** dedicated Chrome profile controlled through Chrome DevTools Protocol.
 - **Saved Monitors:** independent Auto Reply, Reply Delay, Monitor Timer and Enabled state per tab.
 - **Runtime:** one cancellable worker per Monitor ID.
-- **Persistence:** SQLite `appdata.db` with monitor configuration, defaults, history, crash counters and exception records.
+- **Development Task Engine:** one cancellable worker per engine instance; state and message index persist across restart; Cooling state resumes without creating a duplicate worker.
+- **Persistence:** SQLite `appdata.db` with monitor configuration, defaults, history, crash counters and exception records; development-task state uses a dedicated JSON state file.
 - **Transient CDP Recovery:** `Promise was collected` from `Runtime.evaluate` is retried internally up to three times before being treated as a real monitor failure.
 - **Exception Diagnostics:** unhandled UI/domain/task exceptions and monitor exceptions are written to `MessageLogs` and `logs/exceptions-YYYYMMDD.log`.
 - **No-response Watchdog:** global `NoResponseRefreshSeconds`, default `180` seconds; only the affected tab is refreshed when no new assistant response arrives within the configured period.
@@ -49,7 +50,10 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 | UI-004 | Add Crash Count and Monitor Count home cards | UI Developer | Medium | Done | `HomeMetricsService.cs` |
 | UI-005 | Add no-response timeout field to Settings | UI / Backend | High | Done | `SettingsForm.cs` |
 | NOT-001 | Configurable balloon duration and sound | UI / Backend | High | Done | Notification/Settings services |
-| REL-001 | Bump application, publish and setup metadata to `1.7.0` | Release Engineer | Medium | Done | csproj / setup files |
+| DEV-001 | Prevent duplicate development-task workers; persist state and safely resume Working/Cooling after restart | Backend Engineer | High | Done | `DevelopmentTaskEngine.cs`, `DevelopmentTaskState.cs` |
+| DEV-002 | Add regression coverage for Cooling persistence/resume and worker lifecycle | QA / Backend | High | Done | `tests/GPTDeskTop.RuntimeTests/DevelopmentTaskEngineTests.cs` |
+| CI-001 | Run runtime automation tests before application/setup/helper builds | DevOps / QA | High | Done | `.github/workflows/build.yml` |
+| REL-001 | Synchronize application, publish and setup metadata to `1.8.0` | Release Engineer | High | Done | `GPTDeskTop.csproj`, setup/build projects |
 | QA-001 | Build `Release | x64` in Visual Studio | QA Engineer | High | Not Started | Whole solution |
 | QA-002 | Reproduce `Promise was collected` and verify transient retry prevents repeated exception log entries | QA Engineer | High | Not Started | Chrome integration |
 | QA-003 | Force-kill GPTDeskTop, relaunch and verify Crash Count increments and saved tabs recover | QA Engineer | High | Not Started | Crash recovery |
@@ -57,6 +61,10 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 | QA-005 | Run monitor hidden for 10+ minutes and verify CDP polling continues | QA Engineer | High | Not Started | Chrome / Runtime |
 | QA-006 | Set no-response timeout to 30 seconds and verify exactly one affected tab refreshes | QA Engineer | High | Not Started | Runtime |
 | QA-007 | Verify green lamp while monitor runs, red lamp when stopped, and home cards update correctly | QA Engineer | Medium | Not Started | UI |
+| QA-008 | Verify development task engine survives restart while Working and Cooling without duplicate MessageReady events | QA Engineer | High | Automated | Runtime automation tests |
+
+## CI Validation
+The latest GitHub Actions run after the runtime-engine fix completed successfully: Restore, runtime-test restore, runtime automation tests, application build, setup build, helper build, and rotation-safety invariants all passed.
 
 ## Acceptance Criteria
 - Transient `Promise was collected` errors are retried automatically and do not flood the exception history.
@@ -69,4 +77,7 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 - Hide Chrome does not stop background polling/auto-response.
 - Saved Monitors display a green running lamp and red stopped lamp.
 - Home displays persistent Crash Count and live/total Monitor Count cards.
+- Development task engine never starts a second uncancellable worker from `AdvanceAsync`.
+- Development task engine persists CurrentMessageIndex and Cooling state and resumes safely after process restart.
+- Application, publish helper and standalone Setup metadata report the same release version `1.8.0`.
 - `GPTDeskTop.sln` remains composed of exactly three supported SDK-style projects.
