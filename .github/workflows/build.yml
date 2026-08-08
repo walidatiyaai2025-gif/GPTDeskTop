@@ -22,6 +22,12 @@ jobs:
       - name: Restore
         run: dotnet restore GPTDeskTop.sln
 
+      - name: Restore runtime tests
+        run: dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+
+      - name: Runtime automation tests
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
+
       - name: Build application
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj --configuration Release --no-restore
 
