@@ -2,15 +2,15 @@
 
 .NET 8 WinForms persistent multi-tab monitor for ChatGPT pages opened in a dedicated Chrome/CDP session.
 
-Current application version: **1.7.0**.
+Current application version: **1.8.0**.
 
 ## Solution structure
 
 `GPTDeskTop.sln` contains exactly three SDK-style projects supported directly by Visual Studio 2022:
 
 1. `GPTDeskTop` - main .NET 8 WinForms application.
-2. `GPTDeskTop.Publish` - produces a `win-x64` self-contained single-file payload under `Output\Publish`.
-3. `GPTDeskTop.Setup` - embeds that payload and produces `Output\Setup\GPTDeskTop-Setup.exe`.
+2. `GPTDeskTop.Build` - release/publish orchestration without a project reference to the Windows application.
+3. `GPTDeskTop.Setup` - produces the self-contained installer payload under `Output\Setup`.
 
 ## Build Setup from Visual Studio
 
@@ -24,6 +24,21 @@ Output\Setup\GPTDeskTop-Setup.exe
 
 Every saved monitor keeps its own Auto Reply, Reply Delay (`0-300` seconds), Monitor Timer (`1-60` seconds), Enabled state, Tab ID, title and URL.
 
+Every monitor can also enable **Conversation Rotation**. When ChatGPT explicitly reports that the current conversation/context has reached a conversation-length/context limit or asks to start a new chat, GPTDeskTop can wait, open a fresh ChatGPT conversation, send the configured New Chat Start Message (default `كمل`), save the new Tab ID, keep the same Monitor ID, and continue monitoring.
+
+Rotation settings are stored in SQLite per monitor:
+
+- Conversation Rotation enabled/disabled.
+- New Chat Start Message.
+- New Chat delay (`0-600` seconds).
+- Rotation cooldown (`0-3600` seconds).
+- Maximum rotations (`0` = unlimited for that monitor session).
+- Rotation count.
+
+Each rotation is also persisted in `ConversationRotations` and logged in Stored History.
+
+**Important:** rotation is triggered by an actual conversation/context-limit signal exposed by the ChatGPT page. GPTDeskTop does not predict, spoof, or attempt to bypass account usage quotas or access controls.
+
 Global Settings stored in SQLite include Default Auto Reply, Default Monitor Delay, Default Monitor Timer, No-response refresh timeout (default `180` seconds), Timeout Recovery Message, Balloon Duration and Balloon Sound settings.
 
 If a running monitor receives no new assistant response for `NoResponseRefreshSeconds`, GPTDeskTop refreshes only that tab, records `NoResponseRefresh` in history, resets the watchdog and continues monitoring.
@@ -36,7 +51,7 @@ ChatGPT can rebuild its page context while a DevTools evaluation is in progress,
 Chrome DevTools error: {"code":-32000,"message":"Promise was collected"}
 ```
 
-Version 1.7.0 avoids async JavaScript promises for normal DOM reads and message sending. DOM reads and send steps are synchronous CDP evaluations, with a C# delay between editor input and Send click. A transient `Promise was collected` is retried internally up to three times before it is treated as a real failure.
+GPTDeskTop avoids async JavaScript promises for normal DOM reads and message sending. DOM reads and send steps are synchronous CDP evaluations, with a C# delay between editor input and Send click. Transient CDP disconnects are retried instead of being counted as application crashes.
 
 ## Crash detection and recovery
 
