@@ -10,6 +10,7 @@ public sealed class ChatGptMonitorService
     private readonly ChromeDevToolsService _chrome;
     private readonly LocalDatabase _database;
     private readonly MonitoringConfig _config;
+    private readonly ModelRoutingService _modelRouting = new();
     private readonly object _sync = new();
     private readonly Dictionary<long, MonitorRuntime> _running = new();
 
@@ -83,7 +84,7 @@ public sealed class ChatGptMonitorService
         var noResponseSeconds = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600, cancellationToken);
         var transientFailures = 0;
 
-        Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Timer {timerSeconds}s | Delay {replyDelaySeconds}s | No-response refresh {noResponseSeconds}s | Rotation {(monitor.ConversationRotationEnabled ? "ON" : "OFF")} | Reply: {monitor.AutoReply}");
+        Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Timer {timerSeconds}s | Delay {replyDelaySeconds}s | No-response refresh {noResponseSeconds}s | Rotation {(monitor.ConversationRotationEnabled ? "ON" : "OFF")} | Model routing {(monitor.ModelRoutingEnabled ? "ON" : "OFF")} | Reply: {monitor.AutoReply}");
 
         try
         {
@@ -92,6 +93,9 @@ public sealed class ChatGptMonitorService
             var candidateText = string.Empty;
             var candidateSince = DateTimeOffset.MinValue;
             var lastResponseActivity = DateTimeOffset.UtcNow;
+
+            // Apply the preferred model once at monitor startup. Auto means no UI interaction.
+            await ApplyModelRouteAsync(monitor, tab, recovery: false, contextRotation: false, cancellationToken);
 
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(timerSeconds));
             while (await timer.WaitForNextTickAsync(cancellationToken))
@@ -161,6 +165,9 @@ public sealed class ChatGptMonitorService
                         var oldTab = tab;
                         var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
                         await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+
+                        await ApplyModelRouteAsync(monitor, newTab, recovery: false, contextRotation: true, cancellationToken);
+
                         var startMessage = string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage;
                         var sent = await _chrome.SendChatMessageAsync(newTab, startMessage, cancellationToken);
                         if (!sent)
@@ -198,6 +205,9 @@ public sealed class ChatGptMonitorService
                         var oldTab = tab;
                         var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
                         await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+
+                        await ApplyModelRouteAsync(monitor, newTab, recovery: true, contextRotation: false, cancellationToken);
+
                         var sent = await _chrome.SendChatMessageAsync(newTab, recoveryMessage, cancellationToken);
                         if (!sent) throw new InvalidOperationException("New chat opened but the recovery message could not be sent.");
 
@@ -303,6 +313,40 @@ public sealed class ChatGptMonitorService
                     _running.Remove(monitor.Id);
             }
             RunningStateChanged?.Invoke();
+        }
+    }
+
+    private async Task ApplyModelRouteAsync(SavedMonitor monitor, ChromeTab tab, bool recovery, bool contextRotation, CancellationToken cancellationToken)
+    {
+        if (!monitor.ModelRoutingEnabled) return;
+        var decision = _modelRouting.Choose(monitor, recovery, contextRotation);
+        if (string.Equals(decision.PreferredModel, "Auto", StringComparison.OrdinalIgnoreCase))
+        {
+            Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Model routing: Auto; keeping ChatGPT's current model.");
+            return;
+        }
+
+        Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Selecting model '{decision.PreferredModel}' ({decision.Reason})...");
+        var selected = await _chrome.TrySelectModelAsync(tab, decision.PreferredModel, cancellationToken);
+        if (selected)
+        {
+            await _database.AddLogAsync("System", decision.PreferredModel, string.Empty, "ModelSelected", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+            HistoryChanged?.Invoke();
+            return;
+        }
+
+        if (!string.Equals(decision.FallbackModel, decision.PreferredModel, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(decision.FallbackModel, "Auto", StringComparison.OrdinalIgnoreCase))
+        {
+            Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Preferred model '{decision.PreferredModel}' was not selectable. Trying configured fallback '{decision.FallbackModel}' once.");
+            var fallbackSelected = await _chrome.TrySelectModelAsync(tab, decision.FallbackModel, cancellationToken);
+            await _database.AddLogAsync("System", decision.FallbackModel, string.Empty, fallbackSelected ? "FallbackModelSelected" : "ModelSelectionSkipped", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+            HistoryChanged?.Invoke();
+        }
+        else
+        {
+            await _database.AddLogAsync("System", decision.PreferredModel, string.Empty, "ModelSelectionSkipped", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+            HistoryChanged?.Invoke();
         }
     }
 
