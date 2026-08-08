@@ -33,6 +33,20 @@ jobs:
           Write-Host 'Editable development message catalog passed.'
       - name: Runtime automation tests
         run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
+      - name: Validate development task delivery invariants
+        shell: pwsh
+        run: |
+          $engine = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs -Raw
+          $coordinator = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskDeliveryCoordinator.cs -Raw
+          $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskDeliveryCoordinatorTests.cs -Raw
+          if ($engine -notmatch 'MessageReady') { throw 'Development task message emission is missing.' }
+          if ($engine -notmatch '_lastEmittedMessageIndex') { throw 'Duplicate task-message guard is missing.' }
+          if ($coordinator -notmatch '_verifiedSender') { throw 'Verified delivery callback is missing.' }
+          if ($coordinator -notmatch 'if \(!sent\)') { throw 'Task advancement is not gated on verified send success.' }
+          if ($coordinator -notmatch 'await _engine\.AdvanceAsync\(\)') { throw 'Successful delivery does not advance the task.' }
+          if ($tests -notmatch 'FailedDeliveryDoesNotAdvanceTask') { throw 'Failed-delivery regression test is missing.' }
+          if ($tests -notmatch 'SuccessfulDeliveryAdvancesExactlyOnce') { throw 'Successful-delivery regression test is missing.' }
+          Write-Host 'Development task delivery invariants passed.'
       - name: Validate CDP delivery reliability invariants
         shell: pwsh
         run: |
