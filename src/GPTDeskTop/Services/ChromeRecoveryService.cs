@@ -35,8 +35,12 @@ public sealed class ChromeRecoveryService
 
             await _database.AddLogAsync("System", "Chrome recovery", reason, "ChromeRecoveryStarted", null, null, null, cancellationToken);
 
-            await _chrome.RestartMonitorChromeAsync(cancellationToken);
-            await Task.Delay(2000, cancellationToken);
+            // Reuse the existing public Chrome lifecycle API. First close the controllable
+            // monitor tabs, then launch a fresh monitor Chrome process/profile.
+            await _chrome.CloseAllMonitorTabsAsync(cancellationToken);
+            await Task.Delay(500, cancellationToken);
+            _chrome.LaunchMonitorChrome();
+            await WaitForChromeAsync(cancellationToken);
 
             var result = new Dictionary<long, ChromeTab>();
             foreach (var monitor in monitors)
@@ -79,5 +83,26 @@ public sealed class ChromeRecoveryService
         {
             Gate.Release();
         }
+    }
+
+    private async Task WaitForChromeAsync(CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= 30; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var tabs = await _chrome.GetTabsAsync(cancellationToken);
+                if (tabs.Count > 0) return;
+            }
+            catch when (attempt < 30)
+            {
+                // Chrome's DevTools endpoint can take a short time to become available.
+            }
+
+            await Task.Delay(250, cancellationToken);
+        }
+
+        throw new TimeoutException("Chrome DevTools endpoint did not become ready after recovery.");
     }
 }
