@@ -63,9 +63,6 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
             var deadline = DateTimeOffset.UtcNow + work;
             while (DateTimeOffset.UtcNow < deadline && State.WindowMessageCount < maxMessages && !token.IsCancellationRequested)
             {
-                State.Status = DevelopmentTaskStatus.WaitingForNextTask;
-                State.LastCheckpointUtc = DateTimeOffset.UtcNow;
-                SaveState();
                 await Task.Delay(TimeSpan.FromSeconds(1), token);
             }
 
@@ -74,9 +71,33 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
 
             State.Status = DevelopmentTaskStatus.Cooling;
             State.CoolingStartedUtc = DateTimeOffset.UtcNow;
+            State.LastCheckpointUtc = DateTimeOffset.UtcNow;
             SaveState();
             await Task.Delay(cooling, token);
         }
+    }
+
+    public string? GetNextMessage()
+    {
+        var messages = LoadMessages();
+        if (messages.Count == 0)
+            return null;
+
+        var index = Math.Clamp(State.MessageIndex, 0, messages.Count - 1);
+        return messages[index];
+    }
+
+    public void MarkMessageSent(string? task = null, string? chatId = null)
+    {
+        var messages = LoadMessages();
+        if (messages.Count > 0)
+            State.MessageIndex = (State.MessageIndex + 1) % messages.Count;
+
+        State.WindowMessageCount++;
+        State.CurrentTask = task ?? State.CurrentTask;
+        State.CurrentChatId = chatId ?? State.CurrentChatId;
+        State.LastCheckpointUtc = DateTimeOffset.UtcNow;
+        SaveState();
     }
 
     private List<string> LoadMessages()
@@ -118,12 +139,11 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
     {
         try
         {
-            var json = JsonSerializer.Serialize(State, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(_statePath, json);
+            File.WriteAllText(_statePath, JsonSerializer.Serialize(State, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch
         {
-            // State persistence must never terminate the monitor process.
+            // Persistence must never terminate the monitor process.
         }
     }
 }
@@ -149,6 +169,5 @@ public enum DevelopmentTaskStatus
 {
     Stopped,
     Working,
-    WaitingForNextTask,
     Cooling
 }
