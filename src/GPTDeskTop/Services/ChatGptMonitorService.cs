@@ -87,7 +87,7 @@ public sealed class ChatGptMonitorService
 
         try
         {
-            var initial = await _chrome.GetChatStateAsync(tab, cancellationToken);
+            var initial = await GetChatStateWithRetryAsync(tab, cancellationToken);
             var lastHandledText = GetEffectiveResponse(initial);
             var candidateText = string.Empty;
             var candidateSince = DateTimeOffset.MinValue;
@@ -108,15 +108,7 @@ public sealed class ChatGptMonitorService
                     {
                         Activity?.Invoke(monitor.Id, $"{prefix} No new response for {noResponseSeconds}s. Refreshing this tab...");
                         await _chrome.ReloadTabAsync(tab, cancellationToken);
-                        await _database.AddLogAsync(
-                            "System",
-                            "Page.reload",
-                            $"No assistant response for {noResponseSeconds} seconds.",
-                            "NoResponseRefresh",
-                            monitor.Id,
-                            tab.Id,
-                            monitor.Title,
-                            cancellationToken);
+                        await _database.AddLogAsync("System", "Page.reload", $"No assistant response for {noResponseSeconds} seconds.", "NoResponseRefresh", monitor.Id, tab.Id, monitor.Title, cancellationToken);
                         HistoryChanged?.Invoke();
                         lastResponseActivity = DateTimeOffset.UtcNow;
                         candidateText = string.Empty;
@@ -160,7 +152,6 @@ public sealed class ChatGptMonitorService
                         var oldTab = tab;
                         var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
                         await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
-
                         var sent = await _chrome.SendChatMessageAsync(newTab, recoveryMessage, cancellationToken);
                         if (!sent) throw new InvalidOperationException("New chat opened but the recovery message could not be sent.");
 
@@ -230,13 +221,9 @@ public sealed class ChatGptMonitorService
                 {
                     transientFailures++;
                     if (transientFailures <= 3)
-                    {
-                        Activity?.Invoke(monitor.Id, $"CDP connection transient ({transientFailures}/3): {ex.GetType().Name}. Retrying...");
-                    }
+                        Activity?.Invoke(monitor.Id, $"CDP transient disconnect ({transientFailures}/3): {ex.GetType().Name}. Retrying...");
                     else if (transientFailures == 4)
-                    {
-                        Activity?.Invoke(monitor.Id, "CDP connection is still unavailable. Continuing background retry without treating it as an application crash.");
-                    }
+                        Activity?.Invoke(monitor.Id, "CDP is temporarily unavailable. Background retry continues; this is not counted as an application crash.");
 
                     await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(5000, 750 * transientFailures)), cancellationToken);
                 }
@@ -249,7 +236,15 @@ public sealed class ChatGptMonitorService
                 }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException && !IsTransientChromeException(ex))
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Activity?.Invoke(monitor.Id, "Monitor cancellation requested; stopping cleanly.");
+        }
+        catch (Exception ex) when (IsTransientChromeException(ex))
+        {
+            Activity?.Invoke(monitor.Id, $"Chrome connection unavailable during startup. Monitor remains stopped and can be started again: {ex.Message}");
+        }
+        catch (Exception ex)
         {
             await ExceptionLogService.LogAsync(ex, "ChatGptMonitorService.WorkerFatal", monitor.Id, tab.Id, monitor.Title);
             Activity?.Invoke(monitor.Id, $"Monitor worker stopped by exception: {ex.Message}");
@@ -263,6 +258,26 @@ public sealed class ChatGptMonitorService
             }
             RunningStateChanged?.Invoke();
         }
+    }
+
+    private async Task<ChatPageState> GetChatStateWithRetryAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
+        Exception? last = null;
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            try
+            {
+                return await _chrome.GetChatStateAsync(tab, cancellationToken);
+            }
+            catch (Exception ex) when (IsTransientChromeException(ex))
+            {
+                last = ex;
+                Activity?.Invoke(0, $"Initial Chrome/CDP connection retry {attempt}/3: {ex.GetType().Name}");
+                await Task.Delay(500 * attempt, cancellationToken);
+            }
+        }
+
+        throw last ?? new InvalidOperationException("Unable to read the ChatGPT tab state.");
     }
 
     private static bool IsTransientChromeException(Exception ex)
@@ -286,18 +301,9 @@ public sealed class ChatGptMonitorService
         if (string.IsNullOrWhiteSpace(text)) return false;
         string[] markers =
         {
-            "message delivery timed out",
-            "something went wrong",
-            "there was an error",
-            "network error",
-            "failed to generate",
-            "error generating",
-            "unable to generate",
-            "unable to load",
-            "حدث خطأ",
-            "خطأ في الشبكة",
-            "تعذر إنشاء",
-            "تعذر تحميل"
+            "message delivery timed out", "something went wrong", "there was an error", "network error",
+            "failed to generate", "error generating", "unable to generate", "unable to load",
+            "حدث خطأ", "خطأ في الشبكة", "تعذر إنشاء", "تعذر تحميل"
         };
         return markers.Any(marker => text.Contains(marker, StringComparison.OrdinalIgnoreCase));
     }
