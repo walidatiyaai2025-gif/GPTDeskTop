@@ -57,10 +57,24 @@ internal static class Program
             using var notifications = new TrayNotificationService(monitor, database);
             notifications.InitializeAsync().GetAwaiter().GetResult();
 
-            CrashRecoveryService.RecoverIfPendingAsync(chrome, monitor, database).GetAwaiter().GetResult();
-
+            // IMPORTANT: Never block startup on Chrome/CDP recovery. The tray icon used to
+            // appear while RecoverIfPendingAsync was waiting for Chrome, making the main form
+            // look as if it had failed to load. Show the UI first and recover asynchronously.
             var mainForm = new MainForm(chrome, monitor, database);
             using var metrics = new HomeMetricsService(mainForm, database, monitor);
+
+            mainForm.Shown += async (_, _) =>
+            {
+                try
+                {
+                    await CrashRecoveryService.RecoverIfPendingAsync(chrome, monitor, database);
+                }
+                catch (Exception ex)
+                {
+                    await ExceptionLogService.LogAsync(ex, "Program.BackgroundCrashRecovery");
+                }
+            };
+
             mainForm.FormClosed += (_, _) =>
             {
                 try { database.SetSettingAsync("LastShutdownClean", "1").GetAwaiter().GetResult(); }
