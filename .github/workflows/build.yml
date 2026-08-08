@@ -2,7 +2,7 @@ name: Build GPTDeskTop
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, fix/setup-payload-validation ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -30,6 +30,22 @@ jobs:
 
       - name: Build helper
         run: dotnet build src/GPTDeskTop.Build/GPTDeskTop.Build.csproj --configuration Release --no-restore
+
+      - name: Validate release payload
+        shell: pwsh
+        run: |
+          $publish = Join-Path $PWD 'Output/Publish'
+          $setup = Join-Path $PWD 'Output/Setup/GPTDeskTop-Setup.exe'
+          $required = @(
+            (Join-Path $publish 'GPTDeskTop.exe'),
+            (Join-Path $publish 'task-messages.json')
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) { throw "Required release payload is missing: $path" }
+          }
+          if (-not (Test-Path $setup)) { throw "Standalone setup is missing: $setup" }
+          if ((Get-Item $setup).Length -le 0) { throw 'Standalone setup is empty.' }
+          Write-Host 'Release payload validation passed.'
 
       - name: Validate rotation safety invariants
         shell: pwsh
