@@ -30,3 +30,13 @@ jobs:
 
       - name: Build helper
         run: dotnet build src/GPTDeskTop.Build/GPTDeskTop.Build.csproj --configuration Release --no-restore
+
+      - name: Validate rotation safety invariants
+        shell: pwsh
+        run: |
+          $file = Get-Content src/GPTDeskTop/Services/ChatGptMonitorService.cs -Raw
+          if ($file -notmatch 'ConversationHandoffService') { throw 'Conversation handoff integration is missing.' }
+          if ($file -notmatch 'CreateNewChatTabAsync') { throw 'Conversation rotation is missing.' }
+          if ($file -notmatch 'if \(!sent\)') { throw 'New-chat send result is not validated.' }
+          if ($file -notmatch 'CloseTabAsync\(oldTab') { throw 'Old chat is not closed after successful rotation.' }
+          Write-Host 'Rotation safety invariants passed.'
