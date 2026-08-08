@@ -33,9 +33,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_cts is null)
-            return;
-
+        if (_cts is null) return;
         await _cts.CancelAsync();
         if (_worker is not null)
         {
@@ -62,12 +60,9 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
 
             var deadline = DateTimeOffset.UtcNow + work;
             while (DateTimeOffset.UtcNow < deadline && State.WindowMessageCount < maxMessages && !token.IsCancellationRequested)
-            {
                 await Task.Delay(TimeSpan.FromSeconds(1), token);
-            }
 
-            if (token.IsCancellationRequested)
-                break;
+            if (token.IsCancellationRequested) break;
 
             State.Status = DevelopmentTaskStatus.Cooling;
             State.CoolingStartedUtc = DateTimeOffset.UtcNow;
@@ -80,9 +75,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
     public string? GetNextMessage()
     {
         var messages = LoadMessages();
-        if (messages.Count == 0)
-            return null;
-
+        if (messages.Count == 0) return null;
         var index = Math.Clamp(State.MessageIndex, 0, messages.Count - 1);
         return messages[index];
     }
@@ -90,9 +83,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
     public void MarkMessageSent(string? task = null, string? chatId = null)
     {
         var messages = LoadMessages();
-        if (messages.Count > 0)
-            State.MessageIndex = (State.MessageIndex + 1) % messages.Count;
-
+        if (messages.Count > 0) State.MessageIndex = (State.MessageIndex + 1) % messages.Count;
         State.WindowMessageCount++;
         State.CurrentTask = task ?? State.CurrentTask;
         State.CurrentChatId = chatId ?? State.CurrentChatId;
@@ -102,49 +93,26 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
 
     private List<string> LoadMessages()
     {
-        if (!File.Exists(_catalogPath))
-            return [];
-
+        if (!File.Exists(_catalogPath)) return [];
         try
         {
-            var json = File.ReadAllText(_catalogPath);
-            var catalog = JsonSerializer.Deserialize<TaskMessageCatalog>(json, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
+            var catalog = JsonSerializer.Deserialize<TaskMessageCatalog>(File.ReadAllText(_catalogPath), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             return catalog?.Messages?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
         }
-        catch
-        {
-            return [];
-        }
+        catch { return []; }
     }
 
     private void LoadState()
     {
-        if (!File.Exists(_statePath))
-            return;
-
-        try
-        {
-            State = JsonSerializer.Deserialize<DevelopmentTaskState>(File.ReadAllText(_statePath)) ?? new();
-        }
-        catch
-        {
-            State = new();
-        }
+        if (!File.Exists(_statePath)) return;
+        try { State = JsonSerializer.Deserialize<DevelopmentTaskState>(File.ReadAllText(_statePath)) ?? new(); }
+        catch { State = new(); }
     }
 
     private void SaveState()
     {
-        try
-        {
-            File.WriteAllText(_statePath, JsonSerializer.Serialize(State, new JsonSerializerOptions { WriteIndented = true }));
-        }
-        catch
-        {
-            // Persistence must never terminate the monitor process.
-        }
+        try { File.WriteAllText(_statePath, JsonSerializer.Serialize(State, new JsonSerializerOptions { WriteIndented = true })); }
+        catch { }
     }
 }
 
@@ -165,9 +133,4 @@ public sealed class DevelopmentTaskState
     public string? CurrentChatId { get; set; }
 }
 
-public enum DevelopmentTaskStatus
-{
-    Stopped,
-    Working,
-    Cooling
-}
+public enum DevelopmentTaskStatus { Stopped, Working, Cooling }
