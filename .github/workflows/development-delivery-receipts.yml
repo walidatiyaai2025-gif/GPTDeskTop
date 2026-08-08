@@ -1,0 +1,39 @@
+name: Development Delivery Receipts
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  receipts:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore runtime tests
+        run: dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+
+      - name: Run delivery receipt regression tests
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true --filter "FullyQualifiedName~DevelopmentTaskDeliveryReceiptTests|FullyQualifiedName~DevelopmentTaskDeliveryCoordinatorTests"
+
+      - name: Validate receipt contract
+        shell: pwsh
+        run: |
+          $bridge = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/MonitorDevelopmentTaskBridge.cs -Raw
+          $extension = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngineDeliveryExtensions.cs -Raw
+          $chrome = Get-Content src/GPTDeskTop/Services/ChromeDevToolsService.cs -Raw
+          if ($bridge -notmatch 'CheckpointDeliveredAsync') { throw 'Monitor bridge does not persist delivery receipts.' }
+          if ($extension -notmatch 'LastDeliveredMessageIndex') { throw 'Delivery index receipt is missing.' }
+          if ($extension -notmatch 'LastDeliveredMessageFingerprint') { throw 'Delivery fingerprint receipt is missing.' }
+          if ($extension -notmatch 'CheckpointAsync') { throw 'Delivery receipt is not persisted through the engine checkpoint.' }
+          if ($chrome -notmatch 'before\.LastText, expected') { throw 'Crash-safe already-delivered guard is missing.' }
+          Write-Host 'Development delivery receipt contract passed.'
