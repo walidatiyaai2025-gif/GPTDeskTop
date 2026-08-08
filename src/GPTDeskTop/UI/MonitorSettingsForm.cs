@@ -12,7 +12,7 @@ public sealed class MonitorSettingsForm : Form
     public string AutoReply => _autoReplyBox.Text.Trim();
     public int ReplyDelaySeconds => (int)_delaySeconds.Value;
     public int TimerSeconds => (int)_timerSeconds.Value;
-    public bool Enabled => _enabledCheck.Checked;
+    public bool MonitorEnabled => _enabledCheck.Checked;
 
     public MonitorSettingsForm(string title, string url, string autoReply, int replyDelaySeconds, int timerSeconds, bool enabled)
     {
@@ -51,7 +51,7 @@ public sealed class MonitorSettingsForm : Form
     {
         using var dialog = new MonitorSettingsForm(monitor.Title, monitor.Url, monitor.AutoReply, monitor.ReplyDelaySeconds, monitor.TimerSeconds, monitor.Enabled);
         if (dialog.ShowDialog(owner) != DialogResult.OK) return false;
-        monitor.AutoReply = dialog.AutoReply; monitor.ReplyDelaySeconds = dialog.ReplyDelaySeconds; monitor.TimerSeconds = dialog.TimerSeconds; monitor.Enabled = dialog.Enabled;
+        monitor.AutoReply = dialog.AutoReply; monitor.ReplyDelaySeconds = dialog.ReplyDelaySeconds; monitor.TimerSeconds = dialog.TimerSeconds; monitor.Enabled = dialog.MonitorEnabled;
         return true;
     }
 }
