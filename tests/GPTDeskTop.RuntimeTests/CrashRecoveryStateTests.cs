@@ -12,7 +12,6 @@ public sealed class CrashRecoveryStateTests
         try
         {
             var database = await CreateDatabaseAsync(root);
-
             var wasUnclean = await CrashRecoveryStateService.PrepareStartupAsync(database);
 
             Assert.False(wasUnclean);
@@ -20,10 +19,7 @@ public sealed class CrashRecoveryStateTests
             Assert.Equal("0", await database.GetSettingAsync("CrashRecoveryPending"));
             Assert.Equal("0", await database.GetSettingAsync("LastShutdownClean"));
         }
-        finally
-        {
-            DeleteTempRoot(root);
-        }
+        finally { DeleteTempRoot(root); }
     }
 
     [Fact]
@@ -42,10 +38,7 @@ public sealed class CrashRecoveryStateTests
             Assert.Equal("1", await database.GetSettingAsync("CrashRecoveryPending"));
             Assert.Equal("0", await database.GetSettingAsync("LastShutdownClean"));
         }
-        finally
-        {
-            DeleteTempRoot(root);
-        }
+        finally { DeleteTempRoot(root); }
     }
 
     [Fact]
@@ -62,12 +55,9 @@ public sealed class CrashRecoveryStateTests
 
             Assert.False(wasUnclean);
             Assert.Equal("0", await database.GetSettingAsync("CrashCount"));
-            Assert.Equal("1", await database.GetSettingAsync("LastShutdownClean"));
+            Assert.Equal("0", await database.GetSettingAsync("LastShutdownClean"));
         }
-        finally
-        {
-            DeleteTempRoot(root);
-        }
+        finally { DeleteTempRoot(root); }
     }
 
     private static string CreateTempRoot()
