@@ -22,6 +22,9 @@ jobs:
       - name: Restore
         run: dotnet restore GPTDeskTop.sln
 
+      - name: Runtime automation tests
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal
+
       - name: Build application
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj --configuration Release --no-restore
 
