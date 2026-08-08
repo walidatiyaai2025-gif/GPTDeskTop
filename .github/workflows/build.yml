@@ -30,7 +30,6 @@ jobs:
           if (($catalog.messages | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) { throw 'Development message catalog contains an empty message.' }
           $engine = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs -Raw
           if ($engine -notmatch 'data", "development-task-messages\.json') { throw 'Development engine is not using the editable message catalog.' }
-          Write-Host 'Editable development message catalog passed.'
       - name: Runtime automation tests
         run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
       - name: Validate development task delivery invariants
@@ -38,15 +37,17 @@ jobs:
         run: |
           $engine = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs -Raw
           $coordinator = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskDeliveryCoordinator.cs -Raw
+          $bridge = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/MonitorDevelopmentTaskBridge.cs -Raw
           $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskDeliveryCoordinatorTests.cs -Raw
           if ($engine -notmatch 'MessageReady') { throw 'Development task message emission is missing.' }
           if ($engine -notmatch '_lastEmittedMessageIndex') { throw 'Duplicate task-message guard is missing.' }
           if ($coordinator -notmatch '_verifiedSender') { throw 'Verified delivery callback is missing.' }
           if ($coordinator -notmatch 'if \(!sent\)') { throw 'Task advancement is not gated on verified send success.' }
           if ($coordinator -notmatch 'await _engine\.AdvanceAsync\(\)') { throw 'Successful delivery does not advance the task.' }
+          if ($bridge -notmatch 'IsMonitorRunning') { throw 'Development task bridge is not bound to the active Monitor.' }
+          if ($bridge -notmatch 'SendChatMessageVerifiedAsync') { throw 'Development task bridge is not using verified CDP delivery.' }
           if ($tests -notmatch 'FailedDeliveryDoesNotAdvanceTask') { throw 'Failed-delivery regression test is missing.' }
           if ($tests -notmatch 'SuccessfulDeliveryAdvancesExactlyOnce') { throw 'Successful-delivery regression test is missing.' }
-          Write-Host 'Development task delivery invariants passed.'
       - name: Validate CDP delivery reliability invariants
         shell: pwsh
         run: |
