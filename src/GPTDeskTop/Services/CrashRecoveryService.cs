@@ -40,6 +40,7 @@ public static class CrashRecoveryService
                 string.Equals(t.Url, firstMonitor.Url, StringComparison.OrdinalIgnoreCase))
                 ?? currentTabs.FirstOrDefault();
 
+            var outcomes = new List<CrashRecoveryOutcome>(monitors.Count);
             for (var index = 0; index < monitors.Count; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -57,6 +58,8 @@ public static class CrashRecoveryService
                 }
 
                 var sent = await SendWithRetryAsync(chrome, tab, recoveryMessage, cancellationToken);
+                var outcome = sent ? CrashRecoveryOutcome.Success : CrashRecoveryOutcome.SendFailed;
+                outcomes.Add(outcome);
 
                 saved.TabId = tab.Id;
                 saved.Title = string.IsNullOrWhiteSpace(tab.Title) ? saved.Title : tab.Title;
@@ -73,17 +76,19 @@ public static class CrashRecoveryService
                     saved.Title,
                     cancellationToken);
 
-                // Do not restart a monitor against an unverified recovery state.
-                // The pending flag remains set if any enabled monitor could not be recovered.
-                if (saved.Enabled && !sent)
-                    throw new InvalidOperationException($"Crash recovery message could not be verified for monitor {saved.Id} ({saved.Title}).");
-
-                if (saved.Enabled)
+                if (CrashRecoveryOutcomePolicy.ShouldStartMonitor(outcome, saved.Enabled))
                     await monitorService.StartMonitorAsync(saved, tab);
             }
 
-            await database.SetSettingAsync("CrashRecoveryPending", "0", cancellationToken);
-            await database.AddLogAsync("System", "CrashRecovery", string.Empty, "CrashRecoveryCompleted", cancellationToken: cancellationToken);
+            if (CrashRecoveryOutcomePolicy.ShouldClearPending(outcomes))
+            {
+                await database.SetSettingAsync("CrashRecoveryPending", "0", cancellationToken);
+                await database.AddLogAsync("System", "CrashRecovery", string.Empty, "CrashRecoveryCompleted", cancellationToken: cancellationToken);
+            }
+            else
+            {
+                await database.AddLogAsync("System", "CrashRecovery", string.Empty, "CrashRecoveryPartialFailure", cancellationToken: cancellationToken);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -105,8 +110,6 @@ public static class CrashRecoveryService
             await Task.Delay(attempt == 1 ? 1200 : 700, cancellationToken);
             try
             {
-                // Verification is required here: recovery must not mark a tab healthy
-                // merely because the click was accepted by the browser DOM.
                 if (await chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken))
                     return true;
             }
