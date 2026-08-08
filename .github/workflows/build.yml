@@ -60,6 +60,21 @@ jobs:
           if ($coordinator -notmatch 'MessageIndex == messageIndex') { throw 'Per-monitor message-index idempotency guard is missing.' }
           if ($tests -notmatch 'PartialDeliveryKeepsSuccessfulRecipientReceiptForRetry') { throw 'Partial multi-monitor receipt test is missing.' }
           if ($tests -notmatch 'DifferentTabInvalidatesPreviousReceiptForSameMonitor') { throw 'Tab-change receipt invalidation test is missing.' }
+      - name: Validate saved monitor chat rebinding
+        shell: pwsh
+        run: |
+          $resolver = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/SavedMonitorTabResolver.cs -Raw
+          $factory = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskMonitorTargetFactory.cs -Raw
+          $tests = Get-Content tests/GPTDeskTop.RuntimeTests/SavedMonitorTabResolverTests.cs -Raw
+          if ($resolver -notmatch 'PersistedTabId') { throw 'Exact persisted Chrome target binding is missing.' }
+          if ($resolver -notmatch 'PersistedConversationUrl') { throw 'Conversation URL rebinding fallback is missing.' }
+          if ($resolver -notmatch 'Title is intentionally not used') { throw 'Resolver uniqueness rule documentation is missing.' }
+          if ($factory -notmatch 'ResolveEnabledRecipientsAsync') { throw 'Saved monitor recipient factory is missing.' }
+          if ($factory -notmatch 'DevelopmentMonitorRebound') { throw 'Monitor rebind event logging is missing.' }
+          if ($factory -notmatch 'DevelopmentMonitorTabUnavailable') { throw 'Missing-chat state is not logged.' }
+          if ($tests -notmatch 'ExactPersistedTabIdWins') { throw 'Exact-tab rebinding test is missing.' }
+          if ($tests -notmatch 'RecreatedChromeTargetCanBeRecoveredByConversationUrl') { throw 'Restart URL rebinding test is missing.' }
+          if ($tests -notmatch 'MissingConversationDoesNotFallBackToTitle') { throw 'Unsafe title fallback regression test is missing.' }
       - name: Validate CDP delivery reliability invariants
         shell: pwsh
         run: |
