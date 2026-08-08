@@ -168,7 +168,11 @@ public sealed class ChatGptMonitorService
 
                         await ApplyModelRouteAsync(monitor, newTab, recovery: false, contextRotation: true, cancellationToken);
 
-                        var startMessage = string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage;
+                        var handoffService = new ConversationHandoffService(_database);
+                        var handoffMessage = await handoffService.BuildAsync(monitor, text, oldTab, cancellationToken);
+                        var startMessage = string.IsNullOrWhiteSpace(handoffMessage)
+                            ? (string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage)
+                            : handoffMessage;
                         var sent = await _chrome.SendChatMessageAsync(newTab, startMessage, cancellationToken);
                         if (!sent)
                             throw new InvalidOperationException("New ChatGPT chat opened but the rotation start message could not be sent.");
