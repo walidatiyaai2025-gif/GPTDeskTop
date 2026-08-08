@@ -14,11 +14,13 @@ public static class CrashRecoveryStateService
             var crashes = await database.GetIntSettingAsync("CrashCount", 0, 0, int.MaxValue, cancellationToken);
             await database.SetSettingAsync("CrashCount", (crashes + 1).ToString(), cancellationToken);
             await database.SetSettingAsync("CrashRecoveryPending", "1", cancellationToken);
+            await database.SetSettingAsync("CrashRecovery.RecoveryId", Guid.NewGuid().ToString("N"), cancellationToken);
         }
         else if (previousClean is null)
         {
             await database.SetSettingAsync("CrashCount", "0", cancellationToken);
             await database.SetSettingAsync("CrashRecoveryPending", "0", cancellationToken);
+            await database.SetSettingAsync("CrashRecovery.RecoveryId", string.Empty, cancellationToken);
         }
 
         await database.SetSettingAsync("LastShutdownClean", "0", cancellationToken);
