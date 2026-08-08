@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>GPTDeskTop.Build</AssemblyName>
+    <PublishRoot>$(MSBuildProjectDirectory)\..\..\Output\Publish</PublishRoot>
+    <AppProject>$(MSBuildProjectDirectory)\..\GPTDeskTop\GPTDeskTop.csproj</AppProject>
+  </PropertyGroup>
+
+  <!-- Deliberately no ProjectReference. This project orchestrates publishing by path. -->
+  <Target Name="PreparePublishedApplication" AfterTargets="Build">
+    <RemoveDir Directories="$(PublishRoot)" Condition="Exists('$(PublishRoot)')" />
+    <MakeDir Directories="$(PublishRoot)" />
+    <Exec Command="dotnet publish &quot;$(AppProject)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o &quot;$(PublishRoot)&quot;" />
+    <Error Condition="!Exists('$(PublishRoot)\GPTDeskTop.exe')" Text="GPTDeskTop publish did not produce $(PublishRoot)\GPTDeskTop.exe" />
+    <WriteLinesToFile File="$(PublishRoot)\Version.txt" Lines="GPTDeskTop v1.7.1&#x0D;&#x0A;Runtime: win-x64 self-contained&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
+    <WriteLinesToFile File="$(PublishRoot)\ReleaseNotes.txt" Lines="GPTDeskTop v1.7.1&#x0D;&#x0A;- Release helper renamed to GPTDeskTop.Build&#x0D;&#x0A;- No ProjectReference to the desktop application&#x0D;&#x0A;- Setup publishes application payload directly by project path&#x0D;&#x0A;- Eliminates desktop TFM compatibility validation failures" Overwrite="true" Encoding="UTF-8" />
+  </Target>
+</Project>
