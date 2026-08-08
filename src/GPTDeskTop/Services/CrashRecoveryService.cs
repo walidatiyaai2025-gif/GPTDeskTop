@@ -73,6 +73,11 @@ public static class CrashRecoveryService
                     saved.Title,
                     cancellationToken);
 
+                // Do not restart a monitor against an unverified recovery state.
+                // The pending flag remains set if any enabled monitor could not be recovered.
+                if (saved.Enabled && !sent)
+                    throw new InvalidOperationException($"Crash recovery message could not be verified for monitor {saved.Id} ({saved.Title}).");
+
                 if (saved.Enabled)
                     await monitorService.StartMonitorAsync(saved, tab);
             }
@@ -100,7 +105,9 @@ public static class CrashRecoveryService
             await Task.Delay(attempt == 1 ? 1200 : 700, cancellationToken);
             try
             {
-                if (await chrome.SendChatMessageAsync(tab, message, cancellationToken))
+                // Verification is required here: recovery must not mark a tab healthy
+                // merely because the click was accepted by the browser DOM.
+                if (await chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken))
                     return true;
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("Promise was collected", StringComparison.OrdinalIgnoreCase))
