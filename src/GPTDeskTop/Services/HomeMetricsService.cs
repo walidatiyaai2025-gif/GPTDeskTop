@@ -75,19 +75,21 @@ public sealed class HomeMetricsService : IDisposable
         if (sender is not DataGridView grid || e.RowIndex < 0 || e.ColumnIndex < 0) return;
         if (!string.Equals(grid.Columns[e.ColumnIndex].HeaderText, "Status", StringComparison.OrdinalIgnoreCase)) return;
 
+        var style = e.CellStyle;
+        if (style is null) return;
         var value = e.Value?.ToString() ?? string.Empty;
         if (value.Contains("Running", StringComparison.OrdinalIgnoreCase))
         {
             e.Value = "● Running";
-            e.CellStyle.ForeColor = Color.SeaGreen;
-            e.CellStyle.Font = new Font(grid.Font, FontStyle.Bold);
+            style.ForeColor = Color.SeaGreen;
+            style.Font = new Font(grid.Font, FontStyle.Bold);
             e.FormattingApplied = true;
         }
         else if (value.Contains("Stopped", StringComparison.OrdinalIgnoreCase))
         {
             e.Value = "● Stopped";
-            e.CellStyle.ForeColor = Color.Firebrick;
-            e.CellStyle.Font = new Font(grid.Font, FontStyle.Bold);
+            style.ForeColor = Color.Firebrick;
+            style.Font = new Font(grid.Font, FontStyle.Bold);
             e.FormattingApplied = true;
         }
     }
