@@ -4,8 +4,8 @@ using GPTDeskTop.Services;
 namespace GPTDeskTop.UI;
 
 /// <summary>
-/// Adds the development-automation entry point to the existing MainForm without
-/// coupling MainForm to the automation engine. The main monitor UI remains intact.
+/// Adds the development-automation control center to the existing MainForm
+/// without coupling MainForm to the automation engine.
 /// </summary>
 public static class DevelopmentAutomationLauncher
 {
@@ -38,7 +38,7 @@ public static class DevelopmentAutomationLauncher
         FluentTheme.StyleButton(button, primary: true);
         button.Click += (_, _) =>
         {
-            using var form = new DevelopmentAutomationForm(automation, database);
+            using var form = new DevelopmentAutomationControlForm(automation, database);
             form.ShowDialog(mainForm);
         };
 
