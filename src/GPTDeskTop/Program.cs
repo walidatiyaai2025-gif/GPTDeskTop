@@ -24,8 +24,6 @@ internal static class Program
             if (database.GetSettingAsync("NoResponseRefreshSeconds").GetAwaiter().GetResult() is null)
                 database.SetSettingAsync("NoResponseRefreshSeconds", "180").GetAwaiter().GetResult();
 
-            // Seed task-automation defaults only once. Do not overwrite values that the
-            // user has changed from the automation control center on every application start.
             if (database.GetSettingAsync("TaskAutomation.WorkWindowMinutes").GetAwaiter().GetResult() is null)
                 database.SetSettingAsync("TaskAutomation.WorkWindowMinutes", config.TaskAutomation.WorkWindowMinutes.ToString()).GetAwaiter().GetResult();
             if (database.GetSettingAsync("TaskAutomation.CoolingWindowMinutes").GetAwaiter().GetResult() is null)
@@ -64,15 +62,10 @@ internal static class Program
             using var notifications = new TrayNotificationService(monitor, database);
             notifications.InitializeAsync().GetAwaiter().GetResult();
 
-            // IMPORTANT: Never block startup on Chrome/CDP recovery. The tray icon used to
-            // appear while RecoverIfPendingAsync was waiting for Chrome, making the main form
-            // look as if it had failed to load. Show the UI first and recover asynchronously.
             var taskAutomation = new TaskAutomationService(chrome, database, config.TaskAutomation);
             var mainForm = new MainForm(chrome, monitor, database);
             using var metrics = new HomeMetricsService(mainForm, database, monitor);
 
-            // Phase 2: expose the automation control center from the existing toolbar.
-            // F12 remains available as a keyboard shortcut for power users.
             DevelopmentAutomationLauncher.Attach(mainForm, taskAutomation, database);
             mainForm.KeyPreview = true;
             mainForm.KeyDown += (_, e) =>
@@ -90,7 +83,15 @@ internal static class Program
                     await CrashRecoveryService.RecoverIfPendingAsync(chrome, monitor, database);
 
                     if (config.TaskAutomation.Enabled && config.TaskAutomation.ResumeOnStartup)
-                        await taskAutomation.StartAsync();
+                    {
+                        var phase = await database.GetSettingAsync("TaskAutomation.Phase");
+                        var resumeAllowed = string.Equals(phase, "Working", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(phase, "Cooling", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(phase, "Paused", StringComparison.OrdinalIgnoreCase);
+
+                        if (resumeAllowed)
+                            await taskAutomation.StartAsync();
+                    }
                 }
                 catch (Exception ex)
                 {
