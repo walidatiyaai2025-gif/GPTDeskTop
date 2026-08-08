@@ -41,6 +41,19 @@ jobs:
           if ($monitor -notmatch 'SendChatMessageVerifiedAsync') { throw 'Monitor worker is not using verified delivery.' }
           Write-Host 'CDP delivery reliability invariants passed.'
 
+      - name: Validate crash recovery invariants
+        shell: pwsh
+        run: |
+          $recovery = Get-Content src/GPTDeskTop/Services/CrashRecoveryService.cs -Raw
+          if ($recovery -notmatch 'CrashRecoveryPending') { throw 'Crash recovery pending marker is missing.' }
+          if ($recovery -notmatch 'CloseAllMonitorTabsAsync') { throw 'Recovery does not close stale monitor tabs.' }
+          if ($recovery -notmatch 'LaunchMonitorChrome') { throw 'Recovery does not relaunch monitor Chrome.' }
+          if ($recovery -notmatch 'SendChatMessageVerifiedAsync') { throw 'Recovery message is not verified before success.' }
+          if ($recovery -notmatch 'CrashRecoverySendFailed') { throw 'Recovery send failure is not logged.' }
+          if ($recovery -notmatch 'CrashRecoveryPending=1') { throw 'Recovery retry marker contract is missing.' }
+          if ($recovery -notmatch 'StartMonitorAsync') { throw 'Enabled recovered monitors are not restarted.' }
+          Write-Host 'Crash recovery invariants passed.'
+
       - name: Build application
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj --configuration Release --no-restore
 
