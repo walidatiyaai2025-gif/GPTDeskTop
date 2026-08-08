@@ -28,6 +28,11 @@ public sealed class SavedMonitor
     public int TimerSeconds { get; set; } = 1;
     public bool Enabled { get; set; } = true;
 
+    // Development-plan automation is explicitly opt-in per monitor.
+    public bool DevelopmentAutomationEnabled { get; set; }
+    public string DevelopmentPlanId { get; set; } = "default-development-plan";
+    public string DevelopmentPlanTitle { get; set; } = "GPTDeskTop Development Plan";
+
     // Conversation rotation is intentionally limited to an actual conversation/context-limit
     // signal exposed by ChatGPT. It does not attempt to predict or bypass account usage quotas.
     public bool ConversationRotationEnabled { get; set; } = true;
