@@ -36,13 +36,25 @@ public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
     public void Attach()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        _coordinator ??= new DevelopmentTaskDeliveryCoordinator(_engine, SendVerifiedAsync);
+        _coordinator ??= new DevelopmentTaskDeliveryCoordinator(
+            _engine,
+            SendVerifiedAsync,
+            CheckpointDeliveredAsync);
     }
 
     private async Task<bool> SendVerifiedAsync(string message, CancellationToken cancellationToken)
     {
         if (_disposed || !_monitorService.IsMonitorRunning(_monitor.Id)) return false;
         return await _chrome.SendChatMessageVerifiedAsync(_tab, message, cancellationToken).ConfigureAwait(false);
+    }
+
+    private Task CheckpointDeliveredAsync(string message, CancellationToken cancellationToken)
+    {
+        return _engine.CheckpointDeliveredAsync(
+            MonitorId,
+            TabId.ToString(),
+            DevelopmentTaskDeliveryCoordinator.Fingerprint(message),
+            cancellationToken);
     }
 
     public async ValueTask DisposeAsync()
