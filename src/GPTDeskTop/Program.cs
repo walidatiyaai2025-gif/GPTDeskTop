@@ -57,12 +57,10 @@ internal static class Program
             using var notifications = new TrayNotificationService(monitor, database);
             notifications.InitializeAsync().GetAwaiter().GetResult();
 
-            // IMPORTANT: Never block startup on Chrome/CDP recovery. The tray icon used to
-            // appear while RecoverIfPendingAsync was waiting for Chrome, making the main form
-            // look as if it had failed to load. Show the UI first and recover asynchronously.
             var mainForm = new MainForm(chrome, monitor, database);
             using var metrics = new HomeMetricsService(mainForm, database, monitor);
             var taskAutomation = new TaskAutomationService(chrome, database, config.TaskAutomation);
+            using var automationUi = new DevelopmentAutomationUiHost(mainForm, taskAutomation, database);
 
             mainForm.Shown += async (_, _) =>
             {
