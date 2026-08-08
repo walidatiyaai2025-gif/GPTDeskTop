@@ -1,0 +1,56 @@
+name: Integrate Conversation Handoff
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: "!contains(github.event.head_commit.message, '[handoff-bot]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch monitor rotation
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('src/GPTDeskTop/Services/ChatGptMonitorService.cs')
+          s = p.read_text(encoding='utf-8')
+          old = '''                        var startMessage = string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage;
+                        var sent = await _chrome.SendChatMessageAsync(newTab, startMessage, cancellationToken);'''
+          new = '''                        var handoffService = new ConversationHandoffService(_database);
+                        var handoffMessage = await handoffService.BuildAsync(monitor, text, oldTab, cancellationToken);
+                        var startMessage = string.IsNullOrWhiteSpace(handoffMessage)
+                            ? (string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage)
+                            : handoffMessage;
+                        var sent = await _chrome.SendChatMessageAsync(newTab, startMessage, cancellationToken);'''
+          if old not in s:
+              raise SystemExit('Expected rotation block was not found; refusing to modify the file.')
+          if 'handoffService.BuildAsync(monitor, text, oldTab' in s:
+              raise SystemExit('Handoff is already integrated.')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+      - name: Validate solution
+        run: dotnet build GPTDeskTop.sln --configuration Release --no-restore
+
+      - name: Commit integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/GPTDeskTop/Services/ChatGptMonitorService.cs
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: use bounded conversation handoff during rotation [handoff-bot]"
+          git push
+
+      - name: Remove one-shot workflow
+        if: success()
+        run: |
+          git rm .github/workflows/integrate-handoff.yml
+          git commit -m "chore: remove one-shot handoff integration workflow [handoff-bot]"
+          git push
