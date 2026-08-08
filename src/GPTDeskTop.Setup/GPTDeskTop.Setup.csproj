@@ -7,9 +7,9 @@
     <Nullable>enable</Nullable>
     <AssemblyName>GPTDeskTop-Setup</AssemblyName>
     <RootNamespace>GPTDeskTop.Setup</RootNamespace>
-    <Version>1.7.1</Version>
-    <AssemblyVersion>1.7.1.0</AssemblyVersion>
-    <FileVersion>1.7.1.0</FileVersion>
+    <Version>1.8.1</Version>
+    <AssemblyVersion>1.8.1.0</AssemblyVersion>
+    <FileVersion>1.8.1.0</FileVersion>
     <PublishDir>$(MSBuildProjectDirectory)\..\..\Output\Publish</PublishDir>
     <SetupOutput>$(MSBuildProjectDirectory)\..\..\Output\Setup</SetupOutput>
     <AppProject>$(MSBuildProjectDirectory)\..\GPTDeskTop\GPTDeskTop.csproj</AppProject>
@@ -22,9 +22,11 @@
     <MakeDir Directories="$(PublishDir)" />
     <Exec Command="dotnet publish &quot;$(AppProject)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o &quot;$(PublishDir)&quot;" />
     <Error Condition="!Exists('$(PublishDir)\GPTDeskTop.exe')" Text="Published GPTDeskTop payload was not created: $(PublishDir)\GPTDeskTop.exe" />
+    <Error Condition="!Exists('$(PublishDir)\task-messages.json')" Text="Development task message catalog was not created: $(PublishDir)\task-messages.json" />
     <ItemGroup>
       <EmbeddedResource Include="$(PublishDir)\GPTDeskTop.exe" LogicalName="Payload.GPTDeskTop.exe" />
       <EmbeddedResource Include="$(PublishDir)\appsettings.json" LogicalName="Payload.appsettings.json" Condition="Exists('$(PublishDir)\appsettings.json')" />
+      <EmbeddedResource Include="$(PublishDir)\task-messages.json" LogicalName="Payload.task-messages.json" />
       <EmbeddedResource Include="$(PublishDir)\Version.txt" LogicalName="Payload.Version.txt" Condition="Exists('$(PublishDir)\Version.txt')" />
       <EmbeddedResource Include="$(PublishDir)\ReleaseNotes.txt" LogicalName="Payload.ReleaseNotes.txt" Condition="Exists('$(PublishDir)\ReleaseNotes.txt')" />
     </ItemGroup>
@@ -37,7 +39,7 @@
   <Target Name="CreateStandaloneSetup" AfterTargets="Build" Condition="'$(Configuration)' == 'Release' AND '$(SetupPackaging)' != 'true'">
     <Exec Command="dotnet publish &quot;$(MSBuildProjectFullPath)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -p:SetupPackaging=true -o &quot;$(SetupOutput)\Final&quot;" />
     <Copy SourceFiles="$(SetupOutput)\Final\GPTDeskTop-Setup.exe" DestinationFiles="$(SetupOutput)\GPTDeskTop-Setup.exe" />
-    <WriteLinesToFile File="$(SetupOutput)\Version.txt" Lines="GPTDeskTop Setup v1.7.1&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
+    <WriteLinesToFile File="$(SetupOutput)\Version.txt" Lines="GPTDeskTop Setup v1.8.1&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
     <Message Text="Final standalone setup: $(SetupOutput)\GPTDeskTop-Setup.exe" Importance="high" />
   </Target>
 </Project>
