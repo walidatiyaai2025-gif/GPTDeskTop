@@ -27,7 +27,7 @@ public sealed class MonitorSettingsForm : Form
     public MonitorSettingsForm(string title, string url, SavedMonitor monitor)
     {
         Text = "Monitor Settings"; StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false; ClientSize = new Size(760, 500);
+        MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false; ClientSize = new Size(760, 540);
 
         _autoReplyBox.Text = string.IsNullOrWhiteSpace(monitor.AutoReply) ? "كمل" : monitor.AutoReply;
         _delaySeconds.Value = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300);
@@ -39,9 +39,9 @@ public sealed class MonitorSettingsForm : Form
         _rotationCooldownSeconds.Value = Math.Clamp(monitor.RotationCooldownSeconds, 0, 3600);
         _maxRotations.Value = Math.Clamp(monitor.MaxConversationRotations, 0, 1000);
 
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(22), ColumnCount = 2, RowCount = 11, AutoScroll = true };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(22), ColumnCount = 2, RowCount = 12, AutoScroll = true };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250)); root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < 10; i++) root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        for (var i = 0; i < 11; i++) root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
 
         var titleLabel = new Label { Text = title, Dock = DockStyle.Fill, Font = new Font("Segoe UI Variable Display", 11F, FontStyle.Bold), AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
