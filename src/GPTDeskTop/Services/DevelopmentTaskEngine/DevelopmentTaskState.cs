@@ -23,6 +23,8 @@ public sealed class DevelopmentTaskState : EventArgs
     public DateTimeOffset? LastCheckpointAt { get; set; }
     public string? LastMonitorId { get; set; }
     public string? LastTabId { get; set; }
+    public int LastDeliveredMessageIndex { get; set; } = -1;
+    public string? LastDeliveredMessageFingerprint { get; set; }
     public string? LastError { get; set; }
     public long Revision { get; set; }
 }
