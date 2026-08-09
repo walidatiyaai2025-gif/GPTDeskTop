@@ -3,6 +3,12 @@ using GPTDeskTop.Models;
 
 namespace GPTDeskTop.Services;
 
+public enum CrashRecoveryMode
+{
+    FreshCrashReset,
+    PendingRetry
+}
+
 public static class CrashRecoveryService
 {
     public static Task RecoverIfPendingAsync(
@@ -13,11 +19,35 @@ public static class CrashRecoveryService
         => RecoverIfPendingAsync(
             new CrashRecoveryRuntimeAdapter(chrome, monitorService),
             database,
+            CrashRecoveryMode.FreshCrashReset,
+            cancellationToken);
+
+    public static Task RecoverIfPendingAsync(
+        ChromeDevToolsService chrome,
+        ChatGptMonitorService monitorService,
+        LocalDatabase database,
+        CrashRecoveryMode mode,
+        CancellationToken cancellationToken = default)
+        => RecoverIfPendingAsync(
+            new CrashRecoveryRuntimeAdapter(chrome, monitorService),
+            database,
+            mode,
+            cancellationToken);
+
+    public static Task RecoverIfPendingAsync(
+        ICrashRecoveryRuntime runtime,
+        LocalDatabase database,
+        CancellationToken cancellationToken = default)
+        => RecoverIfPendingAsync(
+            runtime,
+            database,
+            CrashRecoveryMode.FreshCrashReset,
             cancellationToken);
 
     public static async Task RecoverIfPendingAsync(
         ICrashRecoveryRuntime runtime,
         LocalDatabase database,
+        CrashRecoveryMode mode,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(runtime);
@@ -46,31 +76,47 @@ public static class CrashRecoveryService
 
         try
         {
-            await runtime.StopAllMonitorsAsync();
-            await runtime.CloseAllMonitorTabsAsync(cancellationToken);
-
             var validMonitors = monitors
                 .Where(saved => RuntimeHealthPresentation.IsChatGptConversationUrl(saved.Url))
                 .ToList();
 
+            var availableTabs = new List<ChromeTab>();
             ChromeTab? firstTab = null;
             SavedMonitor? firstValidMonitor = validMonitors.FirstOrDefault();
-            if (firstValidMonitor is not null)
+
+            if (mode == CrashRecoveryMode.FreshCrashReset)
             {
-                await runtime.DelayAsync(TimeSpan.FromMilliseconds(700), cancellationToken);
-                runtime.LaunchMonitorChrome(firstValidMonitor.Url);
-                await runtime.DelayAsync(TimeSpan.FromMilliseconds(2200), cancellationToken);
+                await runtime.StopAllMonitorsAsync();
+                await runtime.CloseAllMonitorTabsAsync(cancellationToken);
 
+                if (firstValidMonitor is not null)
+                {
+                    await runtime.DelayAsync(TimeSpan.FromMilliseconds(700), cancellationToken);
+                    runtime.LaunchMonitorChrome(firstValidMonitor.Url);
+                    await runtime.DelayAsync(TimeSpan.FromMilliseconds(2200), cancellationToken);
+
+                    var currentTabs = await runtime.GetTabsAsync(cancellationToken);
+                    availableTabs.AddRange(currentTabs);
+                    firstTab = currentTabs.FirstOrDefault(t =>
+                        RuntimeHealthPresentation.IsChatGptConversationUrl(t.Url)
+                        && string.Equals(t.Url, firstValidMonitor.Url, StringComparison.OrdinalIgnoreCase));
+
+                    if (firstTab is null)
+                    {
+                        firstTab = await runtime.CreateTabAsync(firstValidMonitor.Url, cancellationToken);
+                        availableTabs.Add(firstTab);
+                    }
+                }
+            }
+            else if (firstValidMonitor is not null)
+            {
                 var currentTabs = await runtime.GetTabsAsync(cancellationToken);
-                firstTab = currentTabs.FirstOrDefault(t =>
-                    RuntimeHealthPresentation.IsChatGptConversationUrl(t.Url)
-                    && string.Equals(t.Url, firstValidMonitor.Url, StringComparison.OrdinalIgnoreCase));
-
-                if (firstTab is null)
-                    firstTab = await runtime.CreateTabAsync(firstValidMonitor.Url, cancellationToken);
+                availableTabs.AddRange(currentTabs.Where(tab =>
+                    RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url)));
             }
 
             var outcomes = new List<CrashRecoveryOutcome>(monitors.Count);
+            var usedTabIds = new HashSet<string>(StringComparer.Ordinal);
             foreach (var saved in monitors)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -96,11 +142,24 @@ public static class CrashRecoveryService
                     "1",
                     StringComparison.Ordinal);
 
-                ChromeTab tab;
-                if (firstValidMonitor is not null && saved.Id == firstValidMonitor.Id && firstTab is not null)
+                ChromeTab? tab = null;
+                if (mode == CrashRecoveryMode.FreshCrashReset
+                    && firstValidMonitor is not null
+                    && saved.Id == firstValidMonitor.Id
+                    && firstTab is not null)
+                {
                     tab = firstTab;
-                else
+                }
+                else if (mode == CrashRecoveryMode.PendingRetry)
+                {
+                    tab = ResolveReusableTab(saved, availableTabs, usedTabIds);
+                }
+
+                if (tab is null)
+                {
                     tab = await runtime.CreateTabAsync(saved.Url, cancellationToken);
+                    availableTabs.Add(tab);
+                }
 
                 if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
                 {
@@ -117,9 +176,12 @@ public static class CrashRecoveryService
                     continue;
                 }
 
+                if (!string.IsNullOrWhiteSpace(tab.Id))
+                    usedTabIds.Add(tab.Id);
+
                 // A monitor that already recovered successfully during this incident
-                // must never receive the recovery message again on the retry startup.
-                // We only restore its monitoring loop on the new tab.
+                // must never receive the recovery message again on a retry startup.
+                // Clean pending retries reuse an existing exact tab when possible.
                 if (alreadyRecovered)
                 {
                     outcomes.Add(CrashRecoveryOutcome.Success);
@@ -127,7 +189,17 @@ public static class CrashRecoveryService
                     saved.Title = string.IsNullOrWhiteSpace(tab.Title) ? saved.Title : tab.Title;
                     saved.Url = string.IsNullOrWhiteSpace(tab.Url) ? saved.Url : tab.Url;
                     await database.SaveMonitorAsync(saved, cancellationToken);
-                    await database.AddLogAsync("System", recoveryMessage, string.Empty, "CrashRecoveryAlreadyVerified", saved.Id, tab.Id, saved.Title, cancellationToken);
+                    await database.AddLogAsync(
+                        "System",
+                        recoveryMessage,
+                        string.Empty,
+                        mode == CrashRecoveryMode.PendingRetry
+                            ? "CrashRecoveryAlreadyVerifiedReused"
+                            : "CrashRecoveryAlreadyVerified",
+                        saved.Id,
+                        tab.Id,
+                        saved.Title,
+                        cancellationToken);
                     if (saved.Enabled)
                         await runtime.StartMonitorAsync(saved, tab);
                     continue;
@@ -167,7 +239,12 @@ public static class CrashRecoveryService
             }
             else
             {
-                await database.AddLogAsync("System", "CrashRecovery", string.Empty, "CrashRecoveryPartialFailure", cancellationToken: cancellationToken);
+                await database.AddLogAsync(
+                    "System",
+                    "CrashRecovery",
+                    mode == CrashRecoveryMode.PendingRetry ? "PendingRetry" : string.Empty,
+                    "CrashRecoveryPartialFailure",
+                    cancellationToken: cancellationToken);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -176,6 +253,28 @@ public static class CrashRecoveryService
             await database.AddLogAsync("System", "CrashRecovery", ex.ToString(), "CrashRecoveryFailed", cancellationToken: cancellationToken);
             // Leave CrashRecoveryPending=1 so the next startup can retry.
         }
+    }
+
+    private static ChromeTab? ResolveReusableTab(
+        SavedMonitor monitor,
+        IReadOnlyCollection<ChromeTab> tabs,
+        ISet<string> usedTabIds)
+    {
+        if (!string.IsNullOrWhiteSpace(monitor.TabId))
+        {
+            var exactTarget = tabs.FirstOrDefault(tab =>
+                !usedTabIds.Contains(tab.Id)
+                && string.Equals(tab.Id, monitor.TabId, StringComparison.Ordinal)
+                && RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url)
+                && string.Equals(tab.Url, monitor.Url, StringComparison.OrdinalIgnoreCase));
+            if (exactTarget is not null)
+                return exactTarget;
+        }
+
+        return tabs.FirstOrDefault(tab =>
+            !usedTabIds.Contains(tab.Id)
+            && RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url)
+            && string.Equals(tab.Url, monitor.Url, StringComparison.OrdinalIgnoreCase));
     }
 
     private static async Task<bool> SendWithRetryAsync(
