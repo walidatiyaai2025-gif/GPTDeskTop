@@ -194,7 +194,7 @@ public sealed class SupportBundleService
             return new SupportBundleChromeSnapshot(
                 true,
                 tabs.Count,
-                tabs.Count(tab => RuntimeHealthPresentation.IsChatGptTabUrl(tab.Url)),
+                tabs.Count(tab => RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url)),
                 null);
         }
         catch (OperationCanceledException)
