@@ -226,7 +226,7 @@ public sealed class ConfigurationBackupImportService
         IReadOnlyList<ConfigurationBackupMonitor> monitors)
     {
         var result = new List<SavedMonitor>(monitors.Count);
-        var urls = new HashSet<string>(StringComparer.Ordinal);
+        var conversationIdentities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var monitor in monitors)
         {
@@ -248,8 +248,10 @@ public sealed class ConfigurationBackupImportService
                 throw new InvalidDataException($"Monitor '{title}' has an invalid conversation URL length.");
             if (!RuntimeHealthPresentation.IsChatGptConversationUrl(url))
                 throw new InvalidDataException($"Monitor '{title}' must use an absolute HTTPS ChatGPT conversation URL with a stable /c/{{conversation-id}} identity.");
-            if (!urls.Add(url))
-                throw new InvalidDataException($"Conversation URL '{url}' appears more than once in the configuration backup.");
+
+            var canonicalUrl = ChatGptConversationIdentity.Normalize(url);
+            if (!conversationIdentities.Add(canonicalUrl))
+                throw new InvalidDataException($"Conversation identity '{canonicalUrl}' appears more than once in the configuration backup.");
             if (string.IsNullOrWhiteSpace(autoReply) || autoReply.Length > MaxMessageChars)
                 throw new InvalidDataException($"Monitor '{title}' has an empty or oversized auto reply.");
             if (monitor.ConversationRotationEnabled && string.IsNullOrWhiteSpace(startMessage))
@@ -274,7 +276,7 @@ public sealed class ConfigurationBackupImportService
                 Id = 0,
                 TabId = string.Empty,
                 Title = title,
-                Url = url,
+                Url = canonicalUrl,
                 AutoReply = autoReply,
                 ReplyDelaySeconds = monitor.ReplyDelaySeconds,
                 TimerSeconds = monitor.TimerSeconds,
@@ -293,4 +295,5 @@ public sealed class ConfigurationBackupImportService
 
         return result;
     }
+
 }
