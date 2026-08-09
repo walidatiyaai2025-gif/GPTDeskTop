@@ -749,10 +749,14 @@ public sealed class MainForm : Form
 
     private async Task OpenSettingsAsync()
     {
-        using var form = new SettingsForm(_database);
+        using var form = new SettingsForm(_database, () => _monitor.IsRunning);
         if (form.ShowDialog(this) != DialogResult.OK) return;
-        if (_selectedMonitor is null) _autoReplyBox.Text = await _database.GetSettingAsync("DefaultAutoReply") ?? "كمل";
-        AppendActivity("Global monitoring, rotation and notification settings saved.");
+        await RefreshMonitorsAsync();
+        if (_selectedMonitor is null)
+            _autoReplyBox.Text = await _database.GetSettingAsync("DefaultAutoReply") ?? "كمل";
+        else
+            SelectCurrentMonitor();
+        AppendActivity("Global monitoring, rotation, notification or imported configuration changes loaded from SQLite.");
     }
 
     private async Task LaunchChromeAsync()
