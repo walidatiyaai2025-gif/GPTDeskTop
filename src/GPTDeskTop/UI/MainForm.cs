@@ -39,8 +39,8 @@ public sealed class MainForm : Form
     private readonly ToolTip _toolTip = new() { AutoPopDelay = 8000, InitialDelay = 450, ReshowDelay = 100 };
     private readonly SplitContainer _workspaceSplit = new();
     private readonly SplitContainer _diagnosticsSplit = new();
-    private readonly Label _tabsEmptyState = CreateEmptyState("No ChatGPT tabs are open", "Launch the monitor Chrome window or choose Refresh after opening a conversation.");
-    private readonly Label _monitorsEmptyState = CreateEmptyState("No saved monitors yet", "Select an open ChatGPT tab and choose Add Monitor to start tracking it.");
+    private readonly Label _tabsEmptyState = CreateEmptyState("No ChatGPT conversations are open", "Launch the monitor Chrome window or choose Refresh after opening a conversation page.");
+    private readonly Label _monitorsEmptyState = CreateEmptyState("No saved monitors yet", "Select an open ChatGPT conversation and choose Add Monitor to start tracking it.");
     private readonly Label _historyEmptyState = CreateEmptyState("No stored history yet", "Inbound, outbound and recovery receipts will appear here as monitors run.");
 
     private List<ChromeTab> _tabs = new();
@@ -156,7 +156,7 @@ public sealed class MainForm : Form
         };
         metrics.Controls.Add(CreateMetricChip("Running", _runningMetricValue));
         metrics.Controls.Add(CreateMetricChip("Monitors", _monitorsMetricValue));
-        metrics.Controls.Add(CreateMetricChip("Open tabs", _tabsMetricValue));
+        metrics.Controls.Add(CreateMetricChip("Conversation tabs", _tabsMetricValue));
         metrics.Controls.Add(CreateMetricChip("Chrome window", _chromeMetricValue));
 
         layout.Controls.Add(titleBlock, 0, 0);
@@ -200,8 +200,8 @@ public sealed class MainForm : Form
         split.Panel2.Padding = new Padding(6, 0, 0, 0);
 
         split.Panel1.Controls.Add(CreateSection(
-            "Open Chrome Tabs",
-            "Select one or more ChatGPT tabs, then add them as monitors.",
+            "Open ChatGPT Conversations",
+            "Only stable ChatGPT conversation URLs are shown here and can become monitors.",
             CreateGridHost(_tabsGrid, _tabsEmptyState)));
 
         var monitorPane = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, BackColor = FluentTheme.Background };
@@ -650,8 +650,8 @@ public sealed class MainForm : Form
         _toolTip.SetToolTip(_launchChromeButton, "Launch the dedicated Chrome instance used by GPTDeskTop monitoring.");
         _toolTip.SetToolTip(_hideChromeButton, "Hide the monitor Chrome window without stopping CDP monitoring.");
         _toolTip.SetToolTip(_showChromeButton, "Show the monitor Chrome window.");
-        _toolTip.SetToolTip(_refreshTabsButton, "Refresh the list of currently open ChatGPT tabs. Shortcut: F5.");
-        _toolTip.SetToolTip(_addMonitorButton, "Create a saved monitor from the selected open ChatGPT tab(s). Shortcut: Ctrl+N.");
+        _toolTip.SetToolTip(_refreshTabsButton, "Refresh the list of currently open ChatGPT conversation tabs. Shortcut: F5.");
+        _toolTip.SetToolTip(_addMonitorButton, "Create a saved monitor from the selected open ChatGPT conversation(s). Shortcut: Ctrl+N.");
         _toolTip.SetToolTip(_monitorSettingsButton, "Edit the selected monitor. Stop a running monitor before changing its settings. Shortcut: Ctrl+E.");
         _toolTip.SetToolTip(_startAllButton, "Start every enabled saved monitor whose ChatGPT conversation is open.");
         _toolTip.SetToolTip(_stopAllButton, "Stop all currently running monitors.");
@@ -780,10 +780,13 @@ public sealed class MainForm : Form
     {
         try
         {
-            _tabs = await _chrome.GetTabsAsync();
+            var chromePages = await _chrome.GetTabsAsync();
+            _tabs = chromePages
+                .Where(tab => RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
+                .ToList();
             _tabsGrid.DataSource = null;
             _tabsGrid.DataSource = _tabs;
-            AppendActivity($"Open Chrome tabs: {_tabs.Count}");
+            AppendActivity($"Open ChatGPT conversations: {_tabs.Count} (Chrome pages: {chromePages.Count}).");
             if (_tabs.Count > 0)
             {
                 _tabsGrid.ClearSelection();
@@ -817,7 +820,7 @@ public sealed class MainForm : Form
             return;
         }
         _selectedTab = tab;
-        if (_selectedMonitor is null) _editorLabel.Text = $"Open tab selected: {tab.Title}";
+        if (_selectedMonitor is null) _editorLabel.Text = $"Open conversation selected: {tab.Title}";
         UpdateActionStates();
     }
 
@@ -846,7 +849,7 @@ public sealed class MainForm : Form
         if (selectedTabs.Count == 0 && _selectedTab is not null) selectedTabs.Add(_selectedTab);
         if (selectedTabs.Count == 0)
         {
-            MessageBox.Show(this, "Select one or more Chrome tabs first.", "Add Monitor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Select one or more ChatGPT conversation tabs first.", "Add Monitor", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -856,6 +859,12 @@ public sealed class MainForm : Form
         long? lastId = null;
         foreach (var tab in selectedTabs)
         {
+            if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
+            {
+                AppendActivity($"Skipped non-conversation tab: {tab.Title}");
+                continue;
+            }
+
             var duplicate = _monitors.FirstOrDefault(m => string.Equals(m.Url, tab.Url, StringComparison.OrdinalIgnoreCase));
             if (duplicate is not null)
             {
@@ -931,6 +940,12 @@ public sealed class MainForm : Form
     private async Task StartMonitorAsync(SavedMonitor monitor, bool refreshTabsIfMissing = true)
     {
         if (_monitor.IsMonitorRunning(monitor.Id)) return;
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url))
+        {
+            AppendActivity($"Monitor #{monitor.Id}: saved URL is not a valid ChatGPT conversation. Re-add this monitor from an open conversation before starting it.");
+            return;
+        }
+
         var tab = ResolveTab(monitor);
         if (tab is null && refreshTabsIfMissing)
         {
@@ -988,7 +1003,7 @@ public sealed class MainForm : Form
             _selectedMonitor = null;
             _autoReplyBox.Text = string.Empty;
             _enabledCheck.Checked = false;
-            _editorLabel.Text = "No saved monitors yet. Select an open ChatGPT tab and choose Add Monitor.";
+            _editorLabel.Text = "No saved monitors yet. Select an open ChatGPT conversation and choose Add Monitor.";
         }
 
         UpdateEmptyStates();
