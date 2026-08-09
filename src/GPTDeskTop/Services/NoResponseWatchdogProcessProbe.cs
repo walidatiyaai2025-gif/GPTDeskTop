@@ -90,8 +90,14 @@ internal static class NoResponseWatchdogProcessProbe
         try
         {
             chromeProcess = LaunchIsolatedChrome(probeRoot, staleUrl, port);
-            var staleTab = await WaitForTabAsync(chrome, chromeProcess, staleUrl).ConfigureAwait(false);
-            var activeTab = await chrome.CreateTabAsync(activeUrl).ConfigureAwait(false);
+            var stalePhysicalTab = await WaitForTabAsync(chrome, chromeProcess, staleUrl).ConfigureAwait(false);
+            var activePhysicalTab = await chrome.CreateTabAsync(activeUrl).ConfigureAwait(false);
+
+            // Keep the real local pages/WebSocket targets for deterministic browser behavior,
+            // but exercise ChatGptMonitorService through the same stable conversation-identity
+            // contract required in production.
+            var staleTab = WithConversationIdentity(stalePhysicalTab, "https://chatgpt.com/c/qa-no-response-stale");
+            var activeTab = WithConversationIdentity(activePhysicalTab, "https://chatgpt.com/c/qa-no-response-active");
 
             var staleMonitor = await SaveMonitorAsync(database, "QA stale tab", staleTab, enabled: true).ConfigureAwait(false);
             var activeMonitor = await SaveMonitorAsync(database, "QA active tab", activeTab, enabled: true).ConfigureAwait(false);
@@ -174,6 +180,15 @@ internal static class NoResponseWatchdogProcessProbe
         monitor.Id = await database.SaveMonitorAsync(monitor).ConfigureAwait(false);
         return monitor;
     }
+
+    private static ChromeTab WithConversationIdentity(ChromeTab physicalTab, string conversationUrl) => new()
+    {
+        Id = physicalTab.Id,
+        Title = physicalTab.Title,
+        Url = conversationUrl,
+        Type = physicalTab.Type,
+        WebSocketDebuggerUrl = physicalTab.WebSocketDebuggerUrl
+    };
 
     private static string StalePage() => """
 <!doctype html>
