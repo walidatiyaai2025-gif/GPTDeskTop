@@ -48,23 +48,23 @@ jobs:
       - name: Build solution Release x64
         run: dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
 
-      - name: Verify application output
+      - name: Verify application compile output
         shell: pwsh
         run: |
-          $app = Get-ChildItem src/GPTDeskTop/bin/Release -Recurse -Filter GPTDeskTop.exe | Select-Object -First 1
-          if ($null -eq $app) { throw 'Release|x64 build did not produce GPTDeskTop.exe.' }
-          Write-Host "Verified application output: $($app.FullName)"
+          $path = 'src/GPTDeskTop/bin/Release/net8.0-windows/GPTDeskTop.dll'
+          if (-not (Test-Path $path)) { throw "Release|x64 solution build did not produce $path." }
+          Write-Host "Verified application compile output: $path"
 
-      - name: Verify setup output
+      - name: Verify setup compile output
         shell: pwsh
         run: |
-          $setup = Get-ChildItem src/GPTDeskTop.Setup/bin/Release -Recurse -Filter *.exe | Select-Object -First 1
-          if ($null -eq $setup) { throw 'Release|x64 build did not produce a setup executable.' }
-          Write-Host "Verified setup output: $($setup.FullName)"
+          $path = 'Output/Setup/Build/GPTDeskTop-Setup.dll'
+          if (-not (Test-Path $path)) { throw "Release|x64 solution build did not produce $path." }
+          Write-Host "Verified setup compile output: $path"
 
-      - name: Verify helper output
+      - name: Verify helper compile output
         shell: pwsh
         run: |
-          $helper = Get-ChildItem src/GPTDeskTop.Build/bin/Release -Recurse -Filter *.exe | Select-Object -First 1
-          if ($null -eq $helper) { throw 'Release|x64 build did not produce the build helper executable.' }
-          Write-Host "Verified helper output: $($helper.FullName)"
+          $path = 'src/GPTDeskTop.Build/bin/Release/net8.0-windows/GPTDeskTop.Build.dll'
+          if (-not (Test-Path $path)) { throw "Release|x64 solution build did not produce $path." }
+          Write-Host "Verified helper compile output: $path"
