@@ -7,10 +7,17 @@
     <AssemblyName>GPTDeskTop.Build</AssemblyName>
     <PublishRoot>$(MSBuildProjectDirectory)\..\..\Output\Publish</PublishRoot>
     <AppProject>$(MSBuildProjectDirectory)\..\GPTDeskTop\GPTDeskTop.csproj</AppProject>
+    <RunPackagingTargets Condition="'$(RunPackagingTargets)' == '' AND '$(BuildingSolutionFile)' == 'true'">false</RunPackagingTargets>
+    <RunPackagingTargets Condition="'$(RunPackagingTargets)' == ''">true</RunPackagingTargets>
   </PropertyGroup>
 
-  <!-- Deliberately no ProjectReference. This project orchestrates publishing by path. -->
-  <Target Name="PreparePublishedApplication" AfterTargets="Build">
+  <!--
+    Deliberately no ProjectReference. This project orchestrates publishing by path.
+    Packaging is skipped during a full solution build so Setup/Build cannot launch
+    concurrent dotnet publish operations against the same application obj/output.
+    Building this project directly keeps the historical packaging behavior.
+  -->
+  <Target Name="PreparePublishedApplication" AfterTargets="Build" Condition="'$(RunPackagingTargets)' == 'true'">
     <RemoveDir Directories="$(PublishRoot)" Condition="Exists('$(PublishRoot)')" />
     <MakeDir Directories="$(PublishRoot)" />
     <Exec Command="dotnet publish &quot;$(AppProject)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o &quot;$(PublishRoot)&quot;" />
