@@ -27,17 +27,20 @@ Development-plan automation, verified ChatGPT delivery, restart recovery, and mu
 - Rebind telemetry via `DevelopmentMonitorRebound`.
 - Dynamic recipient resolution immediately before each emitted development message.
 - Runtime binding that attaches dynamic delivery before Start/Resume, so the first message cannot bypass delivery.
+- Safe persistence of a recreated Chrome target ID only after exact conversation-URL rebinding.
+- Target-update telemetry via `DevelopmentMonitorTargetIdUpdated`.
+- Regression coverage for URL rebinding and title-fallback rejection.
 - CI gates for catalog, delivery, CDP reliability, crash recovery, multi-monitor delivery, dynamic runtime binding, and saved-chat rebinding.
 
 ## Current Gate
 
-The latest source changes are committed to `main`. The dynamic saved-monitor runtime binding is implemented and CI-gated, but the latest commit has not yet produced an observed GitHub Actions run in this session. Do not mark the build green until an actual workflow run completes successfully.
+The latest source changes are committed to `main`. Target-ID persistence after safe URL rebinding is implemented and covered by tests. The latest commit has not yet produced an observed GitHub Actions run in this session. Do not mark the build green until an actual workflow run completes successfully.
 
 ## Next Executable Tasks
 
-1. Persist the newly assigned Chrome target ID after a successful URL-based rebinding, without changing the saved conversation URL.
-2. Add runtime integration tests for two monitors: both success; one success/one failure; tab replacement; restart during Working; restart during Cooling.
-3. Verify that Cooling never resolves or sends to ChatGPT and that a new Working window rebuilds recipients from the current Chrome tab list.
+1. Add runtime integration tests for two monitors: both success; one success/one failure; tab replacement; restart during Working; restart during Cooling.
+2. Verify that Cooling never resolves or sends to ChatGPT and that a new Working window rebuilds recipients from the current Chrome tab list.
+3. Verify persisted target-ID update survives a process restart and is used as the exact target on the next resolution.
 4. Run the complete CI/build pipeline and only then proceed to UI controls and release-readiness packaging.
 
 ## Non-Negotiable Delivery Rules
