@@ -65,7 +65,7 @@ The v1.8.0 release-readiness baseline remains intact. Post-1.8 maintenance is ex
 
 - Legacy Duplicate Ownership Quarantine is merged on `main` (`7535c858ea95d192a34c738d46420e0adaf8ac79`): development delivery and crash recovery now use the shared `MonitorConversationOwnership` analyzer to quarantine every row in a legacy duplicate stable-conversation ownership group before opt-in, tab resolution, Chrome target selection or recovery delivery. Duplicate ownership records explicit diagnostics, cannot create success receipts, and keeps recovery pending without changing unique-owner behavior.
 - Operator Duplicate Ownership Runtime Boundary is merged on `main` (`229d0da9d5cc7b401fa7f8ecb045cabe93d6c293`): direct operator monitor start now refuses duplicate owners before worker creation, records `MonitorStartDuplicateConversationOwnership`, Runtime Health reports duplicate-owner counts as a degraded blocker, PendingRetry is disabled while duplicates remain, and privacy-safe Support Diagnostics exports only the aggregate duplicate-owner count with no monitor/conversation identity.
-- Safe Duplicate Ownership Remediation is implemented in PR #62: a guarded duplicate-owner-only rebind path moves exactly one duplicate owner to a different currently open unowned stable ChatGPT conversation while preserving the same Monitor ID, history association, automation settings, rotation configuration/count and crash-recovery pending state. Runtime Health Repair now handles invalid identities or duplicate owners, the Repair dialog exposes only safe unowned stable targets, and `MonitorDuplicateConversationOwnershipRebound` provides explicit remediation telemetry without clearing recovery state.
+- Safe Duplicate Ownership Remediation is merged on `main` (`919147398f3b0e15b71597f7cdfb88181daea917`): a guarded duplicate-owner-only rebind path moves exactly one duplicate owner to a different currently open unowned stable ChatGPT conversation while preserving the same Monitor ID, history association, automation settings, rotation configuration/count and crash-recovery pending state. Runtime Health Repair now handles invalid identities or duplicate owners, the Repair dialog exposes only safe unowned stable targets, and `MonitorDuplicateConversationOwnershipRebound` provides explicit remediation telemetry without clearing recovery state.
 
 ## Release-Readiness Baseline
 
@@ -90,7 +90,7 @@ The v1.8.0 release-readiness baseline remains intact. Post-1.8 maintenance is ex
 
 ## Next Executable Task
 
-After the safe duplicate-ownership remediation, continue post-1.8 maintenance by auditing the next concrete operator/runtime safety or supportability gap, create a tracked issue for the selected gap, implement it on an isolated branch, and merge only after the full CI gate set is green. Release publication remains a separate explicit operation and should not be performed implicitly.
+Issue #63 is the current tracked post-1.8 task: make invalid-identity and duplicate-owner conversation rebinding ownership-safe under concurrency by using one immediate SQLite writer transaction that revalidates the source snapshot, verifies the target remains unowned, updates the existing monitor row and records the repair diagnostic atomically. Merge only after the full CI gate set is green. Release publication remains a separate explicit operation and should not be performed implicitly.
 
 ## Non-Negotiable Delivery Rules
 
