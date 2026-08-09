@@ -4,10 +4,13 @@ namespace GPTDeskTop.RuntimeTests;
 
 public sealed class DevelopmentTaskDeliveryReceiptTests
 {
+    private static string RepositoryPath(params string[] segments)
+        => Path.GetFullPath(Path.Combine("..", "..", "src", "GPTDeskTop", Path.Combine(segments)));
+
     [Fact]
     public void DeliveryExtensionStoresMonitorTabMessageAndFingerprint()
     {
-        var source = File.ReadAllText(Path.Combine("..", "..", "..", "..", "src", "GPTDeskTop", "Services", "DevelopmentTaskEngine", "DevelopmentTaskEngineDeliveryExtensions.cs"));
+        var source = File.ReadAllText(RepositoryPath("Services", "DevelopmentTaskEngine", "DevelopmentTaskEngineDeliveryExtensions.cs"));
 
         Assert.Contains("LastMonitorId", source, StringComparison.Ordinal);
         Assert.Contains("LastTabId", source, StringComparison.Ordinal);
@@ -19,7 +22,7 @@ public sealed class DevelopmentTaskDeliveryReceiptTests
     [Fact]
     public void VerifiedSendPathUsesReceiptBeforeAdvance()
     {
-        var source = File.ReadAllText(Path.Combine("..", "..", "..", "..", "src", "GPTDeskTop", "Services", "DevelopmentTaskEngine", "DevelopmentTaskDeliveryCoordinator.cs"));
+        var source = File.ReadAllText(RepositoryPath("Services", "DevelopmentTaskEngine", "DevelopmentTaskDeliveryCoordinator.cs"));
 
         var checkpoint = source.IndexOf("_checkpointAfterDelivery", StringComparison.Ordinal);
         var advance = source.IndexOf("await _engine.AdvanceAsync()", StringComparison.Ordinal);
@@ -31,7 +34,7 @@ public sealed class DevelopmentTaskDeliveryReceiptTests
     [Fact]
     public void ChromeVerifiedSendHasCrashSafeAlreadyDeliveredGuard()
     {
-        var source = File.ReadAllText(Path.Combine("..", "..", "..", "..", "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
+        var source = File.ReadAllText(RepositoryPath("Services", "ChromeDevToolsService.cs"));
 
         Assert.Contains("if (string.Equals(before.LastText, expected, StringComparison.Ordinal)) return true;", source, StringComparison.Ordinal);
     }
