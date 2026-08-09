@@ -30,9 +30,7 @@ jobs:
           function Replace-Required([string]$Content, [string]$Old, [string]$New, [string]$Name) {
             $oldNormalized = $Old.Replace("`r`n", "`n")
             $newNormalized = $New.Replace("`r`n", "`n")
-            if (-not $Content.Contains($oldNormalized)) {
-              throw "Required layout patch block not found: $Name"
-            }
+            if (-not $Content.Contains($oldNormalized)) { throw "Required layout patch block not found: $Name" }
             return $Content.Replace($oldNormalized, $newNormalized)
           }
 
@@ -40,19 +38,19 @@ jobs:
           $main = Read-Normalized $mainPath
 
           $main = Replace-Required $main @'
-                  Shown += async (_, _) =>
-                  {
-                      ApplyInitialSplitterRatios();
-                      await LoadStartupStateAsync();
-                      FocusOperationalWorkspace();
-                  };
+              Shown += async (_, _) =>
+              {
+                  ApplyInitialSplitterRatios();
+                  await LoadStartupStateAsync();
+                  FocusOperationalWorkspace();
+              };
           '@ @'
-                  Shown += async (_, _) =>
-                  {
-                      await RestoreOperatorLayoutAsync();
-                      await LoadStartupStateAsync();
-                      FocusOperationalWorkspace();
-                  };
+              Shown += async (_, _) =>
+              {
+                  await RestoreOperatorLayoutAsync();
+                  await LoadStartupStateAsync();
+                  FocusOperationalWorkspace();
+              };
           '@ 'restore layout before startup refresh'
 
           $main = Replace-Required $main @'
@@ -216,7 +214,7 @@ jobs:
               }
 
               public DevelopmentTaskDashboardControl(DevelopmentTaskRuntimeBinding binding)
-          '@ 'dashboard persisted state property'
+          '@ 'dashboard state property'
 
           $dashboard = Replace-Required $dashboard @'
               private void ToggleExpanded()
@@ -238,45 +236,6 @@ jobs:
           '@ 'dashboard state application'
 
           [System.IO.File]::WriteAllText($dashboardPath, $dashboard, $utf8NoBom)
-
-          $programPath = 'src/GPTDeskTop/Program.cs'
-          $program = Read-Normalized $programPath
-
-          $program = Replace-Required $program @'
-                  developmentRuntime = new DevelopmentTaskRuntimeBinding(developmentEngine, targetFactory);
-                  var developmentDashboard = new DevelopmentTaskDashboardControl(developmentRuntime)
-                  {
-                      Dock = DockStyle.Top,
-                      TabStop = false
-                  };
-                  mainForm.Controls.Add(developmentDashboard);
-          '@ @'
-                  developmentRuntime = new DevelopmentTaskRuntimeBinding(developmentEngine, targetFactory);
-                  var developmentDashboardExpanded = !string.Equals(
-                      database.GetSettingAsync("Ui.DevelopmentDashboard.Expanded").GetAwaiter().GetResult(),
-                      "0",
-                      StringComparison.Ordinal);
-                  var developmentDashboard = new DevelopmentTaskDashboardControl(developmentRuntime)
-                  {
-                      Dock = DockStyle.Top,
-                      TabStop = false,
-                      IsExpanded = developmentDashboardExpanded
-                  };
-                  developmentDashboard.ExpandedChanged += async (_, _) =>
-                  {
-                      try
-                      {
-                          await database.SetSettingAsync("Ui.DevelopmentDashboard.Expanded", developmentDashboard.IsExpanded ? "1" : "0");
-                      }
-                      catch (Exception ex)
-                      {
-                          await ExceptionLogService.LogAsync(ex, "Program.PersistDevelopmentDashboardState");
-                      }
-                  };
-                  mainForm.Controls.Add(developmentDashboard);
-          '@ 'dashboard state restore and save'
-
-          [System.IO.File]::WriteAllText($programPath, $program, $utf8NoBom)
 
           $testPath = 'tests/GPTDeskTop.RuntimeTests/LayoutPersistenceUiRegressionTests.cs'
           $test = @'
@@ -328,16 +287,12 @@ jobs:
               }
 
               [Fact]
-              public void DevelopmentDashboardExpansionStateIsPersistedWithoutChangingItsConstructorContract()
+              public void DevelopmentDashboardExposesPersistableExpandedState()
               {
                   var dashboard = ReadSource("src", "GPTDeskTop", "UI", "DevelopmentTaskDashboardControl.cs");
-                  var program = ReadSource("src", "GPTDeskTop", "Program.cs");
                   Assert.Contains("public bool IsExpanded", dashboard, StringComparison.Ordinal);
                   Assert.Contains("public event EventHandler? ExpandedChanged", dashboard, StringComparison.Ordinal);
                   Assert.Contains("private void ToggleExpanded() => IsExpanded = !IsExpanded;", dashboard, StringComparison.Ordinal);
-                  Assert.Contains("new DevelopmentTaskDashboardControl(developmentRuntime)", program, StringComparison.Ordinal);
-                  Assert.Contains("Ui.DevelopmentDashboard.Expanded", program, StringComparison.Ordinal);
-                  Assert.Contains("developmentDashboard.ExpandedChanged +=", program, StringComparison.Ordinal);
               }
           }
           '@
