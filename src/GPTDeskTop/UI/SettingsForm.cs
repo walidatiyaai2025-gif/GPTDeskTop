@@ -17,24 +17,38 @@ public sealed class SettingsForm : Form
     private readonly ComboBox _soundType = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
     private readonly Button _saveButton = new() { Text = "Save Settings", AutoSize = true };
     private readonly Button _cancelButton = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+    private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
+    private readonly Label _statusLabel = new()
+    {
+        Text = "Ready",
+        Dock = DockStyle.Fill,
+        ForeColor = FluentTheme.Muted,
+        TextAlign = ContentAlignment.MiddleLeft,
+        AutoEllipsis = true,
+        AccessibleRole = AccessibleRole.StatusBar
+    };
+
+    private bool _busy;
 
     public SettingsForm(LocalDatabase database)
     {
-        _database = database;
+        _database = database ?? throw new ArgumentNullException(nameof(database));
         Text = "GPTDeskTop Settings";
         StartPosition = FormStartPosition.CenterParent;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
+        FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(760, 560);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        MinimumSize = new Size(720, 520);
+        ClientSize = new Size(840, 640);
         _soundType.Items.AddRange(new object[] { "Asterisk", "Exclamation", "Beep", "Hand" });
 
         BuildUi();
+        ConfigureAccessibility();
+        WireEvents();
         FluentTheme.Apply(this);
         FluentTheme.StyleButton(_saveButton, primary: true);
-        Shown += async (_, _) => await LoadSettingsAsync();
-        _saveButton.Click += async (_, _) => await SaveSettingsAsync();
         AcceptButton = _saveButton;
         CancelButton = _cancelButton;
     }
@@ -45,12 +59,13 @@ public sealed class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 3,
+            RowCount = 4,
             Padding = new Padding(18),
             BackColor = FluentTheme.Background
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
 
         var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = FluentTheme.Background };
@@ -65,10 +80,18 @@ public sealed class SettingsForm : Form
         }, 0, 0);
         header.Controls.Add(FluentTheme.CreateMutedLabel("Configure monitoring defaults, conversation rotation/recovery and operator notifications."), 0, 1);
 
-        var tabs = new TabControl { Dock = DockStyle.Fill };
-        tabs.TabPages.Add(BuildMonitoringTab());
-        tabs.TabPages.Add(BuildRotationTab());
-        tabs.TabPages.Add(BuildNotificationsTab());
+        _tabs.TabPages.Add(BuildMonitoringTab());
+        _tabs.TabPages.Add(BuildRotationTab());
+        _tabs.TabPages.Add(BuildNotificationsTab());
+
+        var statusHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = FluentTheme.SurfaceAlt,
+            Padding = new Padding(10, 2, 10, 2),
+            Margin = new Padding(0, 6, 0, 0)
+        };
+        statusHost.Controls.Add(_statusLabel);
 
         var buttons = new FlowLayoutPanel
         {
@@ -82,8 +105,9 @@ public sealed class SettingsForm : Form
         buttons.Controls.Add(_saveButton);
 
         root.Controls.Add(header, 0, 0);
-        root.Controls.Add(tabs, 0, 1);
-        root.Controls.Add(buttons, 0, 2);
+        root.Controls.Add(_tabs, 0, 1);
+        root.Controls.Add(statusHost, 0, 2);
+        root.Controls.Add(buttons, 0, 3);
         Controls.Add(root);
     }
 
@@ -124,6 +148,71 @@ public sealed class SettingsForm : Form
         layout.SetColumnSpan(_soundEnabled, 2);
         page.Controls.Add(layout);
         return page;
+    }
+
+    private void WireEvents()
+    {
+        Shown += async (_, _) =>
+        {
+            await LoadSettingsAsync();
+            if (!_busy)
+            {
+                _defaultReply.Focus();
+                _defaultReply.SelectAll();
+            }
+        };
+        _saveButton.Click += async (_, _) => await SaveSettingsAsync();
+        _soundEnabled.CheckedChanged += (_, _) => UpdateDependentControls();
+    }
+
+    private void ConfigureAccessibility()
+    {
+        AccessibleName = "GPTDeskTop application settings";
+        AccessibleDescription = "Configure monitoring defaults, conversation rotation, recovery and desktop notifications.";
+
+        ConfigureAccessible(_defaultReply, "Default auto reply", "Message sent after a completed assistant response.", 0);
+        ConfigureAccessible(_defaultDelay, "Default reply delay", "Seconds to wait before sending the automatic reply.", 1);
+        ConfigureAccessible(_defaultTimer, "Default polling timer", "Seconds between monitor checks.", 2);
+        ConfigureAccessible(_noResponseRefresh, "No response refresh timeout", "Seconds without a new assistant response before refreshing the monitored tab.", 3);
+
+        ConfigureAccessible(_rotateAfterMessages, "Assistant message rotation threshold", "Number of assistant messages before proactive conversation rotation. Zero disables it.", 0);
+        ConfigureAccessible(_messageCountRotationStartMessage, "Rotation start message", "Message sent in the new conversation after message-count rotation.", 1);
+        ConfigureAccessible(_timeoutRecovery, "Timeout recovery message", "Message sent to a recovery conversation after a delivery timeout.", 2);
+
+        ConfigureAccessible(_notificationDuration, "Notification duration", "Desktop notification display duration in seconds.", 0);
+        ConfigureAccessible(_soundType, "Notification sound type", "Windows sound used for desktop notifications.", 1);
+        ConfigureAccessible(_soundEnabled, "Enable notification sound", "Play the selected Windows sound with desktop notifications.", 2);
+
+        _tabs.AccessibleName = "Settings categories";
+        _tabs.TabIndex = 0;
+        _statusLabel.AccessibleName = "Settings operation status";
+        _saveButton.AccessibleName = "Save application settings";
+        _saveButton.TabIndex = 0;
+        _cancelButton.AccessibleName = "Cancel settings changes";
+        _cancelButton.TabIndex = 1;
+    }
+
+    private static void ConfigureAccessible(Control control, string name, string description, int tabIndex)
+    {
+        control.AccessibleName = name;
+        control.AccessibleDescription = description;
+        control.TabIndex = tabIndex;
+    }
+
+    private void UpdateDependentControls()
+    {
+        _soundType.Enabled = _soundEnabled.Checked && !_busy;
+    }
+
+    private void SetBusy(bool busy, string status)
+    {
+        _busy = busy;
+        _tabs.Enabled = !busy;
+        _saveButton.Enabled = !busy;
+        UseWaitCursor = busy;
+        _statusLabel.Text = status;
+        _statusLabel.ForeColor = busy ? FluentTheme.Accent : FluentTheme.Muted;
+        UpdateDependentControls();
     }
 
     private static TabPage CreateTab(string title)
@@ -170,39 +259,63 @@ public sealed class SettingsForm : Form
 
     private async Task LoadSettingsAsync()
     {
-        _defaultReply.Text = await _database.GetSettingAsync("DefaultAutoReply") ?? "كمل";
-        _defaultDelay.Value = await _database.GetIntSettingAsync("DefaultMonitorDelaySeconds", 3, 0, 300);
-        _defaultTimer.Value = await _database.GetIntSettingAsync("DefaultMonitorTimerSeconds", 1, 1, 60);
-        _rotateAfterMessages.Value = await _database.GetIntSettingAsync("RotateAfterAssistantMessages", 0, 0, 10000);
-        _messageCountRotationStartMessage.Text = await _database.GetSettingAsync("MessageCountRotationStartMessage") ?? "كمل";
-        _noResponseRefresh.Value = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600);
-        _timeoutRecovery.Text = await _database.GetSettingAsync("TimeoutRecoveryMessage") ?? "كمل";
-        _notificationDuration.Value = await _database.GetIntSettingAsync("NotificationDurationSeconds", 8, 1, 60);
-        _soundEnabled.Checked = !string.Equals(await _database.GetSettingAsync("NotificationSoundEnabled"), "0", StringComparison.Ordinal);
-        var sound = await _database.GetSettingAsync("NotificationSoundType") ?? "Asterisk";
-        _soundType.SelectedItem = _soundType.Items.Cast<object>().FirstOrDefault(x => string.Equals(x.ToString(), sound, StringComparison.OrdinalIgnoreCase)) ?? "Asterisk";
+        SetBusy(true, "Loading settings…");
+        try
+        {
+            _defaultReply.Text = await _database.GetSettingAsync("DefaultAutoReply") ?? "كمل";
+            _defaultDelay.Value = await _database.GetIntSettingAsync("DefaultMonitorDelaySeconds", 3, 0, 300);
+            _defaultTimer.Value = await _database.GetIntSettingAsync("DefaultMonitorTimerSeconds", 1, 1, 60);
+            _rotateAfterMessages.Value = await _database.GetIntSettingAsync("RotateAfterAssistantMessages", 0, 0, 10000);
+            _messageCountRotationStartMessage.Text = await _database.GetSettingAsync("MessageCountRotationStartMessage") ?? "كمل";
+            _noResponseRefresh.Value = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600);
+            _timeoutRecovery.Text = await _database.GetSettingAsync("TimeoutRecoveryMessage") ?? "كمل";
+            _notificationDuration.Value = await _database.GetIntSettingAsync("NotificationDurationSeconds", 8, 1, 60);
+            _soundEnabled.Checked = !string.Equals(await _database.GetSettingAsync("NotificationSoundEnabled"), "0", StringComparison.Ordinal);
+            var sound = await _database.GetSettingAsync("NotificationSoundType") ?? "Asterisk";
+            _soundType.SelectedItem = _soundType.Items.Cast<object>().FirstOrDefault(x => string.Equals(x.ToString(), sound, StringComparison.OrdinalIgnoreCase)) ?? "Asterisk";
+            SetBusy(false, "Settings loaded. Changes are not applied until you choose Save Settings.");
+        }
+        catch (Exception ex)
+        {
+            SetBusy(false, "Settings could not be loaded.");
+            MessageBox.Show(this, $"GPTDeskTop could not load application settings.\n\n{ex.Message}", "Settings Load Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private async Task SaveSettingsAsync()
     {
+        if (_busy) return;
+
         var rotationStartMessage = string.IsNullOrWhiteSpace(_messageCountRotationStartMessage.Text) ? "كمل" : _messageCountRotationStartMessage.Text.Trim();
         if (_rotateAfterMessages.Value > 0 && string.IsNullOrWhiteSpace(rotationStartMessage))
         {
+            _tabs.SelectedIndex = 1;
+            _messageCountRotationStartMessage.Focus();
             MessageBox.Show(this, "New Chat start message cannot be empty when message-count rotation is enabled.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        await _database.SetSettingAsync("DefaultAutoReply", string.IsNullOrWhiteSpace(_defaultReply.Text) ? "كمل" : _defaultReply.Text.Trim());
-        await _database.SetSettingAsync("DefaultMonitorDelaySeconds", ((int)_defaultDelay.Value).ToString());
-        await _database.SetSettingAsync("DefaultMonitorTimerSeconds", ((int)_defaultTimer.Value).ToString());
-        await _database.SetSettingAsync("RotateAfterAssistantMessages", ((int)_rotateAfterMessages.Value).ToString());
-        await _database.SetSettingAsync("MessageCountRotationStartMessage", rotationStartMessage);
-        await _database.SetSettingAsync("NoResponseRefreshSeconds", ((int)_noResponseRefresh.Value).ToString());
-        await _database.SetSettingAsync("TimeoutRecoveryMessage", string.IsNullOrWhiteSpace(_timeoutRecovery.Text) ? "كمل" : _timeoutRecovery.Text.Trim());
-        await _database.SetSettingAsync("NotificationDurationSeconds", ((int)_notificationDuration.Value).ToString());
-        await _database.SetSettingAsync("NotificationSoundEnabled", _soundEnabled.Checked ? "1" : "0");
-        await _database.SetSettingAsync("NotificationSoundType", _soundType.SelectedItem?.ToString() ?? "Asterisk");
-        DialogResult = DialogResult.OK;
-        Close();
+        SetBusy(true, "Saving settings…");
+        try
+        {
+            await _database.SetSettingAsync("DefaultAutoReply", string.IsNullOrWhiteSpace(_defaultReply.Text) ? "كمل" : _defaultReply.Text.Trim());
+            await _database.SetSettingAsync("DefaultMonitorDelaySeconds", ((int)_defaultDelay.Value).ToString());
+            await _database.SetSettingAsync("DefaultMonitorTimerSeconds", ((int)_defaultTimer.Value).ToString());
+            await _database.SetSettingAsync("RotateAfterAssistantMessages", ((int)_rotateAfterMessages.Value).ToString());
+            await _database.SetSettingAsync("MessageCountRotationStartMessage", rotationStartMessage);
+            await _database.SetSettingAsync("NoResponseRefreshSeconds", ((int)_noResponseRefresh.Value).ToString());
+            await _database.SetSettingAsync("TimeoutRecoveryMessage", string.IsNullOrWhiteSpace(_timeoutRecovery.Text) ? "كمل" : _timeoutRecovery.Text.Trim());
+            await _database.SetSettingAsync("NotificationDurationSeconds", ((int)_notificationDuration.Value).ToString());
+            await _database.SetSettingAsync("NotificationSoundEnabled", _soundEnabled.Checked ? "1" : "0");
+            await _database.SetSettingAsync("NotificationSoundType", _soundType.SelectedItem?.ToString() ?? "Asterisk");
+            _statusLabel.Text = "Settings saved.";
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+        catch (Exception ex)
+        {
+            SetBusy(false, "Settings were not saved. Review the error and try again.");
+            MessageBox.Show(this, $"GPTDeskTop could not save application settings.\n\n{ex.Message}", "Settings Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 }
