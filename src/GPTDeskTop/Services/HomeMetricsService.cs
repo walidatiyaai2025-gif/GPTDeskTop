@@ -73,6 +73,7 @@ public sealed class HomeMetricsService : IDisposable
     private void OnStatusCellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
     {
         if (sender is not DataGridView grid || e.RowIndex < 0 || e.ColumnIndex < 0) return;
+        if (e.ColumnIndex >= grid.Columns.Count) return;
         if (!string.Equals(grid.Columns[e.ColumnIndex].HeaderText, "Status", StringComparison.OrdinalIgnoreCase)) return;
 
         var value = e.Value?.ToString() ?? string.Empty;
@@ -101,7 +102,7 @@ public sealed class HomeMetricsService : IDisposable
         try
         {
             var crashCount = await _database.GetIntSettingAsync("CrashCount", 0, 0, int.MaxValue);
-            var monitors = await _database.GetSavedMonitorsAsync();
+            var monitors = await _database.GetSavedMonitorsAsync() ?? [];
             var running = monitors.Count(m => _monitor.IsMonitorRunning(m.Id));
             SetText(_crashCard, $"Crashes\r\n{crashCount}");
             SetText(_monitorCard, $"Monitors\r\n{running} / {monitors.Count}");
@@ -112,10 +113,10 @@ public sealed class HomeMetricsService : IDisposable
         }
     }
 
-    private static void SetText(Control control, string value)
+    private static void SetText(Control? control, string value)
     {
-        if (control.IsDisposed) return;
-        if (control.InvokeRequired) control.BeginInvoke(new Action(() => control.Text = value));
+        if (control is null || control.IsDisposed) return;
+        if (control.InvokeRequired) control.BeginInvoke(new Action(() => SetText(control, value)));
         else control.Text = value;
     }
 
