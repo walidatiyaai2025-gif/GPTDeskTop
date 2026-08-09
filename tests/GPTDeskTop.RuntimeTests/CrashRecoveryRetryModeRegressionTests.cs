@@ -1,0 +1,47 @@
+namespace GPTDeskTop.RuntimeTests;
+
+public sealed class CrashRecoveryRetryModeRegressionTests
+{
+    private static string ReadSource(params string[] parts)
+    {
+        var path = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..",
+            Path.Combine(parts)));
+        return File.ReadAllText(path);
+    }
+
+    [Fact]
+    public void ProgramPropagatesCurrentStartupCrashStateIntoRecoveryMode()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Program.cs");
+
+        Assert.Contains("var currentStartupWasUnclean = CrashRecoveryStateService.PrepareStartupAsync(database)", source, StringComparison.Ordinal);
+        Assert.Contains("? CrashRecoveryMode.FreshCrashReset", source, StringComparison.Ordinal);
+        Assert.Contains(": CrashRecoveryMode.PendingRetry", source, StringComparison.Ordinal);
+        Assert.Contains("CrashRecoveryService.RecoverIfPendingAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("recoveryMode", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PendingRetryPathDoesNotContainGlobalTeardownCalls()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "CrashRecoveryService.cs");
+        var freshStart = source.IndexOf("if (mode == CrashRecoveryMode.FreshCrashReset)", StringComparison.Ordinal);
+        var retryStart = source.IndexOf("else if (firstValidMonitor is not null)", freshStart, StringComparison.Ordinal);
+        var loopStart = source.IndexOf("var outcomes = new List<CrashRecoveryOutcome>", retryStart, StringComparison.Ordinal);
+
+        Assert.True(freshStart >= 0);
+        Assert.True(retryStart > freshStart);
+        Assert.True(loopStart > retryStart);
+
+        var freshBlock = source[freshStart..retryStart];
+        var retryBlock = source[retryStart..loopStart];
+
+        Assert.Contains("StopAllMonitorsAsync", freshBlock, StringComparison.Ordinal);
+        Assert.Contains("CloseAllMonitorTabsAsync", freshBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("StopAllMonitorsAsync", retryBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("CloseAllMonitorTabsAsync", retryBlock, StringComparison.Ordinal);
+        Assert.Contains("GetTabsAsync", retryBlock, StringComparison.Ordinal);
+    }
+}
