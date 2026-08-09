@@ -44,7 +44,7 @@ internal static class Program
             if (database.GetSettingAsync("NoResponseRefreshSeconds").GetAwaiter().GetResult() is null)
                 database.SetSettingAsync("NoResponseRefreshSeconds", "180").GetAwaiter().GetResult();
 
-            CrashRecoveryStateService.PrepareStartupAsync(database).GetAwaiter().GetResult();
+            var currentStartupWasUnclean = CrashRecoveryStateService.PrepareStartupAsync(database).GetAwaiter().GetResult();
             ExceptionLogService.Configure(database);
 
             Application.ThreadException += (_, e) => ExceptionLogService.Log(e.Exception, "Application.ThreadException");
@@ -166,7 +166,14 @@ internal static class Program
             {
                 try
                 {
-                    await CrashRecoveryService.RecoverIfPendingAsync(chrome, monitor, database);
+                    var recoveryMode = currentStartupWasUnclean
+                        ? CrashRecoveryMode.FreshCrashReset
+                        : CrashRecoveryMode.PendingRetry;
+                    await CrashRecoveryService.RecoverIfPendingAsync(
+                        chrome,
+                        monitor,
+                        database,
+                        recoveryMode);
                 }
                 catch (Exception ex)
                 {
