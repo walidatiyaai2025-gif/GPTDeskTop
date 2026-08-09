@@ -55,7 +55,8 @@ public sealed class ConfigurationBackupUiRegressionTests
         Assert.Contains("full configuration backup", source, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("runtime Chrome Tab IDs and SQLite monitor IDs", source, StringComparison.Ordinal);
         Assert.Contains("development-plan message catalog and schedule files", source, StringComparison.Ordinal);
-        Assert.Contains("not the privacy-safe Support Bundle", docs, StringComparison.Ordinal);
+        Assert.Contains("This file is **not**", docs, StringComparison.Ordinal);
+        Assert.Contains("privacy-safe Support Bundle", docs, StringComparison.Ordinal);
         Assert.Contains("restore workflow can validate schema/version", docs, StringComparison.Ordinal);
     }
 }
