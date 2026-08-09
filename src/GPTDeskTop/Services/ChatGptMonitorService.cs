@@ -28,8 +28,14 @@ public sealed class ChatGptMonitorService
 
     public Task StartMonitorAsync(SavedMonitor monitor, ChromeTab tab)
     {
+        ArgumentNullException.ThrowIfNull(monitor);
+        ArgumentNullException.ThrowIfNull(tab);
         if (monitor.Id <= 0) throw new InvalidOperationException("Save the monitor before starting it.");
         if (string.IsNullOrWhiteSpace(monitor.AutoReply)) throw new InvalidOperationException("Auto reply text cannot be empty.");
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url))
+            throw new InvalidOperationException("The saved monitor URL is not a stable ChatGPT conversation identity.");
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
+            throw new InvalidOperationException("The selected Chrome tab is not a stable ChatGPT conversation identity.");
         lock (_sync) { if (_running.ContainsKey(monitor.Id)) return Task.CompletedTask; var cts = new CancellationTokenSource(); var worker = Task.Run(() => MonitorLoopAsync(monitor, tab, cts.Token)); _running.Add(monitor.Id, new MonitorRuntime(cts, worker)); }
         Activity?.Invoke(monitor.Id, $"Started: {monitor.Title}"); RunningStateChanged?.Invoke(); return Task.CompletedTask;
     }

@@ -4,8 +4,9 @@ namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
 /// <summary>
 /// Rebinds a persisted SavedMonitor to the same logical ChatGPT page after
-/// cooling or a normal application restart. Exact DevTools target ID wins;
-/// the saved conversation URL is the safe fallback when Chrome recreated the
+/// cooling or a normal application restart. Exact DevTools target ID wins only
+/// after the persisted URL proves a stable ChatGPT conversation identity; the
+/// saved conversation URL is then the safe fallback when Chrome recreated the
 /// target and assigned a new target ID. Title is intentionally not used as a
 /// binding key because titles are not unique.
 /// </summary>
@@ -36,26 +37,29 @@ public sealed class SavedMonitorTabResolver
         ArgumentNullException.ThrowIfNull(monitor);
         ArgumentNullException.ThrowIfNull(tabs);
 
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url))
+        {
+            return SavedMonitorTabResolution.Missing(
+                "The saved monitor URL is not a stable ChatGPT conversation identity.");
+        }
+
         if (!string.IsNullOrWhiteSpace(monitor.TabId))
         {
             var exact = tabs.FirstOrDefault(tab =>
                 string.Equals(tab.Id, monitor.TabId, StringComparison.Ordinal));
-            if (exact is not null)
+            if (exact is not null
+                && RuntimeHealthPresentation.IsChatGptConversationUrl(exact.Url))
                 return SavedMonitorTabResolution.CreateFound(exact, "PersistedTabId");
         }
 
-        if (!string.IsNullOrWhiteSpace(monitor.Url))
-        {
-            var sameConversation = tabs.FirstOrDefault(tab =>
-                string.Equals(NormalizeUrl(tab.Url), NormalizeUrl(monitor.Url), StringComparison.Ordinal));
-            if (sameConversation is not null)
-                return SavedMonitorTabResolution.CreateFound(sameConversation, "PersistedConversationUrl");
-        }
+        var sameConversation = tabs.FirstOrDefault(tab =>
+            RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url)
+            && string.Equals(NormalizeUrl(tab.Url), NormalizeUrl(monitor.Url), StringComparison.Ordinal));
+        if (sameConversation is not null)
+            return SavedMonitorTabResolution.CreateFound(sameConversation, "PersistedConversationUrl");
 
         return SavedMonitorTabResolution.Missing(
-            string.IsNullOrWhiteSpace(monitor.TabId) && string.IsNullOrWhiteSpace(monitor.Url)
-                ? "No persisted tab identity or conversation URL is available."
-                : "The persisted ChatGPT conversation is not currently open.");
+            "The persisted ChatGPT conversation is not currently open.");
     }
 
     private static string NormalizeUrl(string value)
