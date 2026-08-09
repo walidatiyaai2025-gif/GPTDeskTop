@@ -321,13 +321,32 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
 
     private async Task<List<string>> LoadMessagesAsync(CancellationToken cancellationToken)
     {
-        if (!File.Exists(_messagesPath)) return [];
-        await using var stream = File.OpenRead(_messagesPath);
-        var document = await JsonSerializer.DeserializeAsync<MessageDocument>(
-            stream,
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true },
-            cancellationToken).ConfigureAwait(false);
-        return document?.Messages?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
+        for (var attempt = 1; attempt <= 4; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                if (!File.Exists(_messagesPath)) return [];
+                await using var stream = new FileStream(
+                    _messagesPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    bufferSize: 4096,
+                    options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+                var document = await JsonSerializer.DeserializeAsync<MessageDocument>(
+                    stream,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true },
+                    cancellationToken).ConfigureAwait(false);
+                return document?.Messages?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
+            }
+            catch (Exception ex) when ((ex is IOException || ex is JsonException) && attempt < 4)
+            {
+                await Task.Delay(25 * attempt, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        return [];
     }
 
     private async Task LoadStateAsync(CancellationToken cancellationToken)
