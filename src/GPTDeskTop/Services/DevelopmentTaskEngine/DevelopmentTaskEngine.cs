@@ -9,6 +9,8 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
     private readonly string _statePath;
     private readonly string _messagesPath;
     private readonly DevelopmentTaskScheduleSettingsStore _scheduleStore;
+    private readonly bool _workWindowOverridden;
+    private readonly bool _coolingWindowOverridden;
     private TimeSpan _workWindow;
     private TimeSpan _coolingWindow;
     private CancellationTokenSource? _cts;
@@ -21,6 +23,8 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         _statePath = statePath ?? Path.Combine(AppContext.BaseDirectory, "data", "development-task-state.json");
         _messagesPath = messagesPath ?? Path.Combine(AppContext.BaseDirectory, "data", "development-task-messages.json");
         _scheduleStore = new DevelopmentTaskScheduleSettingsStore(scheduleSettingsPath);
+        _workWindowOverridden = workWindow.HasValue;
+        _coolingWindowOverridden = coolingWindow.HasValue;
         var configured = _scheduleStore.Load();
         _workWindow = workWindow ?? TimeSpan.FromMinutes(configured.WorkMinutes);
         _coolingWindow = coolingWindow ?? TimeSpan.FromMinutes(configured.CoolingMinutes);
@@ -195,8 +199,10 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
     private void ReloadScheduleSettings()
     {
         var settings = _scheduleStore.Load();
-        _workWindow = TimeSpan.FromMinutes(settings.WorkMinutes);
-        _coolingWindow = TimeSpan.FromMinutes(settings.CoolingMinutes);
+        if (!_workWindowOverridden)
+            _workWindow = TimeSpan.FromMinutes(settings.WorkMinutes);
+        if (!_coolingWindowOverridden)
+            _coolingWindow = TimeSpan.FromMinutes(settings.CoolingMinutes);
     }
 
     private void RestartWorker(CancellationToken cancellationToken)
