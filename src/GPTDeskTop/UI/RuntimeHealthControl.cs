@@ -84,7 +84,7 @@ public sealed class RuntimeHealthControl : UserControl
         BackColor = FluentTheme.Background;
         Padding = new Padding(12, 4, 12, 4);
         AccessibleName = "Runtime health and connection center";
-        AccessibleDescription = "Shows Chrome DevTools, SQLite, ChatGPT tab, saved monitor and crash recovery health without changing runtime state during health probes.";
+        AccessibleDescription = "Shows Chrome DevTools, SQLite, ChatGPT conversation, saved monitor and crash recovery health without changing runtime state during health probes.";
 
         BuildUi();
         ConfigureAccessibility();
@@ -162,7 +162,7 @@ public sealed class RuntimeHealthControl : UserControl
             metrics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
         metrics.Controls.Add(CreateMetricCard("Chrome / CDP", _chromeValue), 0, 0);
         metrics.Controls.Add(CreateMetricCard("SQLite", _databaseValue), 1, 0);
-        metrics.Controls.Add(CreateMetricCard("ChatGPT Tabs", _tabsValue), 2, 0);
+        metrics.Controls.Add(CreateMetricCard("Conversations", _tabsValue), 2, 0);
         metrics.Controls.Add(CreateMetricCard("Saved / Running", _monitorsValue), 3, 0);
         metrics.Controls.Add(CreateMetricCard("Recovery", _recoveryValue), 4, 0);
         _body.Controls.Add(metrics);
@@ -235,7 +235,7 @@ public sealed class RuntimeHealthControl : UserControl
         _toggleButton.AccessibleName = "Expand or collapse runtime health details";
         _chromeValue.AccessibleName = "Chrome DevTools health";
         _databaseValue.AccessibleName = "SQLite health";
-        _tabsValue.AccessibleName = "Open ChatGPT tab count";
+        _tabsValue.AccessibleName = "Open ChatGPT conversation count";
         _monitorsValue.AccessibleName = "Saved and running monitor count";
         _recoveryValue.AccessibleName = "Crash recovery health";
         _refreshButton.TabIndex = 0;
@@ -246,7 +246,7 @@ public sealed class RuntimeHealthControl : UserControl
 
     private void ConfigureTooltips()
     {
-        _toolTip.SetToolTip(_refreshButton, "Refresh Chrome/CDP, SQLite, tab, monitor and recovery health. F5 also refreshes while this panel has focus.");
+        _toolTip.SetToolTip(_refreshButton, "Refresh Chrome/CDP, SQLite, conversation, monitor and recovery health. F5 also refreshes while this panel has focus.");
         _toolTip.SetToolTip(_repairButton, "Repair an invalid saved monitor identity without deleting its Monitor ID, history or settings.");
         _toolTip.SetToolTip(_retryRecoveryButton, "Retry unresolved crash recovery in this session using PendingRetry. Already-verified receipts are not resent.");
         _toolTip.SetToolTip(_toggleButton, "Show or hide runtime health details.");
@@ -290,14 +290,14 @@ public sealed class RuntimeHealthControl : UserControl
             _savedMonitors = databaseProbe.Value?.Monitors ?? new List<SavedMonitor>();
 
             var tabs = chromeProbe.Value ?? new List<ChromeTab>();
-            var chatGptTabs = tabs.Count(tab => RuntimeHealthPresentation.IsChatGptTabUrl(tab.Url));
+            var conversationTabs = tabs.Count(tab => RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url));
             var runningMonitors = _savedMonitors.Count(monitor => _monitor.IsMonitorRunning(monitor.Id));
             var invalidMonitorCount = _savedMonitors.Count(monitor => !RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url));
             var recoveryPending = databaseProbe.Value?.CrashRecoveryPending == true;
             var snapshot = RuntimeHealthPresentation.Create(
                 chromeProbe.Succeeded,
                 databaseProbe.Succeeded,
-                chatGptTabs,
+                conversationTabs,
                 _savedMonitors.Count,
                 runningMonitors,
                 DateTimeOffset.Now,
@@ -393,7 +393,7 @@ public sealed class RuntimeHealthControl : UserControl
 
         SetMetric(_chromeValue, snapshot.ChromeReachable ? "Reachable" : "Unavailable", snapshot.ChromeReachable ? FluentTheme.Success : FluentTheme.Danger, snapshot.ChromeError);
         SetMetric(_databaseValue, snapshot.DatabaseReachable ? "Reachable" : "Unavailable", snapshot.DatabaseReachable ? FluentTheme.Success : FluentTheme.Danger, snapshot.DatabaseError);
-        SetMetric(_tabsValue, snapshot.ChromeReachable ? snapshot.ChatGptTabCount.ToString() : "—", snapshot.ChatGptTabCount > 0 ? FluentTheme.Success : FluentTheme.Muted, "Open ChatGPT conversation tabs visible through CDP.");
+        SetMetric(_tabsValue, snapshot.ChromeReachable ? snapshot.ChatGptTabCount.ToString() : "—", snapshot.ChatGptTabCount > 0 ? FluentTheme.Success : FluentTheme.Muted, "Open stable ChatGPT conversations visible through CDP.");
         SetMetric(_monitorsValue, snapshot.DatabaseReachable ? $"{snapshot.SavedMonitorCount} / {snapshot.RunningMonitorCount}" : "—", snapshot.RunningMonitorCount > 0 ? FluentTheme.Success : FluentTheme.Muted, "Saved monitors / currently running monitor workers.");
 
         var recoveryText = snapshot.InvalidMonitorIdentityCount > 0
