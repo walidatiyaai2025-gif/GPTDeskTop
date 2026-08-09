@@ -74,12 +74,17 @@ public sealed class MainForm : Form
         FluentTheme.StyleButton(_quickMonitorSettingsButton, primary: true);
         UpdateActionStates();
         Shown += async (_, _) =>
-{
-    await RestoreOperatorLayoutAsync();
-    await LoadStartupStateAsync();
-    FocusOperationalWorkspace();
-};
-        SizeChanged += (_, _) => ClampResponsiveSplitters();
+        {
+            ApplyResponsiveSplitterMinimums();
+            await RestoreOperatorLayoutAsync();
+            await LoadStartupStateAsync();
+            FocusOperationalWorkspace();
+        };
+        SizeChanged += (_, _) =>
+        {
+            ApplyResponsiveSplitterMinimums();
+            ClampResponsiveSplitters();
+        };
     }
 
     private void BuildUi()
@@ -191,8 +196,6 @@ public sealed class MainForm : Form
         var split = _workspaceSplit;
         split.Dock = DockStyle.Fill;
         split.Orientation = Orientation.Vertical;
-        split.Panel1MinSize = 320;
-        split.Panel2MinSize = 420;
         split.SplitterWidth = 6;
         split.BackColor = FluentTheme.Background;
         split.Margin = new Padding(0, 0, 0, 8);
@@ -264,8 +267,6 @@ public sealed class MainForm : Form
         var split = _diagnosticsSplit;
         split.Dock = DockStyle.Fill;
         split.Orientation = Orientation.Vertical;
-        split.Panel1MinSize = 300;
-        split.Panel2MinSize = 300;
         split.SplitterWidth = 6;
         split.BackColor = FluentTheme.Background;
         split.Panel1.Padding = new Padding(0, 0, 6, 0);
@@ -388,6 +389,30 @@ public sealed class MainForm : Form
         Location = new Point(
             workingArea.Left + Math.Max(0, (workingArea.Width - Width) / 2),
             workingArea.Top + Math.Max(0, (workingArea.Height - Height) / 2));
+    }
+
+    private void ApplyResponsiveSplitterMinimums()
+    {
+        ApplySplitterMinimumsWhenFeasible(_workspaceSplit, 320, 420);
+        ApplySplitterMinimumsWhenFeasible(_diagnosticsSplit, 300, 300);
+    }
+
+    private static void ApplySplitterMinimumsWhenFeasible(SplitContainer split, int panel1MinSize, int panel2MinSize)
+    {
+        var available = split.Width - split.SplitterWidth;
+        if (available < panel1MinSize + panel2MinSize) return;
+
+        var maximum = split.Width - panel2MinSize - split.SplitterWidth;
+        if (maximum < panel1MinSize) return;
+
+        var safeDistance = Math.Clamp(split.SplitterDistance, panel1MinSize, maximum);
+        if (safeDistance != split.SplitterDistance)
+            split.SplitterDistance = safeDistance;
+
+        if (split.Panel1MinSize != panel1MinSize)
+            split.Panel1MinSize = panel1MinSize;
+        if (split.Panel2MinSize != panel2MinSize)
+            split.Panel2MinSize = panel2MinSize;
     }
 
     private void ApplyInitialSplitterRatios()
