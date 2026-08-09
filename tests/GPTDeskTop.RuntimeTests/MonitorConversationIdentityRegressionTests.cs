@@ -41,7 +41,7 @@ public sealed class MonitorConversationIdentityRegressionTests
         var source = ReadSource("src", "GPTDeskTop", "Services", "ConfigurationBackupImportService.cs");
 
         Assert.Contains("RuntimeHealthPresentation.IsChatGptConversationUrl(url)", source, StringComparison.Ordinal);
-        Assert.Contains("stable /c/{conversation-id} identity", source, StringComparison.Ordinal);
+        Assert.Contains("stable /c/{{conversation-id}} identity", source, StringComparison.Ordinal);
         Assert.DoesNotContain("RuntimeHealthPresentation.IsChatGptTabUrl(url)", source, StringComparison.Ordinal);
     }
 
