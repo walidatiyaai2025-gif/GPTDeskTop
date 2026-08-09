@@ -46,7 +46,7 @@ public sealed class MonitorIdentityRepairUiRegressionTests
         Assert.Contains("if (RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url))", source, StringComparison.Ordinal);
         Assert.Contains("if (!RuntimeHealthPresentation.IsChatGptConversationUrl(targetTab.Url))", source, StringComparison.Ordinal);
         Assert.Contains("saved.Id != monitor.Id", source, StringComparison.Ordinal);
-        Assert.Contains("StringComparison.OrdinalIgnoreCase", source, StringComparison.Ordinal);
+        Assert.Contains("ChatGptConversationIdentity.IsSame(saved.Url, targetTab.Url)", source, StringComparison.Ordinal);
         Assert.Contains("MonitorConversationIdentityRebound", source, StringComparison.Ordinal);
         Assert.Contains("CrashRecoveryPending", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SetSettingAsync", source, StringComparison.Ordinal);

@@ -186,7 +186,7 @@ public sealed class TransactionalConversationRebindTests
         Assert.DoesNotContain("SaveMonitorAsync(monitor", duplicate, StringComparison.Ordinal);
         Assert.DoesNotContain("AddLogAsync", duplicate, StringComparison.Ordinal);
         Assert.Contains("BeginTransaction(deferred: false)", database, StringComparison.Ordinal);
-        Assert.Contains("targetOwner.Transaction = transaction", database, StringComparison.Ordinal);
+        Assert.Contains("FindLogicalConversationOwnerIdAsync", database, StringComparison.Ordinal);
         Assert.Contains("insertLog.Transaction = transaction", database, StringComparison.Ordinal);
         Assert.Contains("COLLATE NOCASE", database, StringComparison.Ordinal);
     }

@@ -43,7 +43,7 @@ public sealed class MonitorIdentityRepairService
 
         var duplicate = monitors.FirstOrDefault(saved =>
             saved.Id != monitor.Id
-            && string.Equals(saved.Url, targetTab.Url, StringComparison.OrdinalIgnoreCase));
+            && ChatGptConversationIdentity.IsSame(saved.Url, targetTab.Url));
         if (duplicate is not null)
             throw new InvalidOperationException($"Monitor #{duplicate.Id} already owns the selected ChatGPT conversation.");
 

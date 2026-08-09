@@ -33,7 +33,7 @@ public sealed class MonitorRegistrationBoundaryRegressionTests
         var source = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
 
         Assert.Contains("_monitors.FirstOrDefault(m =>", source, StringComparison.Ordinal);
-        Assert.Contains("string.Equals(m.Url, tab.Url, StringComparison.OrdinalIgnoreCase)", source, StringComparison.Ordinal);
+        Assert.Contains("ChatGptConversationIdentity.IsSame(m.Url, tab.Url)", source, StringComparison.Ordinal);
         Assert.Contains("await _database.SaveMonitorAsync(monitor);", source, StringComparison.Ordinal);
     }
 }

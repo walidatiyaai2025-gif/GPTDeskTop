@@ -891,7 +891,7 @@ public sealed class MainForm : Form
                 continue;
             }
 
-            var duplicate = _monitors.FirstOrDefault(m => string.Equals(m.Url, tab.Url, StringComparison.OrdinalIgnoreCase));
+            var duplicate = _monitors.FirstOrDefault(m => ChatGptConversationIdentity.IsSame(m.Url, tab.Url));
             if (duplicate is not null)
             {
                 lastId = duplicate.Id;
