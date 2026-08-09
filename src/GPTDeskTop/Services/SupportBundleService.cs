@@ -43,6 +43,7 @@ public sealed record SupportBundleDatabaseSnapshot(
 {
     public bool CrashRecoveryPending { get; init; }
     public int InvalidMonitorIdentityCount { get; init; }
+    public int DuplicateMonitorOwnershipCount { get; init; }
 }
 
 public sealed record SupportBundleExceptionMetadata(
@@ -168,7 +169,8 @@ public sealed class SupportBundleService
             chrome.FailureType,
             database.FailureType,
             crashRecoveryPending: database.CrashRecoveryPending,
-            invalidMonitorIdentityCount: database.InvalidMonitorIdentityCount);
+            invalidMonitorIdentityCount: database.InvalidMonitorIdentityCount,
+            duplicateMonitorOwnershipCount: database.DuplicateMonitorOwnershipCount);
 
         return new SupportBundleSnapshot(
             "1.0",
@@ -291,7 +293,8 @@ public sealed class SupportBundleService
         {
             CrashRecoveryPending = crashRecoveryPending,
             InvalidMonitorIdentityCount = monitorList.Count(monitor =>
-                !RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url))
+                !RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url)),
+            DuplicateMonitorOwnershipCount = MonitorConversationOwnership.CountDuplicateMonitors(monitorList)
         };
     }
 

@@ -26,7 +26,7 @@ public sealed class ChatGptMonitorService
 
     public bool IsMonitorRunning(long monitorId) { lock (_sync) return _running.ContainsKey(monitorId); }
 
-    public Task StartMonitorAsync(SavedMonitor monitor, ChromeTab tab)
+    public async Task StartMonitorAsync(SavedMonitor monitor, ChromeTab tab)
     {
         ArgumentNullException.ThrowIfNull(monitor);
         ArgumentNullException.ThrowIfNull(tab);
@@ -36,8 +36,33 @@ public sealed class ChatGptMonitorService
             throw new InvalidOperationException("The saved monitor URL is not a stable ChatGPT conversation identity.");
         if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
             throw new InvalidOperationException("The selected Chrome tab is not a stable ChatGPT conversation identity.");
-        lock (_sync) { if (_running.ContainsKey(monitor.Id)) return Task.CompletedTask; var cts = new CancellationTokenSource(); var worker = Task.Run(() => MonitorLoopAsync(monitor, tab, cts.Token)); _running.Add(monitor.Id, new MonitorRuntime(cts, worker)); }
-        Activity?.Invoke(monitor.Id, $"Started: {monitor.Title}"); RunningStateChanged?.Invoke(); return Task.CompletedTask;
+
+        var savedMonitors = await _database.GetSavedMonitorsAsync();
+        if (MonitorConversationOwnership.IsDuplicateOwner(monitor.Id, savedMonitors))
+        {
+            const string message = "Saved monitor conversation ownership is ambiguous. Resolve duplicate monitor rows before starting this monitor.";
+            await _database.AddLogAsync(
+                "System",
+                string.Empty,
+                message,
+                "MonitorStartDuplicateConversationOwnership",
+                monitor.Id,
+                monitor.TabId,
+                monitor.Title);
+            HistoryChanged?.Invoke();
+            Activity?.Invoke(monitor.Id, message);
+            return;
+        }
+
+        lock (_sync)
+        {
+            if (_running.ContainsKey(monitor.Id)) return;
+            var cts = new CancellationTokenSource();
+            var worker = Task.Run(() => MonitorLoopAsync(monitor, tab, cts.Token));
+            _running.Add(monitor.Id, new MonitorRuntime(cts, worker));
+        }
+        Activity?.Invoke(monitor.Id, $"Started: {monitor.Title}");
+        RunningStateChanged?.Invoke();
     }
 
     public async Task StopMonitorAsync(long monitorId)

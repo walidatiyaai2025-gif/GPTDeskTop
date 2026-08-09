@@ -21,6 +21,7 @@ public sealed record RuntimeHealthSnapshot(
 {
     public bool CrashRecoveryPending { get; init; }
     public int InvalidMonitorIdentityCount { get; init; }
+    public int DuplicateMonitorOwnershipCount { get; init; }
 }
 
 public static class RuntimeHealthPresentation
@@ -35,12 +36,14 @@ public static class RuntimeHealthPresentation
         string? chromeError = null,
         string? databaseError = null,
         bool crashRecoveryPending = false,
-        int invalidMonitorIdentityCount = 0)
+        int invalidMonitorIdentityCount = 0,
+        int duplicateMonitorOwnershipCount = 0)
     {
         chatGptTabCount = Math.Max(0, chatGptTabCount);
         savedMonitorCount = Math.Max(0, savedMonitorCount);
         runningMonitorCount = Math.Clamp(runningMonitorCount, 0, savedMonitorCount);
         invalidMonitorIdentityCount = Math.Clamp(invalidMonitorIdentityCount, 0, savedMonitorCount);
+        duplicateMonitorOwnershipCount = Math.Clamp(duplicateMonitorOwnershipCount, 0, savedMonitorCount);
 
         RuntimeHealthLevel level;
         string summary;
@@ -63,6 +66,13 @@ public static class RuntimeHealthPresentation
             summary = invalidMonitorIdentityCount == 1
                 ? "Crash recovery is blocked by 1 saved monitor that needs a conversation rebind."
                 : $"Crash recovery is blocked by {invalidMonitorIdentityCount} saved monitors that need a conversation rebind.";
+        }
+        else if (duplicateMonitorOwnershipCount > 0)
+        {
+            level = RuntimeHealthLevel.Degraded;
+            summary = duplicateMonitorOwnershipCount == 1
+                ? "Runtime automation is blocked by 1 saved monitor with duplicate conversation ownership."
+                : $"Runtime automation is blocked by {duplicateMonitorOwnershipCount} saved monitors with duplicate conversation ownership.";
         }
         else if (crashRecoveryPending)
         {
@@ -93,7 +103,8 @@ public static class RuntimeHealthPresentation
             NormalizeError(databaseError))
         {
             CrashRecoveryPending = crashRecoveryPending,
-            InvalidMonitorIdentityCount = invalidMonitorIdentityCount
+            InvalidMonitorIdentityCount = invalidMonitorIdentityCount,
+            DuplicateMonitorOwnershipCount = duplicateMonitorOwnershipCount
         };
     }
 
