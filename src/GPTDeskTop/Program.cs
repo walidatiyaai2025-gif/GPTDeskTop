@@ -15,6 +15,7 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         LocalDatabase? database = null;
+        DevelopmentTaskRuntimeBinding? developmentRuntime = null;
 
         try
         {
@@ -45,15 +46,15 @@ internal static class Program
             using var notifications = new TrayNotificationService(monitor, database);
             notifications.InitializeAsync().GetAwaiter().GetResult();
 
-            // IMPORTANT: Never block startup on Chrome/CDP recovery. The tray icon used to
-            // appear while RecoverIfPendingAsync was waiting for Chrome, making the main form
-            // look as if it had failed to load. Show the UI first and recover asynchronously.
             var mainForm = new MainForm(chrome, monitor, database);
 
-            // Development-plan lifecycle dashboard. The dashboard owns only the plan engine;
-            // verified ChatGPT delivery remains behind the existing runtime binding layer.
+            // Production development-plan runtime: the dashboard and lifecycle controls
+            // are bound to dynamic saved-monitor resolution before the UI is shown.
+            var resolver = new SavedMonitorTabResolver(chrome);
+            var targetFactory = new DevelopmentTaskMonitorTargetFactory(database, resolver, chrome);
             var developmentEngine = new DevelopmentTaskEngine();
-            var developmentDashboard = new DevelopmentTaskDashboardControl(developmentEngine)
+            developmentRuntime = new DevelopmentTaskRuntimeBinding(developmentEngine, targetFactory);
+            var developmentDashboard = new DevelopmentTaskDashboardControl(developmentRuntime)
             {
                 Height = 190,
                 Dock = DockStyle.Top,
@@ -80,8 +81,9 @@ internal static class Program
             {
                 try { CrashRecoveryStateService.MarkCleanShutdownAsync(database).GetAwaiter().GetResult(); }
                 catch (Exception ex) { ExceptionLogService.Log(ex, "Program.MarkCleanShutdown"); }
-                try { developmentEngine.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
-                catch (Exception ex) { ExceptionLogService.Log(ex, "Program.DisposeDevelopmentEngine"); }
+                try { developmentRuntime?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+                catch (Exception ex) { ExceptionLogService.Log(ex, "Program.DisposeDevelopmentRuntime"); }
+                developmentRuntime = null;
             };
 
             Application.Run(mainForm);
@@ -94,6 +96,9 @@ internal static class Program
                 try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "startup-error.log"), $"[{DateTime.Now:O}] {ex}{Environment.NewLine}"); }
                 catch { }
             }
+
+            try { developmentRuntime?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+            catch { }
 
             var restarted = TryRestartAfterFatal(database);
             if (!restarted)
