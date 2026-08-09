@@ -1,0 +1,53 @@
+name: Development Message Catalog Validation
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'data/development-task-messages.json'
+      - 'src/GPTDeskTop/UI/DevelopmentMessageCatalogControl.cs'
+      - 'src/GPTDeskTop/UI/DevelopmentTaskDashboardControl.cs'
+      - 'tests/GPTDeskTop.RuntimeTests/DevelopmentMessageCatalogTests.cs'
+      - '.github/workflows/development-message-catalog.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'data/development-task-messages.json'
+      - 'src/GPTDeskTop/UI/DevelopmentMessageCatalogControl.cs'
+      - 'src/GPTDeskTop/UI/DevelopmentTaskDashboardControl.cs'
+      - 'tests/GPTDeskTop.RuntimeTests/DevelopmentMessageCatalogTests.cs'
+      - '.github/workflows/development-message-catalog.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Validate catalog
+        shell: pwsh
+        run: |
+          $catalog = Get-Content data/development-task-messages.json -Raw | ConvertFrom-Json
+          if ($null -eq $catalog.messages) { throw 'Development message catalog is missing messages.' }
+          if ($catalog.messages.Count -lt 10) { throw "Expected at least 10 messages, found $($catalog.messages.Count)." }
+          if (($catalog.messages | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) { throw 'Catalog contains an empty message.' }
+      - name: Validate editor contract
+        shell: pwsh
+        run: |
+          $control = Get-Content src/GPTDeskTop/UI/DevelopmentMessageCatalogControl.cs -Raw
+          $dashboard = Get-Content src/GPTDeskTop/UI/DevelopmentTaskDashboardControl.cs -Raw
+          $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentMessageCatalogTests.cs -Raw
+          foreach ($name in @('Add','Update','Remove','Move Up','Move Down','Save')) {
+            if ($control -notmatch [regex]::Escape($name)) { throw "Message editor control '$name' is missing." }
+          }
+          if ($control -notmatch 'File.Move\(temp, _catalogPath, true\)') { throw 'Atomic catalog save is missing.' }
+          if ($control -notmatch 'At least one development message must remain') { throw 'Minimum-message protection is missing.' }
+          if ($dashboard -notmatch 'DevelopmentMessageCatalogControl') { throw 'Dashboard is not connected to message editor.' }
+          if ($tests -notmatch 'CatalogSupportsMoreThanTenMessages') { throw 'Extensibility test is missing.' }
+          if ($tests -notmatch 'CatalogRejectsEmptyMessages') { throw 'Empty-message test is missing.' }
+          if ($tests -notmatch 'CatalogJsonRoundTripsMessageOrder') { throw 'Order test is missing.' }
+      - name: Runtime catalog tests
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release -p:EnableWindowsTargeting=true --filter FullyQualifiedName~DevelopmentMessageCatalogTests
