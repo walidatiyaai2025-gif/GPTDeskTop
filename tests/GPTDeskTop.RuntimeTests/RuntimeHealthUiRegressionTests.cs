@@ -23,6 +23,7 @@ public sealed class RuntimeHealthUiRegressionTests
         Assert.Contains("AccessibleName = \"Refresh runtime health\"", source, StringComparison.Ordinal);
         Assert.Contains("AccessibleName = \"Repair recovery blocker\"", source, StringComparison.Ordinal);
         Assert.Contains("AccessibleName = \"Retry pending crash recovery\"", source, StringComparison.Ordinal);
+        Assert.Contains("_tabsValue.AccessibleName = \"Open ChatGPT conversation count\"", source, StringComparison.Ordinal);
         Assert.Contains("Height = _expanded ? ExpandedHeight : CollapsedHeight", source, StringComparison.Ordinal);
         Assert.Contains("keyData == Keys.F5", source, StringComparison.Ordinal);
     }
@@ -44,6 +45,18 @@ public sealed class RuntimeHealthUiRegressionTests
         Assert.DoesNotContain("SaveMonitorAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("StartMonitorAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("StopMonitorAsync(", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RuntimeHealthCountsOnlyStableConversationTabs()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "RuntimeHealthControl.cs");
+
+        Assert.Contains("CreateMetricCard(\"Conversations\", _tabsValue)", source, StringComparison.Ordinal);
+        Assert.Contains("var conversationTabs = tabs.Count(tab => RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url));", source, StringComparison.Ordinal);
+        Assert.Contains("conversationTabs,", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("tabs.Count(tab => RuntimeHealthPresentation.IsChatGptTabUrl(tab.Url))", source, StringComparison.Ordinal);
+        Assert.Contains("Open stable ChatGPT conversations visible through CDP.", source, StringComparison.Ordinal);
     }
 
     [Fact]
