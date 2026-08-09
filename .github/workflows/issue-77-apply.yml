@@ -1,5 +1,5 @@
 name: Apply Issue 77 Patch
-# rerun after correcting documentation anchor
+# rerun after fixing patch-runner newline handling
 
 on:
   push:
