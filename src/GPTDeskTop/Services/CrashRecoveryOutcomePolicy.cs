@@ -4,6 +4,7 @@ public enum CrashRecoveryOutcome
 {
     Success,
     SendFailed,
+    InvalidConversationIdentity,
     Cancelled
 }
 
