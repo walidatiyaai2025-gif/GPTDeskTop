@@ -41,7 +41,7 @@ public sealed class SavedMonitorTabResolver
             var exact = tabs.FirstOrDefault(tab =>
                 string.Equals(tab.Id, monitor.TabId, StringComparison.Ordinal));
             if (exact is not null)
-                return SavedMonitorTabResolution.Found(exact, "PersistedTabId");
+                return SavedMonitorTabResolution.CreateFound(exact, "PersistedTabId");
         }
 
         if (!string.IsNullOrWhiteSpace(monitor.Url))
@@ -49,7 +49,7 @@ public sealed class SavedMonitorTabResolver
             var sameConversation = tabs.FirstOrDefault(tab =>
                 string.Equals(NormalizeUrl(tab.Url), NormalizeUrl(monitor.Url), StringComparison.Ordinal));
             if (sameConversation is not null)
-                return SavedMonitorTabResolution.Found(sameConversation, "PersistedConversationUrl");
+                return SavedMonitorTabResolution.CreateFound(sameConversation, "PersistedConversationUrl");
         }
 
         return SavedMonitorTabResolution.Missing(
@@ -72,7 +72,7 @@ public sealed record SavedMonitorTabResolution(
     string MatchType,
     string Reason)
 {
-    public static SavedMonitorTabResolution Found(ChromeTab tab, string matchType)
+    public static SavedMonitorTabResolution CreateFound(ChromeTab tab, string matchType)
         => new(true, tab, matchType, string.Empty);
 
     public static SavedMonitorTabResolution Missing(string reason)
