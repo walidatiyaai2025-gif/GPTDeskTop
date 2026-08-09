@@ -73,12 +73,12 @@ public sealed class MainForm : Form
         FluentTheme.StyleButton(_deleteMonitorButton, danger: true);
         FluentTheme.StyleButton(_quickMonitorSettingsButton, primary: true);
         UpdateActionStates();
-            Shown += async (_, _) =>
-    {
-        await RestoreOperatorLayoutAsync();
-        await LoadStartupStateAsync();
-        FocusOperationalWorkspace();
-    };
+        Shown += async (_, _) =>
+{
+    await RestoreOperatorLayoutAsync();
+    await LoadStartupStateAsync();
+    FocusOperationalWorkspace();
+};
         SizeChanged += (_, _) => ClampResponsiveSplitters();
     }
 
@@ -430,14 +430,10 @@ public sealed class MainForm : Form
         var boundsValue = $"{normalBounds.X},{normalBounds.Y},{normalBounds.Width},{normalBounds.Height}";
         var workspaceRatio = GetSplitRatio(_workspaceSplit).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
         var diagnosticsRatio = GetSplitRatio(_diagnosticsSplit).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
-        var writes = new[]
-        {
-            _database.SetSettingAsync("Ui.Main.WindowBounds", boundsValue),
-            _database.SetSettingAsync("Ui.Main.WindowState", state),
-            _database.SetSettingAsync("Ui.Main.WorkspaceSplitRatio", workspaceRatio),
-            _database.SetSettingAsync("Ui.Main.DiagnosticsSplitRatio", diagnosticsRatio)
-        };
-        await Task.WhenAll(writes).WaitAsync(cancellationToken);
+        await _database.SetSettingAsync("Ui.Main.WindowBounds", boundsValue, cancellationToken);
+        await _database.SetSettingAsync("Ui.Main.WindowState", state, cancellationToken);
+        await _database.SetSettingAsync("Ui.Main.WorkspaceSplitRatio", workspaceRatio, cancellationToken);
+        await _database.SetSettingAsync("Ui.Main.DiagnosticsSplitRatio", diagnosticsRatio, cancellationToken);
     }
 
     private static bool TryParseBounds(string? value, out Rectangle bounds)
@@ -1124,7 +1120,7 @@ public sealed class MainForm : Form
         _ = CompleteShutdownAsync();
     }
 
-        private async Task CompleteShutdownAsync()
+    private async Task CompleteShutdownAsync()
     {
         using (var layoutTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
         {

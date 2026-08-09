@@ -41,7 +41,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
     private readonly Button _toggle = new() { Text = "Collapse", AutoSize = true };
     private readonly Panel _body = new() { Dock = DockStyle.Fill, BackColor = FluentTheme.Surface };
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 500 };
-        private bool _expanded = true;
+    private bool _expanded = true;
 
     public event EventHandler? ExpandedChanged;
 
@@ -187,7 +187,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         _timer.Tick += (_, _) => Render();
     }
 
-        private void ToggleExpanded() => IsExpanded = !IsExpanded;
+    private void ToggleExpanded() => IsExpanded = !IsExpanded;
 
     private void ApplyExpandedState()
     {
