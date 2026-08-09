@@ -1,0 +1,81 @@
+name: QA Hidden Chrome CDP
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: Hidden Chrome polling duration in seconds (use 610+ for the full QA-005 endurance check)
+        required: false
+        default: '610'
+
+jobs:
+  hidden-cdp:
+    name: Hidden Chrome CDP polling
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore application
+        run: dotnet restore src/GPTDeskTop/GPTDeskTop.csproj
+
+      - name: Build application
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release --no-restore
+
+      - name: Poll through CDP while Chrome is hidden
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'src/GPTDeskTop/bin/Release/net8.0-windows/GPTDeskTop.exe').Path
+          $workingDirectory = Split-Path $exe -Parent
+          $root = Join-Path $env:RUNNER_TEMP "gptdesktop-hidden-cdp-$env:GITHUB_RUN_ID"
+          $resultPath = Join-Path $root 'result.json'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $duration = [int]'${{ inputs.duration_seconds }}'
+          } else {
+            $duration = 30
+          }
+          if ($duration -lt 5) { throw 'duration_seconds must be at least 5.' }
+          if ($duration -gt 900) { throw 'duration_seconds cannot exceed 900.' }
+
+          Write-Host "Running hidden Chrome CDP probe for $duration seconds."
+          $probe = Start-Process -FilePath $exe -WorkingDirectory $workingDirectory -ArgumentList @('--qa-hidden-chrome-probe', $duration, $resultPath) -PassThru
+          $deadline = (Get-Date).AddSeconds($duration + 120)
+          while (-not $probe.HasExited) {
+            if ((Get-Date) -ge $deadline) {
+              Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue
+              throw "Hidden Chrome probe exceeded its $($duration + 120)-second workflow deadline."
+            }
+            Start-Sleep -Seconds 1
+            $probe.Refresh()
+          }
+
+          if ($probe.ExitCode -ne 0) {
+            $errorPath = "$resultPath.error.txt"
+            if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
+            throw "Hidden Chrome probe failed. ExitCode=$($probe.ExitCode)"
+          }
+          if (-not (Test-Path $resultPath)) { throw 'Hidden Chrome probe did not create result.json.' }
+
+          $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+          $minimumPolls = [math]::Max(3, [math]::Floor($duration * 0.70))
+          if ($result.HideChanged -ne $true) { throw 'Chrome hide/minimize operation was not acknowledged by the production Chrome service.' }
+          if ([double]$result.ElapsedSeconds -lt ($duration - 1)) { throw "Probe ended too early: $($result.ElapsedSeconds)s for requested ${duration}s." }
+          if ([int]$result.SuccessfulPolls -lt $minimumPolls) { throw "Too few successful hidden CDP polls: $($result.SuccessfulPolls), expected at least $minimumPolls." }
+          if ([int]$result.MatchingPolls -ne [int]$result.SuccessfulPolls) { throw "Some successful polls returned unexpected assistant content: matching=$($result.MatchingPolls), successful=$($result.SuccessfulPolls)." }
+          if ([int]$result.FailedPolls -gt 2) { throw "Too many hidden CDP polling failures: $($result.FailedPolls)." }
+          if ($result.LastAssistantText -ne 'hidden-cdp-probe-alive') { throw "Unexpected final assistant text: '$($result.LastAssistantText)'." }
+
+          Write-Host "Hidden Chrome CDP verified: duration=$($result.ElapsedSeconds)s, successful=$($result.SuccessfulPolls), failures=$($result.FailedPolls), hide=$($result.HideChanged), show=$($result.ShowChanged)."
