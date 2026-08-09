@@ -57,6 +57,8 @@ public sealed class ConfigurationBackupUiRegressionTests
         Assert.Contains("development-plan message catalog and schedule files", source, StringComparison.Ordinal);
         Assert.Contains("This file is **not**", docs, StringComparison.Ordinal);
         Assert.Contains("privacy-safe Support Bundle", docs, StringComparison.Ordinal);
-        Assert.Contains("restore workflow can validate schema/version", docs, StringComparison.Ordinal);
+        Assert.Contains("accepts only schema **1.0**", docs, StringComparison.Ordinal);
+        Assert.Contains("one SQLite transaction", docs, StringComparison.Ordinal);
+        Assert.Contains("Restart **GPTDeskTop** after import", docs, StringComparison.Ordinal);
     }
 }
