@@ -32,10 +32,12 @@ jobs:
             throw 'GPTDeskTop.sln does not define Release|x64.'
           }
 
+          $appId = '{2C7C0A2D-9D1A-4F6E-8A11-635D3534FCA7}'
+          $setupId = '{9E40B81C-B809-453D-B72A-4C17D878DB12}'
           $projectIds = @(
-            '{2C7C0A2D-9D1A-4F6E-8A11-635D3534FCA7}',
+            $appId,
             '{B0A2D2C9-2E1D-4A8E-99D3-184A3E357A21}',
-            '{9E40B81C-B809-453D-B72A-4C17D878DB12}'
+            $setupId
           )
 
           foreach ($projectId in $projectIds) {
@@ -43,6 +45,11 @@ jobs:
             if ($solution -notmatch "$escaped\.Release\|x64\.Build\.0 = Release\|Any CPU") {
               throw "Project $projectId is not included in the Release|x64 solution build."
             }
+          }
+
+          $setupBlockPattern = '(?s)GPTDeskTop\.Setup.*?ProjectSection\(ProjectDependencies\).*?' + [regex]::Escape($appId) + '\s*=\s*' + [regex]::Escape($appId) + '.*?EndProjectSection'
+          if ($solution -notmatch $setupBlockPattern) {
+            throw 'GPTDeskTop.Setup does not declare GPTDeskTop as a solution build dependency.'
           }
 
       - name: Build solution Release x64
@@ -54,6 +61,18 @@ jobs:
           $path = 'src/GPTDeskTop/bin/Release/net8.0-windows/GPTDeskTop.dll'
           if (-not (Test-Path $path)) { throw "Release|x64 solution build did not produce $path." }
           Write-Host "Verified application compile output: $path"
+
+      - name: Verify standalone setup output
+        shell: pwsh
+        run: |
+          $path = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (-not (Test-Path $path)) { throw "Release|x64 solution build did not produce standalone setup $path." }
+          $versionPath = 'Output/Setup/Version.txt'
+          if (-not (Test-Path $versionPath)) { throw "Standalone setup version receipt is missing: $versionPath." }
+          $version = Get-Content $versionPath -Raw
+          if ($version -notmatch 'GPTDeskTop Setup v1\.8\.0') { throw "Unexpected setup version receipt: $version" }
+          Write-Host "Verified standalone setup output: $path"
+          Write-Host $version
 
       - name: Verify setup compile output
         shell: pwsh
