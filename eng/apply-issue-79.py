@@ -82,7 +82,7 @@ new_method = r'''    private async Task SaveSettingsAsync()
             ["NotificationSoundType"] = _soundType.SelectedItem?.ToString() ?? "Asterisk"
         };
 
-        SetBusy(true, "Saving settings transactionally…");
+        SetBusy(true, "Saving settings…");
         try
         {
             await _database.SetSettingsAsync(desiredSettings);
