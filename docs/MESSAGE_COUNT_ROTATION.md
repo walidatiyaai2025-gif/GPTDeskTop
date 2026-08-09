@@ -1,0 +1,42 @@
+# Message-Count Conversation Rotation
+
+Tracking: #10
+
+## Goal
+
+Allow an operator to proactively move a running monitor to a fresh ChatGPT conversation after a configurable number of visible assistant responses, without waiting for a context-limit message.
+
+## Settings
+
+Global Settings provide:
+
+- `RotateAfterAssistantMessages`: assistant-response threshold; `0` disables proactive message-count rotation.
+- `MessageCountRotationStartMessage`: fixed message sent to the new ChatGPT conversation.
+
+The existing per-monitor `ConversationRotationEnabled` switch remains the master enable. Existing per-monitor New Chat delay, rotation cooldown, maximum rotation count and model-routing settings also apply.
+
+## Runtime Contract
+
+When a stable, non-error, non-context-limit assistant response is present and the visible assistant response count reaches the configured threshold:
+
+1. Confirm that conversation rotation is enabled and the monitor has not exceeded its maximum rotation count.
+2. Wait the configured New Chat delay.
+3. Open a fresh ChatGPT conversation and wait for the composer to become available.
+4. Apply the monitor's existing model-routing policy.
+5. Send the fixed `MessageCountRotationStartMessage` using verified delivery.
+6. Only after verified delivery, increment the rotation count, persist the new Tab ID/title/URL under the same Monitor ID, and record the rotation.
+7. Close the old chat only after the new-chat handoff has succeeded.
+8. Apply the existing rotation cooldown and continue monitoring.
+
+If verified delivery fails, the new unused tab is closed, the old conversation remains authoritative, and the same rotation remains eligible for a later retry.
+
+## Compatibility
+
+- Context-limit rotation remains unchanged and may still use `ConversationHandoffService` plus the per-monitor context-limit start message.
+- Delivery-timeout recovery remains unchanged and takes precedence over proactive message-count rotation for error responses.
+- A threshold of `0` preserves the v1.8.0 behavior.
+- No SQLite schema migration is required because the new options are stored in the existing `AppSettings` table.
+
+## Validation
+
+`MessageCountRotationRegressionTests` locks the Settings keys/UI labels, threshold trigger, audit status names, verified-delivery ordering, same-monitor persistence and old-tab close ordering.

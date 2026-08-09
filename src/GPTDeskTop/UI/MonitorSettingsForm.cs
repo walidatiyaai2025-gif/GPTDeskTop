@@ -8,7 +8,7 @@ public sealed class MonitorSettingsForm : Form
     private readonly NumericUpDown _delaySeconds = new() { Minimum = 0, Maximum = 300, Width = 110 };
     private readonly NumericUpDown _timerSeconds = new() { Minimum = 1, Maximum = 60, Width = 110 };
     private readonly CheckBox _enabledCheck = new() { Text = "Enabled", AutoSize = true };
-    private readonly CheckBox _rotationEnabledCheck = new() { Text = "Open a new Chat when ChatGPT reports a conversation/context limit", AutoSize = true };
+    private readonly CheckBox _rotationEnabledCheck = new() { Text = "Enable conversation rotation (context limit or configured message count)", AutoSize = true };
     private readonly TextBox _newChatMessageBox = new() { Dock = DockStyle.Fill };
     private readonly NumericUpDown _newChatDelaySeconds = new() { Minimum = 0, Maximum = 600, Width = 110 };
     private readonly NumericUpDown _rotationCooldownSeconds = new() { Minimum = 0, Maximum = 3600, Width = 110 };
@@ -55,11 +55,11 @@ public sealed class MonitorSettingsForm : Form
 
         var titleLabel = new Label { Text = title, Dock = DockStyle.Fill, Font = new Font("Segoe UI Variable Display", 11F, FontStyle.Bold), AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
         AddRow(root, 0, "Tab", titleLabel); AddRow(root, 1, "Auto reply", _autoReplyBox); AddRow(root, 2, "Delay before send (sec)", _delaySeconds); AddRow(root, 3, "Monitor timer (sec)", _timerSeconds); AddRow(root, 4, "State", _enabledCheck);
-        AddRow(root, 5, "Conversation rotation", _rotationEnabledCheck); AddRow(root, 6, "New Chat start message", _newChatMessageBox); AddRow(root, 7, "New Chat delay (sec)", _newChatDelaySeconds);
+        AddRow(root, 5, "Conversation rotation", _rotationEnabledCheck); AddRow(root, 6, "Context-limit start message", _newChatMessageBox); AddRow(root, 7, "New Chat delay (sec)", _newChatDelaySeconds);
         AddRow(root, 8, "Rotation cooldown (sec)", _rotationCooldownSeconds); AddRow(root, 9, "Max rotations (0 = unlimited)", _maxRotations);
         AddRow(root, 10, "Model routing", _modelRoutingEnabledCheck); AddRow(root, 11, "Preferred model label", _preferredModelBox); AddRow(root, 12, "Fallback model label", _fallbackModelBox);
-        var hint = new Label { Text = "Model labels are matched only against the visible ChatGPT model picker. 'Auto' leaves the current model unchanged. Routing never bypasses usage limits.", Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = FluentTheme.Muted, TextAlign = ContentAlignment.MiddleLeft };
-        AddRow(root, 13, "Safety", hint);
+        var hint = new Label { Text = "The message-count threshold and its fixed new-chat message are configured globally under Settings. This per-monitor start message remains the fallback/handoff message for context-limit rotation. Model labels are matched only against the visible ChatGPT model picker; 'Auto' leaves the current model unchanged.", Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = FluentTheme.Muted, TextAlign = ContentAlignment.MiddleLeft };
+        AddRow(root, 13, "Rotation / model note", hint);
         var urlLabel = new Label { Text = url, Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = FluentTheme.Muted, TextAlign = ContentAlignment.MiddleLeft };
         AddRow(root, 14, "URL", urlLabel);
 
@@ -69,7 +69,7 @@ public sealed class MonitorSettingsForm : Form
         save.Click += (_, _) =>
         {
             if (string.IsNullOrWhiteSpace(_autoReplyBox.Text)) { MessageBox.Show(this, "Auto reply cannot be empty.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Information); DialogResult = DialogResult.None; return; }
-            if (_rotationEnabledCheck.Checked && string.IsNullOrWhiteSpace(_newChatMessageBox.Text)) { MessageBox.Show(this, "New Chat start message cannot be empty when rotation is enabled.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Information); DialogResult = DialogResult.None; }
+            if (_rotationEnabledCheck.Checked && string.IsNullOrWhiteSpace(_newChatMessageBox.Text)) { MessageBox.Show(this, "Context-limit new Chat start message cannot be empty when rotation is enabled.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Information); DialogResult = DialogResult.None; }
         };
         buttons.Controls.Add(save); buttons.Controls.Add(cancel); root.Controls.Add(buttons, 0, 15); root.SetColumnSpan(buttons, 2);
         Controls.Add(root); AcceptButton = save; CancelButton = cancel;
