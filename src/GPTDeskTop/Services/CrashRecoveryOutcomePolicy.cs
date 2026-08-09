@@ -5,6 +5,7 @@ public enum CrashRecoveryOutcome
     Success,
     SendFailed,
     InvalidConversationIdentity,
+    DuplicateConversationOwnership,
     Cancelled
 }
 
