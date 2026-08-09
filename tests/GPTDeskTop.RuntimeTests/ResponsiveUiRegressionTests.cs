@@ -47,7 +47,7 @@ public sealed class ResponsiveUiRegressionTests
     public void EmptyListsShowOperatorGuidanceInsteadOfBlankPanels()
     {
         var source = ReadMainForm();
-        Assert.Contains("No ChatGPT tabs are open", source, StringComparison.Ordinal);
+        Assert.Contains("No ChatGPT conversations are open", source, StringComparison.Ordinal);
         Assert.Contains("No saved monitors yet", source, StringComparison.Ordinal);
         Assert.Contains("No stored history yet", source, StringComparison.Ordinal);
         Assert.Contains("CreateGridHost(_tabsGrid, _tabsEmptyState)", source, StringComparison.Ordinal);
