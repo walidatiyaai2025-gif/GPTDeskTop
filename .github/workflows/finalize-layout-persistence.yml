@@ -1,0 +1,64 @@
+name: Finalize layout persistence
+
+on:
+  push:
+    branches:
+      - feature/uiux-layout-persistence
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: ${{ !contains(github.event.head_commit.message, '[layout-finalized]') }}
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/uiux-layout-persistence
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Serialize SQLite layout writes
+        shell: pwsh
+        run: |
+          $path = 'src/GPTDeskTop/UI/MainForm.cs'
+          $content = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
+          $old = @'
+                  var writes = new[]
+                  {
+                      _database.SetSettingAsync("Ui.Main.WindowBounds", boundsValue),
+                      _database.SetSettingAsync("Ui.Main.WindowState", state),
+                      _database.SetSettingAsync("Ui.Main.WorkspaceSplitRatio", workspaceRatio),
+                      _database.SetSettingAsync("Ui.Main.DiagnosticsSplitRatio", diagnosticsRatio)
+                  };
+                  await Task.WhenAll(writes).WaitAsync(cancellationToken);
+          '@.Replace("`r`n", "`n")
+          $new = @'
+                  await _database.SetSettingAsync("Ui.Main.WindowBounds", boundsValue, cancellationToken);
+                  await _database.SetSettingAsync("Ui.Main.WindowState", state, cancellationToken);
+                  await _database.SetSettingAsync("Ui.Main.WorkspaceSplitRatio", workspaceRatio, cancellationToken);
+                  await _database.SetSettingAsync("Ui.Main.DiagnosticsSplitRatio", diagnosticsRatio, cancellationToken);
+          '@.Replace("`r`n", "`n")
+          if (-not $content.Contains($old)) { throw 'Layout write block not found.' }
+          $content = $content.Replace($old, $new)
+          [System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Format only touched source files
+        shell: pwsh
+        run: |
+          dotnet restore GPTDeskTop.sln
+          dotnet format whitespace GPTDeskTop.sln --no-restore --include src/GPTDeskTop/UI/MainForm.cs src/GPTDeskTop/UI/DevelopmentTaskDashboardControl.cs src/GPTDeskTop/Program.cs tests/GPTDeskTop.RuntimeTests/LayoutPersistenceUiRegressionTests.cs
+          Remove-Item '.github/workflows/finalize-layout-persistence.yml' -Force
+
+      - name: Commit finalized layout persistence
+        shell: pwsh
+        run: |
+          git config user.name "gptdesktop-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "ui: finalize safe layout persistence [layout-finalized]"
+          git push origin HEAD:feature/uiux-layout-persistence
