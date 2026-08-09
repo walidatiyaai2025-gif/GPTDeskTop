@@ -90,8 +90,8 @@ internal static class HiddenChromeProcessProbe
 
         try
         {
-            process = chrome.LaunchMonitorChrome(url);
-            var tab = await WaitForProbeTabAsync(chrome, url).ConfigureAwait(false);
+            process = LaunchIsolatedChrome(probeRoot, url, port);
+            var tab = await WaitForProbeTabAsync(chrome, process, url).ConfigureAwait(false);
             hideChanged = await chrome.HideMonitorChromeAsync().ConfigureAwait(false);
 
             stopwatch.Start();
@@ -136,10 +136,14 @@ internal static class HiddenChromeProcessProbe
             try { await chrome.CloseAllMonitorTabsAsync().ConfigureAwait(false); } catch { }
             try
             {
-                if (process is not null && !process.HasExited)
+                if (process is not null)
                 {
-                    process.Kill(entireProcessTree: true);
-                    process.WaitForExit(5000);
+                    process.Refresh();
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                        process.WaitForExit(5000);
+                    }
                 }
             }
             catch { }
@@ -147,13 +151,43 @@ internal static class HiddenChromeProcessProbe
         }
     }
 
-    private static async Task<ChromeTab> WaitForProbeTabAsync(ChromeDevToolsService chrome, string expectedUrl)
+    private static Process LaunchIsolatedChrome(string probeRoot, string url, int port)
+    {
+        var chromePath = FindChromePath();
+        var profilePath = Path.Combine(probeRoot, "ChromeProfile");
+        Directory.CreateDirectory(profilePath);
+        var arguments = string.Join(' ',
+            $"--remote-debugging-address=127.0.0.1",
+            $"--remote-debugging-port={port}",
+            $"--user-data-dir=\"{profilePath}\"",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-background-networking",
+            "--disable-component-update",
+            "--disable-sync",
+            "--disable-gpu",
+            $"--new-window \"{url}\"");
+
+        return Process.Start(new ProcessStartInfo
+        {
+            FileName = chromePath,
+            Arguments = arguments,
+            UseShellExecute = true,
+            WorkingDirectory = probeRoot
+        }) ?? throw new InvalidOperationException("Chrome QA probe process could not be started.");
+    }
+
+    private static async Task<ChromeTab> WaitForProbeTabAsync(ChromeDevToolsService chrome, Process process, string expectedUrl)
     {
         var deadline = DateTimeOffset.UtcNow.AddSeconds(60);
         Exception? lastError = null;
 
         while (DateTimeOffset.UtcNow < deadline)
         {
+            process.Refresh();
+            if (process.HasExited)
+                throw new InvalidOperationException($"Chrome QA probe exited before CDP became available. ExitCode={process.ExitCode}.");
+
             try
             {
                 var tabs = await chrome.GetTabsAsync().ConfigureAwait(false);
@@ -169,7 +203,19 @@ internal static class HiddenChromeProcessProbe
             await Task.Delay(250).ConfigureAwait(false);
         }
 
-        throw new TimeoutException($"Chrome probe tab was not available within 60 seconds.{(lastError is null ? string.Empty : $" Last error: {lastError.Message}")}");
+        throw new TimeoutException($"Chrome probe tab was not available within 60 seconds while Chrome PID {process.Id} remained alive.{(lastError is null ? string.Empty : $" Last error: {lastError.Message}")}");
+    }
+
+    private static string FindChromePath()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe")
+        };
+        return candidates.FirstOrDefault(File.Exists)
+            ?? throw new FileNotFoundException("Google Chrome was not found for the hidden CDP QA probe.");
     }
 
     private static int ReserveLoopbackPort()
