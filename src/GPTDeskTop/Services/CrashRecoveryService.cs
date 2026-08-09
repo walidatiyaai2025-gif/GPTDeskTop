@@ -119,8 +119,7 @@ public static class CrashRecoveryService
                     var currentTabs = await runtime.GetTabsAsync(cancellationToken);
                     availableTabs.AddRange(currentTabs);
                     firstTab = currentTabs.FirstOrDefault(t =>
-                        RuntimeHealthPresentation.IsChatGptConversationUrl(t.Url)
-                        && string.Equals(t.Url, firstValidMonitor.Url, StringComparison.OrdinalIgnoreCase));
+                        ChatGptConversationIdentity.IsSame(t.Url, firstValidMonitor.Url));
 
                     if (firstTab is null)
                     {
@@ -197,13 +196,13 @@ public static class CrashRecoveryService
                     availableTabs.Add(tab);
                 }
 
-                if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
+                if (!ChatGptConversationIdentity.IsSame(tab.Url, saved.Url))
                 {
                     outcomes.Add(CrashRecoveryOutcome.SendFailed);
                     await database.AddLogAsync(
                         "System",
                         "CrashRecovery",
-                        "Chrome did not return a stable ChatGPT conversation tab for the saved monitor URL.",
+                        "Chrome did not return the saved stable ChatGPT conversation identity for this monitor.",
                         "CrashRecoveryTabIdentityMismatch",
                         saved.Id,
                         tab.Id,
@@ -212,16 +211,36 @@ public static class CrashRecoveryService
                     continue;
                 }
 
+                var resolvedTitle = string.IsNullOrWhiteSpace(tab.Title) ? saved.Title : tab.Title;
+                var targetUpdated = await database.UpdateMonitorRuntimeTargetIfConversationMatchesAsync(
+                    saved.Id,
+                    saved.Url,
+                    tab.Id,
+                    resolvedTitle,
+                    cancellationToken);
+                if (!targetUpdated)
+                {
+                    outcomes.Add(CrashRecoveryOutcome.SendFailed);
+                    await database.AddLogAsync(
+                        "System",
+                        "CrashRecovery",
+                        "Saved monitor conversation identity changed while recovery was resolving its Chrome target. Recovery skipped this stale snapshot.",
+                        "CrashRecoverySavedConversationChanged",
+                        saved.Id,
+                        tab.Id,
+                        saved.Title,
+                        cancellationToken);
+                    continue;
+                }
+
+                saved.TabId = tab.Id;
+                saved.Title = resolvedTitle;
                 if (!string.IsNullOrWhiteSpace(tab.Id))
                     usedTabIds.Add(tab.Id);
 
                 if (alreadyRecovered)
                 {
                     outcomes.Add(CrashRecoveryOutcome.Success);
-                    saved.TabId = tab.Id;
-                    saved.Title = string.IsNullOrWhiteSpace(tab.Title) ? saved.Title : tab.Title;
-                    saved.Url = string.IsNullOrWhiteSpace(tab.Url) ? saved.Url : tab.Url;
-                    await database.SaveMonitorAsync(saved, cancellationToken);
                     await database.AddLogAsync(
                         "System",
                         recoveryMessage,
@@ -241,11 +260,6 @@ public static class CrashRecoveryService
                 var sent = await SendWithRetryAsync(runtime, tab, recoveryMessage, cancellationToken);
                 var outcome = sent ? CrashRecoveryOutcome.Success : CrashRecoveryOutcome.SendFailed;
                 outcomes.Add(outcome);
-
-                saved.TabId = tab.Id;
-                saved.Title = string.IsNullOrWhiteSpace(tab.Title) ? saved.Title : tab.Title;
-                saved.Url = string.IsNullOrWhiteSpace(tab.Url) ? saved.Url : tab.Url;
-                await database.SaveMonitorAsync(saved, cancellationToken);
 
                 await database.AddLogAsync(
                     "System",
@@ -297,16 +311,14 @@ public static class CrashRecoveryService
             var exactTarget = tabs.FirstOrDefault(tab =>
                 !usedTabIds.Contains(tab.Id)
                 && string.Equals(tab.Id, monitor.TabId, StringComparison.Ordinal)
-                && RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url)
-                && string.Equals(tab.Url, monitor.Url, StringComparison.OrdinalIgnoreCase));
+                && ChatGptConversationIdentity.IsSame(tab.Url, monitor.Url));
             if (exactTarget is not null)
                 return exactTarget;
         }
 
         return tabs.FirstOrDefault(tab =>
             !usedTabIds.Contains(tab.Id)
-            && RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url)
-            && string.Equals(tab.Url, monitor.Url, StringComparison.OrdinalIgnoreCase));
+            && ChatGptConversationIdentity.IsSame(tab.Url, monitor.Url));
     }
 
     private static async Task<bool> SendWithRetryAsync(
