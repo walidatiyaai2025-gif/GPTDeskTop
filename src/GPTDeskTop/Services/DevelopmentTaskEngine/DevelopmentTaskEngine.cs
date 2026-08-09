@@ -24,7 +24,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
 
     public DevelopmentTaskState State => _state;
     public event EventHandler<DevelopmentTaskState>? StateChanged;
-    public event EventHandler<string>? MessageReady;
+    public event Action<string>? MessageReady;
     public event EventHandler? CoolingStarted;
     public event EventHandler? CoolingCompleted;
 
@@ -96,7 +96,6 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
-    /// <summary>Restores a checkpointed position without resetting delivery identity.</summary>
     public void RestorePosition(int messageIndex, int completedMessages, DevelopmentTaskEngineStatus status)
     {
         if (messageIndex < 0) throw new ArgumentOutOfRangeException(nameof(messageIndex));
@@ -199,7 +198,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
                     {
                         var message = BuildPlanMessage(messages[_state.CurrentMessageIndex], _state);
                         _lastEmittedMessageIndex = _state.CurrentMessageIndex;
-                        MessageReady?.Invoke(this, message);
+                        MessageReady?.Invoke(message);
                     }
                     await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
                     continue;
