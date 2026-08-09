@@ -4,7 +4,7 @@ namespace GPTDeskTop.UI;
 
 public sealed class DevelopmentTaskDashboardControl : UserControl
 {
-    private const int CollapsedHeight = 56;
+    private const int CollapsedHeight = 72;
     private const int ExpandedHeight = 178;
 
     private readonly DevelopmentTaskRuntimeBinding _binding;
