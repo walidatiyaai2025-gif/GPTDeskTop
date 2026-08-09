@@ -1,7 +1,7 @@
 # GPTDeskTop Development Status
 
 ## Current Focus
-Release-readiness validation for the completed development-plan runtime, multi-monitor continuity, crash recovery, Chrome/CDP resilience, and operator-configurable scheduling.
+The v1.8.0 development/QA plan is release-ready. Runtime, persistence, Chrome/CDP resilience, crash recovery, multi-monitor continuity, operator scheduling, UI presentation, Release|x64 and standalone Setup production paths have all passed their planned automated acceptance gates. No tag or GitHub release has been created by this validation work.
 
 ## Confirmed Complete
 
@@ -42,17 +42,21 @@ Release-readiness validation for the completed development-plan runtime, multi-m
 - Development message catalog supports safe concurrent atomic hot reload while the engine is running.
 - Real Windows/Chrome watchdog integration verifies a 30-second stale-tab refresh does not refresh an independently active tab.
 - Home status presentation has deterministic tests for green Running lamp, red Stopped lamp, persistent Crash Count, and live/total Monitor Count.
-- CI gates for catalog, schedule settings, delivery, work-window lifecycle, CDP reliability, crash recovery, multi-monitor delivery, dynamic runtime binding, saved-chat rebinding, Release|x64, force-kill recovery, no-response isolation and hidden-Chrome CDP smoke.
+- Real Windows/Chrome hidden-window endurance acceptance completed for 610.6930764 seconds with 606 successful CDP polls and zero failures.
+- Full `Release | x64` solution build serializes Setup after the application and produces `Output\Setup\GPTDeskTop-Setup.exe` without concurrent publish races.
+- CI gates for catalog, schedule settings, delivery, work-window lifecycle, CDP reliability, crash recovery, multi-monitor delivery, dynamic runtime binding, saved-chat rebinding, Release|x64, force-kill recovery, no-response isolation, hidden-Chrome CDP and rotation safety.
 
-## Current Gate
+## Release-Readiness Baseline
 
-Commit `05502285` passed the complete main runtime/build pipeline after adding explicit process-restart persistence tests for schedule settings and recreated Chrome target identity. The only acceptance run still open from the current QA board is **QA-005**, a dedicated 610-second real Chrome/CDP hidden-window endurance run. Every-push hidden-Chrome smoke remains 30 seconds; the long run is a one-time acceptance gate, not a permanent 10-minute cost on every commit.
+- **Functional/main baseline:** commit `a8761668` passed the complete `Build GPTDeskTop` workflow, including runtime automation, all invariant checks, application build, Setup build, Build helper and rotation safety.
+- **Visual Studio-compatible build baseline:** the `QA Release x64` workflow on `a8761668` passed the full solution build and explicitly verified `Output\Setup\GPTDeskTop-Setup.exe` plus the `GPTDeskTop Setup v1.8.0` version receipt.
+- **Hidden Chrome endurance receipt:** commit `d87fcacf` completed 610.6930764 seconds, 606 successful polls, zero failed polls, `HideChanged=True`, `ShowChanged=True`.
+- **Restart persistence baseline:** commit `05502285` passed explicit process-style persistence tests for schedule settings and recreated Chrome target identity.
+- **No-response isolation:** real two-monitor Chrome/CDP integration verified exactly one stale-tab refresh and zero active-tab refreshes with a 30-second timeout.
 
-## Next Executable Tasks
+## Next Executable Task
 
-1. Complete the running QA-005 610-second hidden Chrome/CDP endurance gate and record its receipt.
-2. Reconcile release/build documentation with the now race-safe solution build: full `Release | x64` compiles all three projects, while standalone Setup packaging is intentionally performed by building the Setup project directly.
-3. After all QA gates are green, record a release-readiness baseline and verify the final standalone Setup output path/version before any tag or release operation.
+The planned v1.8.0 implementation and QA board is complete. The next action is a **release operation** only when explicitly desired: review release notes/artifacts, then create a tag/GitHub release or distribute the validated Setup. Release publication is intentionally separate from this readiness baseline.
 
 ## Non-Negotiable Delivery Rules
 
