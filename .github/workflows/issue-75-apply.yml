@@ -1,4 +1,5 @@
 name: Apply Issue 75 Patch
+# rerun after canonical import source-contract update
 
 on:
   push:
