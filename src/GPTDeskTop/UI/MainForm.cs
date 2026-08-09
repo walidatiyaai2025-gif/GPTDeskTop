@@ -10,6 +10,7 @@ public sealed class MainForm : Form
     private readonly ChromeDevToolsService _chrome;
     private readonly ChatGptMonitorService _monitor;
     private readonly LocalDatabase _database;
+    private readonly Func<Task>? _onSettingsApplied;
 
     private readonly Button _launchChromeButton = new() { Text = "Launch Chrome", AutoSize = true };
     private readonly Button _hideChromeButton = new() { Text = "Hide Chrome", AutoSize = true };
@@ -53,10 +54,20 @@ public sealed class MainForm : Form
     private bool _shutdownCompleted;
 
     public MainForm(ChromeDevToolsService chrome, ChatGptMonitorService monitor, LocalDatabase database)
+        : this(chrome, monitor, database, null)
+    {
+    }
+
+    public MainForm(
+        ChromeDevToolsService chrome,
+        ChatGptMonitorService monitor,
+        LocalDatabase database,
+        Func<Task>? onSettingsApplied)
     {
         _chrome = chrome;
         _monitor = monitor;
         _database = database;
+        _onSettingsApplied = onSettingsApplied;
         Text = $"GPTDeskTop v{GetAppVersion()}";
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.Manual;
@@ -756,6 +767,20 @@ public sealed class MainForm : Form
             _autoReplyBox.Text = await _database.GetSettingAsync("DefaultAutoReply") ?? "كمل";
         else
             SelectCurrentMonitor();
+
+        if (_onSettingsApplied is not null)
+        {
+            try
+            {
+                await _onSettingsApplied();
+            }
+            catch (Exception ex)
+            {
+                ExceptionLogService.Log(ex, "MainForm.RefreshSettingsRuntime");
+                AppendActivity("Settings were saved, but runtime notification settings could not be refreshed. Restart GPTDeskTop or reopen Settings from the tray menu.");
+            }
+        }
+
         AppendActivity("Global monitoring, rotation, notification or imported configuration changes loaded from SQLite.");
     }
 

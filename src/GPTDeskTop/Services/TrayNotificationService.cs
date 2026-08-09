@@ -36,7 +36,7 @@ public sealed class TrayNotificationService : IDisposable
 
     public async Task InitializeAsync() => await ReloadSettingsAsync();
 
-    private async Task ReloadSettingsAsync()
+    public async Task ReloadSettingsAsync()
     {
         _durationSeconds = await _database.GetIntSettingAsync("NotificationDurationSeconds", 8, 1, 60);
         _soundEnabled = !string.Equals(await _database.GetSettingAsync("NotificationSoundEnabled"), "0", StringComparison.Ordinal);
