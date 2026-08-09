@@ -7,6 +7,9 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GPTDeskTop.Build", "src\GPTDeskTop.Build\GPTDeskTop.Build.csproj", "{B0A2D2C9-2E1D-4A8E-99D3-184A3E357A21}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GPTDeskTop.Setup", "src\GPTDeskTop.Setup\GPTDeskTop.Setup.csproj", "{9E40B81C-B809-453D-B72A-4C17D878DB12}"
+	ProjectSection(ProjectDependencies) = postProject
+		{2C7C0A2D-9D1A-4F6E-8A11-635D3534FCA7} = {2C7C0A2D-9D1A-4F6E-8A11-635D3534FCA7}
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
