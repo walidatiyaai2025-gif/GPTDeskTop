@@ -1,3 +1,4 @@
+using System.Text.Json;
 using GPTDeskTop.Services.DevelopmentTaskEngine;
 
 namespace GPTDeskTop.RuntimeTests;
@@ -15,25 +16,27 @@ public sealed class DevelopmentTaskEngineTests
             var statePath = Path.Combine(root, "state.json");
             var messagesPath = Path.Combine(root, "task-messages.json");
             await File.WriteAllTextAsync(messagesPath, "{\"Messages\":[\"one\",\"two\"]}");
-            var deterministicCoolingWindow = TimeSpan.FromDays(1);
 
-            await using (var first = new DevelopmentTaskEngine(
-                workWindow: TimeSpan.FromMilliseconds(30),
-                coolingWindow: deterministicCoolingWindow,
-                statePath: statePath,
-                messagesPath: messagesPath))
+            var coolingStartedAt = DateTimeOffset.UtcNow;
+            var persisted = new DevelopmentTaskState
             {
-                await first.StartAsync("plan-1", "Plan One");
-                await Task.Delay(60);
-                await first.AdvanceAsync();
-                await WaitForAsync(() => first.State.Status == DevelopmentTaskEngineStatus.Cooling);
-                Assert.Equal(1, first.State.CurrentMessageIndex);
-                Assert.NotNull(first.State.CoolingStartedAt);
-            }
+                PlanId = "plan-1",
+                PlanTitle = "Plan One",
+                CurrentMessageIndex = 1,
+                CompletedMessages = 1,
+                TotalMessages = 2,
+                Status = DevelopmentTaskEngineStatus.Cooling,
+                CoolingStartedAt = coolingStartedAt,
+                LastCheckpointAt = coolingStartedAt,
+                Revision = 7
+            };
+            await File.WriteAllTextAsync(
+                statePath,
+                JsonSerializer.Serialize(persisted, new JsonSerializerOptions { WriteIndented = true }));
 
             await using var resumed = new DevelopmentTaskEngine(
                 workWindow: TimeSpan.FromSeconds(5),
-                coolingWindow: deterministicCoolingWindow,
+                coolingWindow: TimeSpan.FromDays(1),
                 statePath: statePath,
                 messagesPath: messagesPath);
 
@@ -41,23 +44,15 @@ public sealed class DevelopmentTaskEngineTests
 
             Assert.Equal(DevelopmentTaskEngineStatus.Cooling, resumed.State.Status);
             Assert.NotNull(resumed.State.CoolingStartedAt);
+            Assert.Equal(coolingStartedAt, resumed.State.CoolingStartedAt);
             Assert.Equal(1, resumed.State.CurrentMessageIndex);
+            Assert.Equal(1, resumed.State.CompletedMessages);
+            Assert.Equal(7, resumed.State.Revision);
         }
         finally
         {
             try { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
             catch { }
-        }
-    }
-
-    private static async Task WaitForAsync(Func<bool> predicate)
-    {
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(2);
-        while (!predicate())
-        {
-            if (DateTimeOffset.UtcNow >= deadline)
-                throw new TimeoutException("Timed out waiting for Cooling state.");
-            await Task.Delay(10);
         }
     }
 }
