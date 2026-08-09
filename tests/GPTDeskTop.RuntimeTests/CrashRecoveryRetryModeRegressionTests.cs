@@ -44,4 +44,23 @@ public sealed class CrashRecoveryRetryModeRegressionTests
         Assert.DoesNotContain("CloseAllMonitorTabsAsync", retryBlock, StringComparison.Ordinal);
         Assert.Contains("GetTabsAsync", retryBlock, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void RecoveryGateSerializesBeforePendingStateIsRead()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "CrashRecoveryService.cs");
+        var gateDeclaration = source.IndexOf("private static readonly SemaphoreSlim RecoveryGate", StringComparison.Ordinal);
+        var gateWait = source.IndexOf("await RecoveryGate.WaitAsync(cancellationToken)", StringComparison.Ordinal);
+        var coreCall = source.IndexOf("await RecoverCoreAsync(runtime, database, mode, cancellationToken)", gateWait, StringComparison.Ordinal);
+        var release = source.IndexOf("RecoveryGate.Release()", coreCall, StringComparison.Ordinal);
+        var coreMethod = source.IndexOf("private static async Task RecoverCoreAsync", release, StringComparison.Ordinal);
+        var pendingRead = source.IndexOf("GetSettingAsync(\"CrashRecoveryPending\"", coreMethod, StringComparison.Ordinal);
+
+        Assert.True(gateDeclaration >= 0);
+        Assert.True(gateWait > gateDeclaration);
+        Assert.True(coreCall > gateWait);
+        Assert.True(release > coreCall);
+        Assert.True(coreMethod > release);
+        Assert.True(pendingRead > coreMethod);
+    }
 }

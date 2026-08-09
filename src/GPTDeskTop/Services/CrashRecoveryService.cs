@@ -11,6 +11,8 @@ public enum CrashRecoveryMode
 
 public static class CrashRecoveryService
 {
+    private static readonly SemaphoreSlim RecoveryGate = new(1, 1);
+
     public static Task RecoverIfPendingAsync(
         ChromeDevToolsService chrome,
         ChatGptMonitorService monitorService,
@@ -53,6 +55,23 @@ public static class CrashRecoveryService
         ArgumentNullException.ThrowIfNull(runtime);
         ArgumentNullException.ThrowIfNull(database);
 
+        await RecoveryGate.WaitAsync(cancellationToken);
+        try
+        {
+            await RecoverCoreAsync(runtime, database, mode, cancellationToken);
+        }
+        finally
+        {
+            RecoveryGate.Release();
+        }
+    }
+
+    private static async Task RecoverCoreAsync(
+        ICrashRecoveryRuntime runtime,
+        LocalDatabase database,
+        CrashRecoveryMode mode,
+        CancellationToken cancellationToken)
+    {
         var pending = await database.GetSettingAsync("CrashRecoveryPending", cancellationToken);
         if (!string.Equals(pending, "1", StringComparison.Ordinal))
             return;
