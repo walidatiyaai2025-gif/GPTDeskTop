@@ -95,16 +95,9 @@ internal static class Program
                 }
             };
 
-            mainForm.FormClosed += (_, _) =>
-            {
-                try { CrashRecoveryStateService.MarkCleanShutdownAsync(database).GetAwaiter().GetResult(); }
-                catch (Exception ex) { ExceptionLogService.Log(ex, "Program.MarkCleanShutdown"); }
-                try { developmentRuntime?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
-                catch (Exception ex) { ExceptionLogService.Log(ex, "Program.DisposeDevelopmentRuntime"); }
-                developmentRuntime = null;
-            };
-
             Application.Run(mainForm);
+            Task.Run(() => FinalizeGracefulShutdownAsync(database, developmentRuntime)).GetAwaiter().GetResult();
+            developmentRuntime = null;
         }
         catch (Exception ex)
         {
@@ -127,6 +120,33 @@ internal static class Program
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
+        }
+    }
+
+    private static async Task FinalizeGracefulShutdownAsync(LocalDatabase database, DevelopmentTaskRuntimeBinding? developmentRuntime)
+    {
+        try
+        {
+            await CrashRecoveryStateService.MarkCleanShutdownAsync(database)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ExceptionLogService.Log(ex, "Program.MarkCleanShutdown");
+        }
+
+        if (developmentRuntime is null) return;
+
+        try
+        {
+            await developmentRuntime.DisposeAsync().AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ExceptionLogService.Log(ex, "Program.DisposeDevelopmentRuntime");
         }
     }
 

@@ -43,6 +43,8 @@ public sealed class MainForm : Form
     private ChromeTab? _selectedTab;
     private SavedMonitor? _selectedMonitor;
     private bool _chromeHidden;
+    private bool _shutdownRequested;
+    private bool _shutdownCompleted;
 
     public MainForm(ChromeDevToolsService chrome, ChatGptMonitorService monitor, LocalDatabase database)
     {
@@ -838,7 +840,7 @@ public sealed class MainForm : Form
 
     private void Ui(Action action)
     {
-        if (IsDisposed || Disposing) return;
+        if (_shutdownRequested || IsDisposed || Disposing) return;
         if (InvokeRequired) BeginInvoke(action); else action();
     }
 
@@ -850,13 +852,53 @@ public sealed class MainForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        if (_shutdownCompleted)
+        {
+            _toolTip.Dispose();
+            base.OnFormClosing(e);
+            return;
+        }
+
+        e.Cancel = true;
+        if (_shutdownRequested) return;
+
+        _shutdownRequested = true;
+        ControlBox = false;
+        Enabled = false;
+        UseWaitCursor = true;
+        Text = $"GPTDeskTop v{GetAppVersion()} - Closing...";
+        _ = CompleteShutdownAsync();
+    }
+
+    private async Task CompleteShutdownAsync()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         try
         {
-            if (_monitor.IsRunning) _monitor.StopAllAsync().GetAwaiter().GetResult();
-            _chrome.CloseAllMonitorTabsAsync().GetAwaiter().GetResult();
+            AppendActivity("Closing application: stopping monitor workers...");
+            if (_monitor.IsRunning)
+                await _monitor.StopAllAsync().WaitAsync(timeout.Token);
+
+            AppendActivity("Closing application: closing monitor Chrome tabs...");
+            await _chrome.CloseAllMonitorTabsAsync(timeout.Token);
         }
-        catch { }
-        _toolTip.Dispose();
-        base.OnFormClosing(e);
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            AppendActivity("Shutdown cleanup reached the 10-second safety timeout. Continuing application exit.");
+        }
+        catch (Exception ex)
+        {
+            ExceptionLogService.Log(ex, "MainForm.GracefulShutdown");
+            AppendActivity($"Shutdown cleanup warning: {ex.Message}");
+        }
+        finally
+        {
+            _shutdownCompleted = true;
+            if (!IsDisposed && IsHandleCreated)
+            {
+                try { BeginInvoke(new Action(Close)); }
+                catch (InvalidOperationException) { }
+            }
+        }
     }
 }
