@@ -1,0 +1,84 @@
+name: QA Crash Process Recovery
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  force-kill-relaunch:
+    name: Force-kill and relaunch GPTDeskTop
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore application
+        run: dotnet restore src/GPTDeskTop/GPTDeskTop.csproj
+
+      - name: Build application
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release --no-restore
+
+      - name: Force-kill then verify unclean relaunch state
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'src/GPTDeskTop/bin/Release/net8.0-windows/GPTDeskTop.exe').Path
+          $root = Join-Path $env:RUNNER_TEMP 'gptdesktop-crash-process-qa'
+          $db = Join-Path $root 'crash-process.db'
+          $armedPath = Join-Path $root 'armed.json'
+          $resultPath = Join-Path $root 'relaunch.json'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+
+          $arm = Start-Process -FilePath $exe -ArgumentList @('--qa-crash-probe-arm', $db, $armedPath) -PassThru
+          try {
+            $deadline = (Get-Date).AddSeconds(20)
+            while (-not (Test-Path $armedPath)) {
+              if ($arm.HasExited) {
+                $errorPath = "$armedPath.error.txt"
+                if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
+                throw "GPTDeskTop crash probe exited before arming. ExitCode=$($arm.ExitCode)"
+              }
+              if ((Get-Date) -ge $deadline) { throw 'Timed out waiting for GPTDeskTop crash probe to arm.' }
+              Start-Sleep -Milliseconds 100
+              $arm.Refresh()
+            }
+
+            $armed = Get-Content $armedPath -Raw | ConvertFrom-Json
+            if ($armed.WasUnclean -ne $false) { throw 'First startup was unexpectedly classified as unclean.' }
+            if ([int]$armed.CrashCount -ne 0) { throw "Expected CrashCount=0 before force kill, got $($armed.CrashCount)." }
+            if ($armed.LastShutdownClean -ne '0') { throw "Expected LastShutdownClean=0 while running, got '$($armed.LastShutdownClean)'." }
+            Write-Host "Armed GPTDeskTop PID $($arm.Id) with LastShutdownClean=0."
+
+            Stop-Process -Id $arm.Id -Force
+            Wait-Process -Id $arm.Id -ErrorAction SilentlyContinue
+            Write-Host 'GPTDeskTop was force-killed without clean-shutdown handling.'
+          }
+          finally {
+            if (-not $arm.HasExited) { Stop-Process -Id $arm.Id -Force -ErrorAction SilentlyContinue }
+          }
+
+          $verify = Start-Process -FilePath $exe -ArgumentList @('--qa-crash-probe-verify', $db, $resultPath) -PassThru -Wait
+          if ($verify.ExitCode -ne 0) {
+            $errorPath = "$resultPath.error.txt"
+            if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
+            throw "GPTDeskTop relaunch probe failed. ExitCode=$($verify.ExitCode)"
+          }
+          if (-not (Test-Path $resultPath)) { throw 'Relaunch probe did not create its result file.' }
+
+          $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+          if ($result.WasUnclean -ne $true) { throw 'Relaunch did not detect the force-killed previous process.' }
+          if ([int]$result.CrashCount -ne 1) { throw "Expected CrashCount=1 after force-kill relaunch, got $($result.CrashCount)." }
+          if ($result.CrashRecoveryPending -ne '1') { throw "Expected CrashRecoveryPending=1, got '$($result.CrashRecoveryPending)'." }
+          if ([string]::IsNullOrWhiteSpace([string]$result.RecoveryId)) { throw 'RecoveryId was not created after unclean startup.' }
+          if ($result.LastShutdownClean -ne '0') { throw "Expected relaunched process to arm LastShutdownClean=0, got '$($result.LastShutdownClean)'." }
+
+          Write-Host "Verified force-kill recovery: CrashCount=$($result.CrashCount), Pending=$($result.CrashRecoveryPending), RecoveryId=$($result.RecoveryId)."
