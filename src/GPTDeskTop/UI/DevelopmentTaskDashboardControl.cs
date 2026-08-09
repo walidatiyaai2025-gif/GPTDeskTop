@@ -67,9 +67,9 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
     private void WireEvents()
     {
         _start.Click += async (_, _) => await RunAsync(() => _binding.StartAsync("default-development-plan", "Development Plan"));
-        _pause.Click += async (_, _) => await RunAsync(_binding.PauseAsync);
-        _resume.Click += async (_, _) => await RunAsync(_binding.ResumeAsync);
-        _stop.Click += async (_, _) => await RunAsync(_binding.StopAsync);
+        _pause.Click += async (_, _) => await RunAsync(() => _binding.PauseAsync());
+        _resume.Click += async (_, _) => await RunAsync(() => _binding.ResumeAsync());
+        _stop.Click += async (_, _) => await RunAsync(() => _binding.StopAsync());
         _messagesButton.Click += (_, _) => OpenMessageCatalog();
         _settingsButton.Click += (_, _) => OpenScheduleSettings();
         _binding.Engine.StateChanged += OnStateChanged;
