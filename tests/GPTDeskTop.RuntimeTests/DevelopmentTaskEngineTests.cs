@@ -15,10 +15,11 @@ public sealed class DevelopmentTaskEngineTests
             var statePath = Path.Combine(root, "state.json");
             var messagesPath = Path.Combine(root, "task-messages.json");
             await File.WriteAllTextAsync(messagesPath, "{\"Messages\":[\"one\",\"two\"]}");
+            var deterministicCoolingWindow = TimeSpan.FromDays(1);
 
             await using (var first = new DevelopmentTaskEngine(
                 workWindow: TimeSpan.FromMilliseconds(30),
-                coolingWindow: TimeSpan.FromSeconds(5),
+                coolingWindow: deterministicCoolingWindow,
                 statePath: statePath,
                 messagesPath: messagesPath))
             {
@@ -32,7 +33,7 @@ public sealed class DevelopmentTaskEngineTests
 
             await using var resumed = new DevelopmentTaskEngine(
                 workWindow: TimeSpan.FromSeconds(5),
-                coolingWindow: TimeSpan.FromSeconds(5),
+                coolingWindow: deterministicCoolingWindow,
                 statePath: statePath,
                 messagesPath: messagesPath);
 
