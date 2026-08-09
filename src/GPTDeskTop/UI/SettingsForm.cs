@@ -17,6 +17,7 @@ public sealed class SettingsForm : Form
     private readonly CheckBox _soundEnabled = new() { Text = "Play sound with balloon notifications", AutoSize = true };
     private readonly ComboBox _soundType = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
     private readonly Button _exportBackupButton = new() { Text = "&Export Configuration Backup", AutoSize = true };
+    private readonly Button _importBackupButton = new() { Text = "&Import Configuration Backup", AutoSize = true };
     private readonly Button _saveButton = new() { Text = "Save Settings", AutoSize = true };
     private readonly Button _cancelButton = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
     private readonly TabControl _tabs = new TabControl { Dock = DockStyle.Fill };
@@ -36,7 +37,7 @@ public sealed class SettingsForm : Form
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
         Text = "GPTDeskTop Settings";
-        StartPosition = FormStartPosition.CenterParent;
+        StartPosition = FormStartParent;
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -52,6 +53,7 @@ public sealed class SettingsForm : Form
         FluentTheme.Apply(this);
         FluentTheme.StyleButton(_saveButton, primary: true);
         FluentTheme.StyleButton(_exportBackupButton, primary: true);
+        FluentTheme.StyleButton(_importBackupButton);
         AcceptButton = _saveButton;
         CancelButton = _cancelButton;
     }
@@ -81,7 +83,7 @@ public sealed class SettingsForm : Form
             Font = new Font("Segoe UI Variable Display", 16F, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft
         }, 0, 0);
-        header.Controls.Add(FluentTheme.CreateMutedLabel("Configure monitoring defaults, continuity/recovery, notifications and portable configuration backup."), 0, 1);
+        header.Controls.Add(FluentTheme.CreateMutedLabel("Configure monitoring defaults, continuity/recovery, notifications and portable configuration backup/restore."), 0, 1);
 
         _tabs.TabPages.Add(BuildMonitoringTab());
         _tabs.TabPages.Add(BuildRotationTab());
@@ -170,13 +172,13 @@ public sealed class SettingsForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         layout.Controls.Add(FluentTheme.CreateSectionTitle("Portable configuration backup"), 0, 0);
         layout.Controls.Add(FluentTheme.CreateMutedLabel(
-            "Export a versioned JSON snapshot of DB-backed operator settings and saved monitor configuration for migration or safekeeping."), 0, 1);
+            "Export a versioned JSON snapshot for migration/safekeeping, or validate and merge a schema 1.0 backup back into this installation."), 0, 1);
 
         layout.Controls.Add(new Label
         {
@@ -200,7 +202,7 @@ public sealed class SettingsForm : Form
 
         layout.Controls.Add(new Label
         {
-            Text = "Sensitive data notice: unlike Support Bundle, this backup can contain conversation URLs and message templates. Store it securely.",
+            Text = "Sensitive data notice: unlike Support Bundle, this backup can contain conversation URLs and message templates. Import changes persistent configuration and requires a GPTDeskTop restart before the imported configuration is fully active.",
             Dock = DockStyle.Fill,
             ForeColor = FluentTheme.Warning,
             Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold),
@@ -217,6 +219,7 @@ public sealed class SettingsForm : Form
             Padding = new Padding(0, 8, 0, 0)
         };
         actionHost.Controls.Add(_exportBackupButton);
+        actionHost.Controls.Add(_importBackupButton);
         layout.Controls.Add(actionHost, 0, 5);
 
         page.Controls.Add(layout);
@@ -236,13 +239,14 @@ public sealed class SettingsForm : Form
         };
         _saveButton.Click += async (_, _) => await SaveSettingsAsync();
         _exportBackupButton.Click += async (_, _) => await ExportConfigurationBackupAsync();
+        _importBackupButton.Click += async (_, _) => await ImportConfigurationBackupAsync();
         _soundEnabled.CheckedChanged += (_, _) => UpdateDependentControls();
     }
 
     private void ConfigureAccessibility()
     {
         AccessibleName = "GPTDeskTop application settings";
-        AccessibleDescription = "Configure monitoring defaults, conversation continuity, recovery, notifications and portable configuration backup.";
+        AccessibleDescription = "Configure monitoring defaults, conversation continuity, recovery, notifications and portable configuration backup/restore.";
 
         ConfigureAccessible(_defaultReply, "Default auto reply", "Message sent after a completed assistant response.", 0);
         ConfigureAccessible(_defaultDelay, "Default reply delay", "Seconds to wait before sending the automatic reply.", 1);
@@ -260,6 +264,9 @@ public sealed class SettingsForm : Form
         _exportBackupButton.AccessibleName = "Export portable configuration backup";
         _exportBackupButton.AccessibleDescription = "Create a sensitive versioned JSON backup of application settings and saved monitor configuration.";
         _exportBackupButton.TabIndex = 0;
+        _importBackupButton.AccessibleName = "Import portable configuration backup";
+        _importBackupButton.AccessibleDescription = "Validate and transactionally merge a schema 1.0 configuration backup without importing runtime or history state.";
+        _importBackupButton.TabIndex = 1;
         _tabs.AccessibleName = "Settings categories";
         _tabs.TabIndex = 0;
         _statusLabel.AccessibleName = "Settings operation status";
@@ -287,6 +294,7 @@ public sealed class SettingsForm : Form
         _tabs.Enabled = !busy;
         _saveButton.Enabled = !busy;
         _exportBackupButton.Enabled = !busy;
+        _importBackupButton.Enabled = !busy;
         UseWaitCursor = busy;
         _statusLabel.Text = status;
         _statusLabel.ForeColor = busy ? FluentTheme.Accent : FluentTheme.Muted;
@@ -443,6 +451,97 @@ public sealed class SettingsForm : Form
                 this,
                 $"GPTDeskTop could not export the configuration backup.\n\n{ex.Message}",
                 "Configuration Backup Error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+    }
+
+    private async Task ImportConfigurationBackupAsync()
+    {
+        if (_busy) return;
+
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Import GPTDeskTop Configuration Backup",
+            Filter = "GPTDeskTop configuration backup (*.json)|*.json|JSON files (*.json)|*.json|All files (*.*)|*.*",
+            DefaultExt = "json",
+            CheckFileExists = true,
+            CheckPathExists = true,
+            Multiselect = false
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            _statusLabel.Text = "Configuration backup import canceled.";
+            return;
+        }
+
+        var service = new ConfigurationBackupImportService(_database);
+        try
+        {
+            SetBusy(true, "Validating configuration backup…");
+            var plan = await service.LoadPlanAsync(dialog.FileName);
+            SetBusy(false, $"Validated schema {plan.SchemaVersion}: {plan.Settings.Count} settings, {plan.Monitors.Count} monitors.");
+
+            var confirmation = MessageBox.Show(
+                this,
+                $"The backup is valid (schema {plan.SchemaVersion}).\n\n" +
+                $"Settings to apply: {plan.Settings.Count}\nMonitors to merge: {plan.Monitors.Count}\n\n" +
+                "Exact conversation-URL matches update only operator configuration while preserving the local monitor ID, runtime Tab ID, rotation counter and history. " +
+                "Missing monitors are added without a runtime Tab ID. Local monitors absent from the backup are not deleted.\n\n" +
+                "This changes persistent configuration. Restart GPTDeskTop after import before relying on the imported configuration.\n\nContinue?",
+                "Confirm Configuration Import",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+
+            if (confirmation != DialogResult.Yes)
+            {
+                _statusLabel.Text = "Configuration backup import canceled before changes were applied.";
+                return;
+            }
+
+            SetBusy(true, "Importing configuration backup transactionally…");
+            var result = await service.ApplyAsync(plan);
+            SetBusy(false, $"Imported: {result.SettingsApplied} settings, {result.MonitorsUpdated} updated monitors, {result.MonitorsInserted} new monitors.");
+
+            MessageBox.Show(
+                this,
+                $"Configuration import completed successfully.\n\n" +
+                $"Settings applied: {result.SettingsApplied}\n" +
+                $"Existing monitors updated: {result.MonitorsUpdated}\n" +
+                $"New monitors added: {result.MonitorsInserted}\n\n" +
+                "Stored History, runtime IDs, rotation counters and crash/recovery state were not imported.\n\n" +
+                "Restart GPTDeskTop before relying on the imported settings and monitor definitions.",
+                "Configuration Import Complete",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+        catch (OperationCanceledException)
+        {
+            SetBusy(false, "Configuration backup import canceled.");
+        }
+        catch (InvalidDataException ex)
+        {
+            SetBusy(false, "Configuration backup validation failed; no changes were applied.");
+            MessageBox.Show(
+                this,
+                $"GPTDeskTop rejected this configuration backup.\n\n{ex.Message}",
+                "Configuration Backup Validation Failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+        catch (Exception ex)
+        {
+            await ExceptionLogService.LogAsync(ex, "SettingsForm.ImportConfigurationBackup");
+            SetBusy(false, "Configuration backup import failed and was rolled back.");
+            MessageBox.Show(
+                this,
+                $"GPTDeskTop could not import the configuration backup. The database transaction was rolled back.\n\n{ex.Message}",
+                "Configuration Import Error",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }
