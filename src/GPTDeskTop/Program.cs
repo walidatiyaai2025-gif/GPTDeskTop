@@ -98,6 +98,32 @@ internal static class Program
             mainForm.Controls.Add(developmentDashboard);
             mainForm.Controls.SetChildIndex(developmentDashboard, 0);
 
+            var historyWorkspaceExpanded = string.Equals(
+                database.GetSettingAsync("Ui.HistoryWorkspace.Expanded").GetAwaiter().GetResult(),
+                "1",
+                StringComparison.Ordinal);
+            var historyWorkspace = new HistoryWorkspaceControl(database)
+            {
+                Dock = DockStyle.Bottom,
+                TabStop = false,
+                IsExpanded = historyWorkspaceExpanded
+            };
+            historyWorkspace.ExpandedChanged += async (_, _) =>
+            {
+                try
+                {
+                    await database.SetSettingAsync(
+                        "Ui.HistoryWorkspace.Expanded",
+                        historyWorkspace.IsExpanded ? "1" : "0");
+                }
+                catch (Exception ex)
+                {
+                    await ExceptionLogService.LogAsync(ex, "Program.PersistHistoryWorkspaceState");
+                }
+            };
+            mainForm.Controls.Add(historyWorkspace);
+            mainForm.Controls.SetChildIndex(historyWorkspace, 0);
+
             using var metrics = new HomeMetricsService(mainForm, database, monitor);
 
             mainForm.Shown += async (_, _) =>
