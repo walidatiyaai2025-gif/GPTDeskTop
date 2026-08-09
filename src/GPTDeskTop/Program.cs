@@ -72,10 +72,28 @@ internal static class Program
             var targetFactory = new DevelopmentTaskMonitorTargetFactory(database, resolver, chrome);
             var developmentEngine = new DevelopmentTaskEngine();
             developmentRuntime = new DevelopmentTaskRuntimeBinding(developmentEngine, targetFactory);
+            var developmentDashboardExpanded = !string.Equals(
+                database.GetSettingAsync("Ui.DevelopmentDashboard.Expanded").GetAwaiter().GetResult(),
+                "0",
+                StringComparison.Ordinal);
             var developmentDashboard = new DevelopmentTaskDashboardControl(developmentRuntime)
             {
                 Dock = DockStyle.Top,
-                TabStop = false
+                TabStop = false,
+                IsExpanded = developmentDashboardExpanded
+            };
+            developmentDashboard.ExpandedChanged += async (_, _) =>
+            {
+                try
+                {
+                    await database.SetSettingAsync(
+                        "Ui.DevelopmentDashboard.Expanded",
+                        developmentDashboard.IsExpanded ? "1" : "0");
+                }
+                catch (Exception ex)
+                {
+                    await ExceptionLogService.LogAsync(ex, "Program.PersistDevelopmentDashboardState");
+                }
             };
             mainForm.Controls.Add(developmentDashboard);
             mainForm.Controls.SetChildIndex(developmentDashboard, 0);
