@@ -57,8 +57,8 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
         _add.Click += (_, _) => AddMessage();
         _update.Click += (_, _) => UpdateMessage();
         _remove.Click += (_, _) => RemoveMessage();
-        _up.Click += (_, _) => Move(-1);
-        _down.Click += (_, _) => Move(1);
+        _up.Click += (_, _) => MoveMessage(-1);
+        _down.Click += (_, _) => MoveMessage(1);
         _save.Click += (_, _) => SaveCatalog();
     }
 
@@ -139,7 +139,7 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
         RefreshList(Math.Max(0, index - 1));
     }
 
-    private void Move(int delta)
+    private void MoveMessage(int delta)
     {
         var index = _messages.SelectedIndex;
         var target = index + delta;
