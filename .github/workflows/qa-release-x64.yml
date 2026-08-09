@@ -1,0 +1,70 @@
+name: QA Release x64
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  release-x64:
+    name: Release | x64 solution build
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore solution
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Validate Release x64 solution configuration
+        shell: pwsh
+        run: |
+          $solution = Get-Content GPTDeskTop.sln -Raw
+          if ($solution -notmatch 'Release\|x64 = Release\|x64') {
+            throw 'GPTDeskTop.sln does not define Release|x64.'
+          }
+
+          $projectIds = @(
+            '{2C7C0A2D-9D1A-4F6E-8A11-635D3534FCA7}',
+            '{B0A2D2C9-2E1D-4A8E-99D3-184A3E357A21}',
+            '{9E40B81C-B809-453D-B72A-4C17D878DB12}'
+          )
+
+          foreach ($projectId in $projectIds) {
+            $escaped = [regex]::Escape($projectId)
+            if ($solution -notmatch "$escaped\.Release\|x64\.Build\.0 = Release\|Any CPU") {
+              throw "Project $projectId is not included in the Release|x64 solution build."
+            }
+          }
+
+      - name: Build solution Release x64
+        run: dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
+
+      - name: Verify application output
+        shell: pwsh
+        run: |
+          $app = Get-ChildItem src/GPTDeskTop/bin/Release -Recurse -Filter GPTDeskTop.exe | Select-Object -First 1
+          if ($null -eq $app) { throw 'Release|x64 build did not produce GPTDeskTop.exe.' }
+          Write-Host "Verified application output: $($app.FullName)"
+
+      - name: Verify setup output
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem src/GPTDeskTop.Setup/bin/Release -Recurse -Filter *.exe | Select-Object -First 1
+          if ($null -eq $setup) { throw 'Release|x64 build did not produce a setup executable.' }
+          Write-Host "Verified setup output: $($setup.FullName)"
+
+      - name: Verify helper output
+        shell: pwsh
+        run: |
+          $helper = Get-ChildItem src/GPTDeskTop.Build/bin/Release -Recurse -Filter *.exe | Select-Object -First 1
+          if ($null -eq $helper) { throw 'Release|x64 build did not produce the build helper executable.' }
+          Write-Host "Verified helper output: $($helper.FullName)"
