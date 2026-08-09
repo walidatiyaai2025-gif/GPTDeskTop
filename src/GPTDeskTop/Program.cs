@@ -74,7 +74,6 @@ internal static class Program
             developmentRuntime = new DevelopmentTaskRuntimeBinding(developmentEngine, targetFactory);
             var developmentDashboard = new DevelopmentTaskDashboardControl(developmentRuntime)
             {
-                Height = 190,
                 Dock = DockStyle.Top,
                 TabStop = false
             };
