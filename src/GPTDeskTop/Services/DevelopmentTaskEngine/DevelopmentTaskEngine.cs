@@ -9,18 +9,23 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
     private readonly string _statePath;
     private readonly string _messagesPath;
     private readonly DevelopmentTaskScheduleSettingsStore _scheduleStore;
+    private readonly bool _workWindowOverridden;
+    private readonly bool _coolingWindowOverridden;
     private TimeSpan _workWindow;
     private TimeSpan _coolingWindow;
     private CancellationTokenSource? _cts;
     private DevelopmentTaskState _state = new();
     private int? _lastEmittedMessageIndex;
     private bool _messageDeliveredThisWindow;
+    private int _disposeState;
 
     public DevelopmentTaskEngine(TimeSpan? workWindow = null, TimeSpan? coolingWindow = null, string? statePath = null, string? messagesPath = null, string? scheduleSettingsPath = null)
     {
         _statePath = statePath ?? Path.Combine(AppContext.BaseDirectory, "data", "development-task-state.json");
         _messagesPath = messagesPath ?? Path.Combine(AppContext.BaseDirectory, "data", "development-task-messages.json");
         _scheduleStore = new DevelopmentTaskScheduleSettingsStore(scheduleSettingsPath);
+        _workWindowOverridden = workWindow.HasValue;
+        _coolingWindowOverridden = coolingWindow.HasValue;
         var configured = _scheduleStore.Load();
         _workWindow = workWindow ?? TimeSpan.FromMinutes(configured.WorkMinutes);
         _coolingWindow = coolingWindow ?? TimeSpan.FromMinutes(configured.CoolingMinutes);
@@ -185,7 +190,6 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
             _state.LastCheckpointAt = DateTimeOffset.UtcNow;
             _state.Revision++;
             _lastEmittedMessageIndex = null;
-            _messageDeliveredThisWindow = true;
             await SaveStateAsync(cancellationToken).ConfigureAwait(false);
             PublishState();
         }
@@ -195,8 +199,8 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
     private void ReloadScheduleSettings()
     {
         var settings = _scheduleStore.Load();
-        _workWindow = TimeSpan.FromMinutes(settings.WorkMinutes);
-        _coolingWindow = TimeSpan.FromMinutes(settings.CoolingMinutes);
+        if (!_workWindowOverridden) _workWindow = TimeSpan.FromMinutes(settings.WorkMinutes);
+        if (!_coolingWindowOverridden) _coolingWindow = TimeSpan.FromMinutes(settings.CoolingMinutes);
     }
 
     private void RestartWorker(CancellationToken cancellationToken)
@@ -336,13 +340,17 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
 
     private void PublishState() => StateChanged?.Invoke(this, _state);
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        _cts?.Cancel();
-        _cts?.Dispose();
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0) return ValueTask.CompletedTask;
+
+        var cts = Interlocked.Exchange(ref _cts, null);
+        try { cts?.Cancel(); }
+        catch (ObjectDisposedException) { }
+        cts?.Dispose();
         _gate.Dispose();
         _stateFileGate.Dispose();
-        await Task.CompletedTask;
+        return ValueTask.CompletedTask;
     }
 
     private sealed class MessageDocument { public List<string> Messages { get; set; } = []; }
