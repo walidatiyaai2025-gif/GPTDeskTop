@@ -8,9 +8,10 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 - **Browser:** dedicated Chrome profile controlled through Chrome DevTools Protocol.
 - **Saved Monitors:** independent Auto Reply, Reply Delay, Monitor Timer and Enabled state per tab.
 - **Runtime:** one cancellable worker per Monitor ID.
-- **Development Task Engine:** one cancellable worker per engine instance; state and message index persist across restart; Cooling state resumes without creating a duplicate worker.
+- **Development Task Engine:** one cancellable worker per engine instance; state and message index persist across restart; Cooling state resumes without creating a duplicate worker. Worker cancellation is awaited before restart, stop or disposal so runtime files/resources cannot outlive the owning engine.
+- **Development Message Hot Reload:** the message catalog is read with Windows-safe read/write/delete sharing and short retry on transient I/O/JSON replacement windows, allowing atomic catalog edits during Cooling without restarting the engine.
 - **Persistence:** SQLite `appdata.db` with monitor configuration, defaults, history, crash counters and exception records; development-task state uses a dedicated JSON state file.
-- **Transient CDP Recovery:** `Promise was collected` from `Runtime.evaluate` is retried internally up to three times before being treated as a real monitor failure.
+- **Transient CDP Recovery:** `Promise was collected` from `Runtime.evaluate` is retried internally up to three times before being treated as a real monitor failure; transient monitor-boundary retries do not create repeated crash diagnostics.
 - **Exception Diagnostics:** unhandled UI/domain/task exceptions and monitor exceptions are written to `MessageLogs` and `logs/exceptions-YYYYMMDD.log`.
 - **No-response Watchdog:** global `NoResponseRefreshSeconds`, default `180` seconds; only the affected tab is refreshed when no new assistant response arrives within the configured period.
 - **Crash Detection:** `LastShutdownClean` is set to `0` for the running process and changed to `1` only after a graceful MainForm close. A subsequent startup seeing `0` increments `CrashCount` and schedules full session recovery.
@@ -21,7 +22,7 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 - **Conversation Context Rotation:** when ChatGPT reports the conversation/context limit, create a new chat and verify the handoff before moving the Monitor ID. If the new composer is temporarily unavailable, retry with one new-tab-only reload; if delivery is still unverified, close only the unused new tab, preserve the old chat and leave the same limit response eligible for a later rotation retry.
 - **Chrome Lifecycle:** CDP-first minimize/hide/show behavior while workers continue; close monitor tabs on exit.
 - **UX:** Fluent/WinUI-inspired WinForms styling, right-click context menus, green/red runtime lamp, Crash Count card and Monitor Count card.
-- **Release pipeline:** application -> publish -> standalone setup, all SDK-style Visual Studio projects.
+- **Release pipeline:** application -> publish -> standalone setup, all SDK-style Visual Studio projects. Full solution builds suppress Setup/Build packaging side effects so the two orchestration projects cannot concurrently publish the same application payload.
 
 ## Task Tracking Table
 
@@ -54,10 +55,12 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 | NOT-001 | Configurable balloon duration and sound | UI / Backend | High | Done | Notification/Settings services |
 | DEV-001 | Prevent duplicate development-task workers; persist state and safely resume Working/Cooling after restart | Backend Engineer | High | Done | `DevelopmentTaskEngine.cs`, `DevelopmentTaskState.cs` |
 | DEV-002 | Add regression coverage for Cooling persistence/resume and worker lifecycle | QA / Backend | High | Done | `tests/GPTDeskTop.RuntimeTests/DevelopmentTaskEngineTests.cs` |
+| DEV-003 | Await worker shutdown before restart/stop/dispose and support concurrent atomic message-catalog hot reload | Backend / Runtime | High | Done | `DevelopmentTaskEngine.cs`, message reload tests |
 | CI-001 | Run runtime automation tests before application/setup/helper builds | DevOps / QA | High | Done | `.github/workflows/build.yml` |
+| CI-002 | Validate `Release | x64` solution builds without concurrent Setup/Build publish races | DevOps / Release | High | Done | `.github/workflows/qa-release-x64.yml`, Build/Setup projects |
 | REL-001 | Synchronize application, publish and setup metadata to `1.8.0` | Release Engineer | High | Done | `GPTDeskTop.csproj`, setup/build projects |
-| QA-001 | Build `Release | x64` in Visual Studio | QA Engineer | High | Not Started | Whole solution |
-| QA-002 | Reproduce `Promise was collected` and verify transient retry prevents repeated exception log entries | QA Engineer | High | Not Started | Chrome integration |
+| QA-001 | Build `Release | x64` in Visual Studio-compatible solution configuration and verify all three project outputs | QA Engineer | High | Automated | `qa-release-x64.yml`, whole solution |
+| QA-002 | Verify `Promise was collected` transient retry and confirm retry attempts do not create repeated crash diagnostics | QA Engineer | High | Automated | `ChromeTransientFailureRegressionTests.cs`, Chrome integration |
 | QA-003 | Force-kill GPTDeskTop, relaunch and verify Crash Count increments and saved tabs recover | QA Engineer | High | Not Started | Crash recovery |
 | QA-004 | Verify every recovered tab receives `كمل`/configured recovery message and enabled monitors restart | QA Engineer | High | Not Started | Crash recovery |
 | QA-005 | Run monitor hidden for 10+ minutes and verify CDP polling continues | QA Engineer | High | Not Started | Chrome / Runtime |
@@ -67,7 +70,7 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 | QA-009 | Lock conversation-limit rotation retry behavior, new-chat-only recovery reload, and deferred recovery send semantics with regression tests | QA / Backend | High | Automated | `ChatGptRotationHandoffRegressionTests.cs` |
 
 ## CI Validation
-The latest GitHub Actions run for commit `a9e53156` completed successfully. Restore, runtime-test restore, the expanded runtime automation suite (including conversation-rotation regression coverage), one-message-per-work-window lifecycle checks, development lifecycle/delivery checks, multi-monitor checks, saved-monitor rebinding, CDP reliability checks, crash-recovery checks, application build, setup build, helper build, and rotation-safety invariants all passed.
+Commit `bfa3c2de` is the current validated runtime baseline. The main `Build GPTDeskTop` workflow completed successfully with the full runtime automation suite, lifecycle/delivery/multi-monitor checks, saved-monitor rebinding, CDP reliability, crash-recovery checks, application build, setup build, helper build and rotation-safety invariants. The dedicated `QA Release x64` workflow also completed successfully on the same commit, and the dedicated Development Message Reload, Development Delivery Receipts and Development Task Recovery workflows are green.
 
 ## Acceptance Criteria
 - Transient `Promise was collected` errors are retried automatically and do not flood the exception history.
@@ -82,8 +85,11 @@ The latest GitHub Actions run for commit `a9e53156` completed successfully. Rest
 - Home displays persistent Crash Count and live/total Monitor Count cards.
 - Development task engine never starts a second uncancellable worker from `AdvanceAsync`.
 - Development task engine persists CurrentMessageIndex and Cooling state and resumes safely after process restart.
+- Development task workers are fully terminated before restart, stop or disposal completes.
+- The development message catalog can be atomically edited during Cooling without Windows file-lock failures and the next work window sees the updated catalog.
 - A conversation-limit rotation closes the old chat only after the handoff is verified in the new chat.
 - A temporary new-chat composer failure never permanently consumes the conversation-limit response; the rotation remains eligible for a later retry.
 - New-chat handoff recovery may reload the newly-created tab once, while ordinary Auto Reply delivery never uses that recovery reload path.
+- `Release | x64` builds all three solution projects without Setup/Build launching concurrent publishes against the same application output.
 - Application, publish helper and standalone Setup metadata report the same release version `1.8.0`.
 - `GPTDeskTop.sln` remains composed of exactly three supported SDK-style projects.
