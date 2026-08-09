@@ -917,10 +917,18 @@ public sealed class MainForm : Form
             return;
         }
         if (!MonitorSettingsForm.Edit(this, _selectedMonitor)) return;
-        await _database.SaveMonitorAsync(_selectedMonitor);
         var id = _selectedMonitor.Id;
+        var updated = await _database.UpdateMonitorConfigurationAsync(_selectedMonitor);
+        if (!updated)
+        {
+            AppendActivity($"Monitor #{id}: settings were not saved because the monitor no longer exists.");
+            _selectedMonitor = null;
+            await RefreshMonitorsAsync();
+            return;
+        }
         await RefreshMonitorsAsync();
         SelectMonitorRow(id);
+        AppendActivity($"Monitor #{id}: operator settings saved without changing its runtime conversation binding.");
     }
 
     private async Task DeleteSelectedMonitorAsync()

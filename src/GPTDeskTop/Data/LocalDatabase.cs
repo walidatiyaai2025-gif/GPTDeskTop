@@ -125,6 +125,52 @@ public sealed class LocalDatabase
         monitor.Id = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)); monitor.UpdatedAt = now.ToLocalTime(); if (monitor.CreatedAt == default) monitor.CreatedAt = now.ToLocalTime(); return monitor.Id;
     }
 
+    public async Task<bool> UpdateMonitorConfigurationAsync(
+        SavedMonitor monitor,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(monitor);
+        if (monitor.Id <= 0)
+            throw new InvalidOperationException("Monitor configuration can only be updated after the monitor is saved.");
+
+        var now = DateTime.UtcNow;
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE SavedMonitors SET
+                AutoReply=$autoReply,
+                ReplyDelaySeconds=$replyDelay,
+                TimerSeconds=$timer,
+                Enabled=$enabled,
+                ConversationRotationEnabled=$rotationEnabled,
+                NewChatStartMessage=$message,
+                NewChatDelaySeconds=$newChatDelay,
+                RotationCooldownSeconds=$cooldown,
+                MaxConversationRotations=$maxRotations,
+                ModelRoutingEnabled=$modelRouting,
+                PreferredModel=$preferredModel,
+                FallbackModel=$fallbackModel,
+                UpdatedAt=$updatedAt
+            WHERE Id=$id;
+            """;
+        command.Parameters.AddWithValue("$id", monitor.Id);
+        command.Parameters.AddWithValue("$autoReply", monitor.AutoReply ?? string.Empty);
+        command.Parameters.AddWithValue("$replyDelay", Math.Clamp(monitor.ReplyDelaySeconds, 0, 300));
+        command.Parameters.AddWithValue("$timer", Math.Clamp(monitor.TimerSeconds, 1, 60));
+        command.Parameters.AddWithValue("$enabled", monitor.Enabled ? 1 : 0);
+        command.Parameters.AddWithValue("$rotationEnabled", monitor.ConversationRotationEnabled ? 1 : 0);
+        command.Parameters.AddWithValue("$message", monitor.NewChatStartMessage ?? string.Empty);
+        command.Parameters.AddWithValue("$newChatDelay", Math.Clamp(monitor.NewChatDelaySeconds, 0, 600));
+        command.Parameters.AddWithValue("$cooldown", Math.Clamp(monitor.RotationCooldownSeconds, 0, 3600));
+        command.Parameters.AddWithValue("$maxRotations", Math.Clamp(monitor.MaxConversationRotations, 0, 1000));
+        command.Parameters.AddWithValue("$modelRouting", monitor.ModelRoutingEnabled ? 1 : 0);
+        command.Parameters.AddWithValue("$preferredModel", string.IsNullOrWhiteSpace(monitor.PreferredModel) ? "Auto" : monitor.PreferredModel);
+        command.Parameters.AddWithValue("$fallbackModel", string.IsNullOrWhiteSpace(monitor.FallbackModel) ? "Auto" : monitor.FallbackModel);
+        command.Parameters.AddWithValue("$updatedAt", now.ToString("O"));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
     public async Task<bool> UpdateMonitorRuntimeTargetIfConversationMatchesAsync(
         long monitorId,
         string expectedConversationUrl,
