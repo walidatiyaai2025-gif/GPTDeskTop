@@ -246,10 +246,8 @@ public sealed class ConfigurationBackupImportService
                 throw new InvalidDataException($"Monitor title '{title[..Math.Min(title.Length, 80)]}' exceeds 1000 characters.");
             if (string.IsNullOrWhiteSpace(url) || url.Length > 4096)
                 throw new InvalidDataException($"Monitor '{title}' has an invalid conversation URL length.");
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
-                || !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
-                || !RuntimeHealthPresentation.IsChatGptTabUrl(url))
-                throw new InvalidDataException($"Monitor '{title}' must use an absolute HTTPS ChatGPT conversation URL.");
+            if (!RuntimeHealthPresentation.IsChatGptConversationUrl(url))
+                throw new InvalidDataException($"Monitor '{title}' must use an absolute HTTPS ChatGPT conversation URL with a stable /c/{{conversation-id}} identity.");
             if (!urls.Add(url))
                 throw new InvalidDataException($"Conversation URL '{url}' appears more than once in the configuration backup.");
             if (string.IsNullOrWhiteSpace(autoReply) || autoReply.Length > MaxMessageChars)

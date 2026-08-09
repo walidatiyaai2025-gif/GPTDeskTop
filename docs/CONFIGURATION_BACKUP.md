@@ -50,7 +50,9 @@ The Settings dialog uses its existing busy guard while export is running, so Sav
 
 ## Restore / import
 
-Open **Settings > Backup & Portability** and choose **Import Configuration Backup**. GPTDeskTop first reads and validates the selected file without changing the database. The import accepts only schema **1.0** and uses strict JSON parsing: unknown top-level fields, unknown/duplicate setting keys, invalid setting ranges, invalid monitor values, duplicate monitor URLs inside the backup, and non-HTTPS/non-ChatGPT monitor URLs are rejected before mutation.
+Open **Settings > Backup & Portability** and choose **Import Configuration Backup**. GPTDeskTop first reads and validates the selected file without changing the database. The import accepts only schema **1.0** and uses strict JSON parsing: unknown top-level fields, unknown/duplicate setting keys, invalid setting ranges, invalid monitor values, duplicate monitor URLs inside the backup, and invalid monitor conversation identities are rejected before mutation.
+
+A monitor URL must be an absolute HTTPS URL on a supported ChatGPT host and contain a real `/c/{conversation-id}` path segment. ChatGPT Home/New Chat pages, `/c/` without an ID, share-only URLs, non-HTTPS URLs, lookalike hosts and non-ChatGPT pages are not valid persisted monitor identities. Nested conversation paths such as `/g/{gpt-id}/c/{conversation-id}` and legacy `chat.openai.com/c/{conversation-id}` remain supported.
 
 After validation, the operator receives a summary of how many settings and monitors are present and must explicitly confirm the import. **No** is the default confirmation choice.
 

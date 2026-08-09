@@ -85,6 +85,24 @@ public static class RuntimeHealthPresentation
                || string.Equals(host, "chat.openai.com", StringComparison.OrdinalIgnoreCase);
     }
 
+    public static bool IsChatGptConversationUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return false;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!IsChatGptTabUrl(url)) return false;
+
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var index = 0; index < segments.Length - 1; index++)
+        {
+            if (!string.Equals(segments[index], "c", StringComparison.OrdinalIgnoreCase)) continue;
+            var conversationId = Uri.UnescapeDataString(segments[index + 1]).Trim();
+            if (!string.IsNullOrWhiteSpace(conversationId)) return true;
+        }
+
+        return false;
+    }
+
     private static string? NormalizeError(string? error)
         => string.IsNullOrWhiteSpace(error) ? null : error.Trim();
 }

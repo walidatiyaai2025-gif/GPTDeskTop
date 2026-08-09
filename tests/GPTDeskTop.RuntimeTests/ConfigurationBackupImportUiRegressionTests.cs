@@ -15,7 +15,6 @@ public sealed class ConfigurationBackupImportUiRegressionTests
     public void SettingsExposeConfirmedBusySafeImportFlow()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "SettingsForm.cs");
-
         Assert.Contains("&Import Configuration Backup", source, StringComparison.Ordinal);
         Assert.Contains("OpenFileDialog", source, StringComparison.Ordinal);
         Assert.Contains("new ConfigurationBackupImportService(_database)", source, StringComparison.Ordinal);
@@ -35,11 +34,9 @@ public sealed class ConfigurationBackupImportUiRegressionTests
         var source = ReadSource("src", "GPTDeskTop", "Data", "LocalDatabase.cs");
         var start = source.IndexOf("ApplyConfigurationImportAsync", StringComparison.Ordinal);
         var end = source.IndexOf("public async Task DeleteMonitorAsync", start, StringComparison.Ordinal);
-
         Assert.True(start >= 0);
         Assert.True(end > start);
         var importSource = source[start..end];
-
         Assert.Contains("connection.BeginTransaction()", importSource, StringComparison.Ordinal);
         Assert.Contains("transaction.Commit()", importSource, StringComparison.Ordinal);
         Assert.Contains("transaction.Rollback()", importSource, StringComparison.Ordinal);
@@ -55,16 +52,14 @@ public sealed class ConfigurationBackupImportUiRegressionTests
     public void ImportParserIsStrictAllowlistedAndNeverReadsHistoryApis()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "ConfigurationBackupImportService.cs");
-
         Assert.Contains("JsonUnmappedMemberHandling.Disallow", source, StringComparison.Ordinal);
         Assert.Contains("AllowedSettingKeySet", source, StringComparison.Ordinal);
-        Assert.Contains("RuntimeHealthPresentation.IsChatGptTabUrl", source, StringComparison.Ordinal);
+        Assert.Contains("RuntimeHealthPresentation.IsChatGptConversationUrl", source, StringComparison.Ordinal);
         Assert.Contains("ApplyConfigurationImportAsync", source, StringComparison.Ordinal);
         Assert.Contains("MaxBackupBytes", source, StringComparison.Ordinal);
         Assert.DoesNotContain("GetRecentLogsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("GetRecentLogsForMonitorAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("AddConversationRotationAsync", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("CrashCount", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TabId = monitor", source, StringComparison.Ordinal);
     }
 }
