@@ -18,7 +18,7 @@ public sealed class DevelopmentTaskEngineTests
 
             await using (var first = new DevelopmentTaskEngine(
                 workWindow: TimeSpan.FromMilliseconds(30),
-                coolingWindow: TimeSpan.FromMilliseconds(300),
+                coolingWindow: TimeSpan.FromSeconds(5),
                 statePath: statePath,
                 messagesPath: messagesPath))
             {
@@ -32,7 +32,7 @@ public sealed class DevelopmentTaskEngineTests
 
             await using var resumed = new DevelopmentTaskEngine(
                 workWindow: TimeSpan.FromSeconds(5),
-                coolingWindow: TimeSpan.FromMilliseconds(300),
+                coolingWindow: TimeSpan.FromSeconds(5),
                 statePath: statePath,
                 messagesPath: messagesPath);
 
