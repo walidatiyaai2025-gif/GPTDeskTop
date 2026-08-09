@@ -77,21 +77,13 @@ public sealed class HomeMetricsService : IDisposable
         if (!string.Equals(grid.Columns[e.ColumnIndex].HeaderText, "Status", StringComparison.OrdinalIgnoreCase)) return;
         if (e.CellStyle is not DataGridViewCellStyle style) return;
 
-        var value = e.Value?.ToString() ?? string.Empty;
-        if (value.Contains("Running", StringComparison.OrdinalIgnoreCase))
-        {
-            e.Value = "● Running";
-            style.ForeColor = Color.SeaGreen;
-            style.Font = new Font(grid.Font, FontStyle.Bold);
-            e.FormattingApplied = true;
-        }
-        else if (value.Contains("Stopped", StringComparison.OrdinalIgnoreCase))
-        {
-            e.Value = "● Stopped";
-            style.ForeColor = Color.Firebrick;
-            style.Font = new Font(grid.Font, FontStyle.Bold);
-            e.FormattingApplied = true;
-        }
+        var presentation = HomeMetricsPresentation.GetStatus(e.Value?.ToString());
+        if (presentation is null) return;
+
+        e.Value = presentation.Text;
+        style.ForeColor = presentation.ForeColor;
+        style.Font = new Font(grid.Font, presentation.FontStyle);
+        e.FormattingApplied = true;
     }
 
     private async void OnShown(object? sender, EventArgs e) => await RefreshAsync();
@@ -104,9 +96,9 @@ public sealed class HomeMetricsService : IDisposable
         {
             var crashCount = await _database.GetIntSettingAsync("CrashCount", 0, 0, int.MaxValue);
             var monitors = await _database.GetSavedMonitorsAsync() ?? [];
-            var running = monitors.Count(m => _monitor.IsMonitorRunning(m.Id));
-            SetText(_crashCard, $"Crashes\r\n{crashCount}");
-            SetText(_monitorCard, $"Monitors\r\n{running} / {monitors.Count}");
+            var snapshot = HomeMetricsPresentation.BuildSnapshot(crashCount, monitors, _monitor.IsMonitorRunning);
+            SetText(_crashCard, snapshot.CrashCardText);
+            SetText(_monitorCard, snapshot.MonitorCardText);
         }
         catch (Exception ex)
         {
