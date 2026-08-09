@@ -11,9 +11,10 @@ Development-plan automation, verified ChatGPT delivery, restart recovery, and mu
 - Partial crash-recovery handling: failed monitors remain pending; successful monitors are not recovered twice.
 - CDP `Promise was collected` bounded retry handling.
 - Verified ChatGPT message delivery using before/after user-message snapshots.
-- Editable development-message catalog with 10 distinct messages.
+- Editable development-message catalog with 10 distinct messages and an extensible catalog format.
+- Exactly one development-plan message is emitted per 10-minute work window; the remaining time is idle rather than sending the other catalog variants.
+- 5-minute cooling window with no ChatGPT delivery.
 - Single-emission guard for the current development message.
-- 10-minute work window and 5-minute cooling window defaults.
 - Delivery checkpoint containing monitor, tab, message index, and fingerprint.
 - Restart recovery of the persisted development-task position.
 - Idempotent Start/Resume lifecycle for the development engine.
@@ -29,19 +30,19 @@ Development-plan automation, verified ChatGPT delivery, restart recovery, and mu
 - Runtime binding that attaches dynamic delivery before Start/Resume, so the first message cannot bypass delivery.
 - Safe persistence of a recreated Chrome target ID only after exact conversation-URL rebinding.
 - Target-update telemetry via `DevelopmentMonitorTargetIdUpdated`.
-- Regression coverage for URL rebinding and title-fallback rejection.
-- CI gates for catalog, delivery, CDP reliability, crash recovery, multi-monitor delivery, dynamic runtime binding, and saved-chat rebinding.
+- Regression coverage for URL rebinding, title-fallback rejection, one-message-per-window, and restart duplicate prevention.
+- CI gates for catalog, delivery, work-window lifecycle, CDP reliability, crash recovery, multi-monitor delivery, dynamic runtime binding, and saved-chat rebinding.
 
 ## Current Gate
 
-The latest source changes are committed to `main`. Target-ID persistence after safe URL rebinding is implemented and covered by tests. The latest commit has not yet produced an observed GitHub Actions run in this session. Do not mark the build green until an actual workflow run completes successfully.
+The latest source changes are committed to `main`. The one-message-per-work-window rule and extensible catalog validation are implemented and CI-gated. The latest commits have not yet produced an observed GitHub Actions run in this session. Do not mark the build green until an actual workflow run completes successfully.
 
 ## Next Executable Tasks
 
-1. Add runtime integration tests for two monitors: both success; one success/one failure; tab replacement; restart during Working; restart during Cooling.
-2. Verify that Cooling never resolves or sends to ChatGPT and that a new Working window rebuilds recipients from the current Chrome tab list.
-3. Verify persisted target-ID update survives a process restart and is used as the exact target on the next resolution.
-4. Run the complete CI/build pipeline and only then proceed to UI controls and release-readiness packaging.
+1. Verify persisted target-ID update survives a process restart and is used as the exact target on the next resolution.
+2. Run the complete CI/build pipeline and fix any real compile/test failures before adding new architecture.
+3. Add UI controls for Start, Stop, Pause/Resume, current message, Work/Cooling status, recipient health, and delivery receipts.
+4. Add release-readiness packaging only after CI is green.
 
 ## Non-Negotiable Delivery Rules
 
@@ -49,6 +50,7 @@ The latest source changes are committed to `main`. Target-ID persistence after s
 - Never send the same message twice to a recipient when a persisted receipt proves it was already delivered to the same monitor/tab/message/fingerprint.
 - A multi-monitor message advances only when every active recipient has a verified receipt.
 - Start is idempotent: one engine lifecycle/worker only.
+- Each work window emits at most one catalog message.
 - Cooling is 5 minutes by default; Working is 10 minutes by default.
 - Recovery must prefer the existing saved Chrome tab and Monitor ID.
 - A recreated Chrome target may update the saved target ID only after its conversation URL matches exactly.
