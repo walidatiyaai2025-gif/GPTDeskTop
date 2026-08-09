@@ -5,16 +5,16 @@ namespace GPTDeskTop.UI;
 public sealed class SettingsForm : Form
 {
     private readonly LocalDatabase _database;
-    private readonly NumericUpDown _defaultDelay = new() { Minimum = 0, Maximum = 300, Width = 120 };
-    private readonly NumericUpDown _defaultTimer = new() { Minimum = 1, Maximum = 60, Width = 120 };
-    private readonly NumericUpDown _rotateAfterMessages = new() { Minimum = 0, Maximum = 10000, Width = 120 };
-    private readonly NumericUpDown _noResponseRefresh = new() { Minimum = 30, Maximum = 3600, Width = 120, Increment = 30 };
-    private readonly NumericUpDown _notificationDuration = new() { Minimum = 1, Maximum = 60, Width = 120 };
-    private readonly TextBox _defaultReply = new() { Width = 220, Text = "كمل" };
-    private readonly TextBox _messageCountRotationStartMessage = new() { Width = 220, Text = "كمل" };
-    private readonly TextBox _timeoutRecovery = new() { Width = 220, Text = "كمل" };
+    private readonly NumericUpDown _defaultDelay = new() { Minimum = 0, Maximum = 300, Width = 140 };
+    private readonly NumericUpDown _defaultTimer = new() { Minimum = 1, Maximum = 60, Width = 140 };
+    private readonly NumericUpDown _rotateAfterMessages = new() { Minimum = 0, Maximum = 10000, Width = 140 };
+    private readonly NumericUpDown _noResponseRefresh = new() { Minimum = 30, Maximum = 3600, Width = 140, Increment = 30 };
+    private readonly NumericUpDown _notificationDuration = new() { Minimum = 1, Maximum = 60, Width = 140 };
+    private readonly TextBox _defaultReply = new() { Dock = DockStyle.Fill, Text = "كمل" };
+    private readonly TextBox _messageCountRotationStartMessage = new() { Dock = DockStyle.Fill, Text = "كمل" };
+    private readonly TextBox _timeoutRecovery = new() { Dock = DockStyle.Fill, Text = "كمل" };
     private readonly CheckBox _soundEnabled = new() { Text = "Play sound with balloon notifications", AutoSize = true };
-    private readonly ComboBox _soundType = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+    private readonly ComboBox _soundType = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
     private readonly Button _saveButton = new() { Text = "Save Settings", AutoSize = true };
     private readonly Button _cancelButton = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
 
@@ -27,8 +27,9 @@ public sealed class SettingsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(660, 525);
+        ClientSize = new Size(760, 560);
         _soundType.Items.AddRange(new object[] { "Asterisk", "Exclamation", "Beep", "Hand" });
+
         BuildUi();
         FluentTheme.Apply(this);
         FluentTheme.StyleButton(_saveButton, primary: true);
@@ -40,46 +41,130 @@ public sealed class SettingsForm : Form
 
     private void BuildUi()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(22), ColumnCount = 2, RowCount = 12 };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-        for (var i = 0; i < 11; i++) root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        AddRow(root, 0, "Default auto reply for new monitors", _defaultReply);
-        AddRow(root, 1, "Default reply delay (seconds)", _defaultDelay);
-        AddRow(root, 2, "Default monitor timer (seconds)", _defaultTimer);
-        AddRow(root, 3, "Rotate after assistant messages (0 = off)", _rotateAfterMessages);
-        AddRow(root, 4, "Message-count new Chat start message", _messageCountRotationStartMessage);
-        AddRow(root, 5, "No-response refresh timeout (seconds)", _noResponseRefresh);
-        AddRow(root, 6, "Timeout recovery message", _timeoutRecovery);
-        AddRow(root, 7, "Balloon duration (seconds)", _notificationDuration);
-        root.Controls.Add(_soundEnabled, 0, 8);
-        root.SetColumnSpan(_soundEnabled, 2);
-        AddRow(root, 9, "Balloon sound", _soundType);
-
-        var note = new Label
+        var root = new TableLayoutPanel
         {
-            Text = "Message-count rotation uses the visible assistant-response count in the current ChatGPT conversation. When the configured count is reached, an enabled Conversation Rotation monitor opens a new chat, sends the fixed message above, keeps the same Monitor ID, and continues monitoring. Set the count to 0 to disable proactive rotation.",
-            ForeColor = FluentTheme.Muted,
             Dock = DockStyle.Fill,
-            AutoSize = true
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(18),
+            BackColor = FluentTheme.Background
         };
-        root.Controls.Add(note, 0, 10);
-        root.SetColumnSpan(note, 2);
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
 
-        var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, WrapContents = false };
+        var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = FluentTheme.Background };
+        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+        header.Controls.Add(new Label
+        {
+            Text = "Application Settings",
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI Variable Display", 16F, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft
+        }, 0, 0);
+        header.Controls.Add(FluentTheme.CreateMutedLabel("Configure monitoring defaults, conversation rotation/recovery and operator notifications."), 0, 1);
+
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        tabs.TabPages.Add(BuildMonitoringTab());
+        tabs.TabPages.Add(BuildRotationTab());
+        tabs.TabPages.Add(BuildNotificationsTab());
+
+        var buttons = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.RightToLeft,
+            Dock = DockStyle.Fill,
+            WrapContents = false,
+            BackColor = FluentTheme.Background,
+            Padding = new Padding(0, 8, 0, 0)
+        };
         buttons.Controls.Add(_cancelButton);
         buttons.Controls.Add(_saveButton);
-        root.Controls.Add(buttons, 0, 11);
-        root.SetColumnSpan(buttons, 2);
+
+        root.Controls.Add(header, 0, 0);
+        root.Controls.Add(tabs, 0, 1);
+        root.Controls.Add(buttons, 0, 2);
         Controls.Add(root);
     }
 
-    private static void AddRow(TableLayoutPanel root, int row, string text, Control control)
+    private TabPage BuildMonitoringTab()
     {
-        root.Controls.Add(new Label { Text = text, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, row);
-        control.Anchor = AnchorStyles.Left;
+        var page = CreateTab("Monitoring");
+        var layout = CreateSettingsLayout(8);
+        AddSectionTitle(layout, 0, "Monitor defaults", "Applied when a new monitor is created. Existing monitor-specific values are not overwritten.");
+        AddRow(layout, 2, "Default auto reply", _defaultReply, "Message sent after a stable assistant response.");
+        AddRow(layout, 3, "Reply delay", _defaultDelay, "Seconds to wait before sending the configured auto reply.");
+        AddRow(layout, 4, "Polling timer", _defaultTimer, "Seconds between ChatGPT state checks for a running monitor.");
+        AddRow(layout, 5, "No-response refresh", _noResponseRefresh, "If no new assistant response appears in this many seconds, only that tab is refreshed.");
+        page.Controls.Add(layout);
+        return page;
+    }
+
+    private TabPage BuildRotationTab()
+    {
+        var page = CreateTab("Rotation & Recovery");
+        var layout = CreateSettingsLayout(9);
+        AddSectionTitle(layout, 0, "Conversation continuity", "Proactively rotate chats before they become too long while preserving the same Monitor ID.");
+        AddRow(layout, 2, "Rotate after assistant messages (0 = off)", _rotateAfterMessages, "0 disables proactive message-count rotation. The current visible assistant count is used.");
+        AddRow(layout, 3, "Message-count new Chat start message", _messageCountRotationStartMessage, "Fixed message sent after a successful message-count rotation.");
+        AddSectionTitle(layout, 5, "Timeout recovery", "Used when ChatGPT reports a message-delivery timeout and a recovery chat is created.");
+        AddRow(layout, 7, "Recovery message", _timeoutRecovery, "Message sent to the newly-created recovery conversation.");
+        page.Controls.Add(layout);
+        return page;
+    }
+
+    private TabPage BuildNotificationsTab()
+    {
+        var page = CreateTab("Notifications");
+        var layout = CreateSettingsLayout(8);
+        AddSectionTitle(layout, 0, "Desktop notifications", "Control how long notifications remain visible and whether an operator sound is played.");
+        AddRow(layout, 2, "Balloon duration", _notificationDuration, "Display duration in seconds.");
+        AddRow(layout, 3, "Balloon sound", _soundType, "Windows notification sound used when sound is enabled.");
+        layout.Controls.Add(_soundEnabled, 0, 5);
+        layout.SetColumnSpan(_soundEnabled, 2);
+        page.Controls.Add(layout);
+        return page;
+    }
+
+    private static TabPage CreateTab(string title)
+        => new() { Text = title, BackColor = FluentTheme.Surface, Padding = new Padding(18) };
+
+    private static TableLayoutPanel CreateSettingsLayout(int rows)
+    {
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = rows,
+            BackColor = FluentTheme.Surface,
+            AutoScroll = true
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 245));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (var i = 0; i < rows; i++) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, i is 0 or 5 ? 34 : 48));
+        return layout;
+    }
+
+    private static void AddSectionTitle(TableLayoutPanel root, int row, string title, string subtitle)
+    {
+        var heading = FluentTheme.CreateSectionTitle(title);
+        root.Controls.Add(heading, 0, row);
+        root.SetColumnSpan(heading, 2);
+        var description = FluentTheme.CreateMutedLabel(subtitle);
+        root.Controls.Add(description, 0, row + 1);
+        root.SetColumnSpan(description, 2);
+    }
+
+    private static void AddRow(TableLayoutPanel root, int row, string text, Control control, string hint)
+    {
+        var labelBlock = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = FluentTheme.Surface, Margin = Padding.Empty };
+        labelBlock.RowStyles.Add(new RowStyle(SizeType.Percent, 48));
+        labelBlock.RowStyles.Add(new RowStyle(SizeType.Percent, 52));
+        labelBlock.Controls.Add(new Label { Text = text, Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft, Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold) }, 0, 0);
+        labelBlock.Controls.Add(new Label { Text = hint, Dock = DockStyle.Fill, TextAlign = ContentAlignment.TopLeft, ForeColor = FluentTheme.Muted, Font = new Font("Segoe UI Variable Text", 8F), AutoEllipsis = true }, 0, 1);
+        root.Controls.Add(labelBlock, 0, row);
+        control.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        control.Margin = new Padding(8, 7, 6, 7);
         root.Controls.Add(control, 1, row);
     }
 
