@@ -1,7 +1,7 @@
 # GPTDeskTop Development Status
 
 ## Current Focus
-The v1.8.0 release-readiness baseline remains intact. Post-1.8 maintenance is now extending operator UX without changing the validated monitor/recovery/delivery architecture. The searchable Stored History Explorer and the read-only Runtime Health / Connection Center are merged on `main`. No tag or GitHub release has been created by this work.
+The v1.8.0 release-readiness baseline remains intact. Post-1.8 maintenance is extending operator UX and supportability without changing the validated monitor/recovery/delivery architecture. The searchable Stored History Explorer, read-only Runtime Health / Connection Center, and privacy-safe Support Diagnostics Bundle are merged on `main`. No tag or GitHub release has been created by this work.
 
 ## Confirmed Complete
 
@@ -51,6 +51,7 @@ The v1.8.0 release-readiness baseline remains intact. Post-1.8 maintenance is no
 - Message-count conversation rotation can open a new ChatGPT conversation after a configurable assistant-message threshold and send the configured fixed start message while preserving the same Monitor ID.
 - Searchable Stored History Explorer is merged on `main` (`d3f061293937270cfd41975bb12e119455207cfe`): client-side search/filtering, visible/total counts, explicit no-match state, copy, CSV export, persisted expansion and accessibility coverage.
 - Runtime Health / Connection Center is merged on `main` (`c27da0a09afe8f157d50125f7ce5e8a14ce09126`): read-only Chrome/CDP and SQLite probes, ChatGPT tab count, saved/running monitor count, Healthy/Degraded/Unavailable presentation, five-second bounded refresh, duplicate-refresh protection, persisted expansion and accessibility coverage.
+- Privacy-safe Support Diagnostics Bundle is merged on `main` (`54846f3338eeeeec196e7d881813563d0080d2a3`): user-selected atomic ZIP export containing sanitized runtime/configuration metadata, Chrome/CDP and SQLite health/counts, history direction/status aggregates and exception-file metadata while explicitly excluding conversation content, monitor titles/URLs, message text, raw SQLite contents, raw exception contents and local machine/user identity.
 
 ## Release-Readiness Baseline
 
@@ -60,10 +61,11 @@ The v1.8.0 release-readiness baseline remains intact. Post-1.8 maintenance is no
 - **Restart persistence baseline:** commit `05502285` passed explicit process-style persistence tests for schedule settings and recreated Chrome target identity.
 - **No-response isolation:** real two-monitor Chrome/CDP integration verified exactly one stale-tab refresh and zero active-tab refreshes with a 30-second timeout.
 - **Post-1.8 Runtime Health validation:** PR #32 head `ba8965cb9d8fdcf32a95c1ec034a606b31804254` passed Build GPTDeskTop #285, QA Release x64 #73, QA Hidden Chrome CDP #55, QA Crash Process Recovery #63, QA No-Response Watchdog #49, Development Delivery Receipts #163, Development Task Recovery #159 and Development Message Reload #33 before merge.
+- **Post-1.8 Support Bundle validation:** PR #34 head `09e18196de5e8aeba21bd7bdefc4b6e54befe9e0` passed Build GPTDeskTop #289, QA Release x64 #77, QA Hidden Chrome CDP #59, QA Crash Process Recovery #67, QA No-Response Watchdog #53, Development Delivery Receipts #167, Development Task Recovery #163 and Development Message Reload #35 before merge. The runtime suite passed all 141 tests after making the privacy-test fixture's rotation state explicit.
 
 ## Next Executable Task
 
-There is no open implementation issue after #30. Continue post-1.8 maintenance by auditing the next concrete operator/runtime gap, creating a tracked issue, implementing it on a branch, and merging only after the full CI gate set is green. Release publication remains a separate explicit operation and should not be performed implicitly.
+There is no open implementation issue after #33. Continue post-1.8 maintenance by auditing the next concrete operator/runtime gap, creating a tracked issue, implementing it on a branch, and merging only after the full CI gate set is green. Release publication remains a separate explicit operation and should not be performed implicitly.
 
 ## Non-Negotiable Delivery Rules
 
