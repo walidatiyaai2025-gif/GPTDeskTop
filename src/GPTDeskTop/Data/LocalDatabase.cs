@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 namespace GPTDeskTop.Data;
 
 public sealed record ConfigurationImportDatabaseResult(int SettingsApplied, int MonitorsUpdated, int MonitorsInserted);
+public sealed record MonitorRegistrationResult(long MonitorId, bool Created);
 
 public sealed class LocalDatabase
 {
@@ -105,36 +106,97 @@ public sealed class LocalDatabase
 
     public async Task<long> SaveMonitorAsync(SavedMonitor monitor, CancellationToken cancellationToken = default)
     {
-        var now = DateTime.UtcNow;
-        monitor.ReplyDelaySeconds = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300); monitor.TimerSeconds = Math.Clamp(monitor.TimerSeconds, 1, 60);
-        monitor.NewChatDelaySeconds = Math.Clamp(monitor.NewChatDelaySeconds, 0, 600); monitor.RotationCooldownSeconds = Math.Clamp(monitor.RotationCooldownSeconds, 0, 3600);
-        monitor.MaxConversationRotations = Math.Clamp(monitor.MaxConversationRotations, 0, 1000);
-        await using var connection = new SqliteConnection(_connectionString); await connection.OpenAsync(cancellationToken); await using var command = connection.CreateCommand();
+        ArgumentNullException.ThrowIfNull(monitor);
         if (monitor.Id <= 0)
+            return (await RegisterMonitorIfConversationAvailableAsync(monitor, cancellationToken)).MonitorId;
+
+        var now = DateTime.UtcNow;
+        ClampMonitorSettings(monitor);
+        await using var connection = new SqliteConnection(_connectionString); await connection.OpenAsync(cancellationToken); await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE SavedMonitors SET TabId=$tabId,Title=$title,Url=$url,AutoReply=$autoReply,ReplyDelaySeconds=$replyDelay,TimerSeconds=$timer,Enabled=$enabled,
+            ConversationRotationEnabled=$rotationEnabled,NewChatStartMessage=$message,NewChatDelaySeconds=$newChatDelay,RotationCooldownSeconds=$cooldown,
+            MaxConversationRotations=$maxRotations,RotationCount=$rotationCount,ModelRoutingEnabled=$modelRouting,PreferredModel=$preferredModel,FallbackModel=$fallbackModel,UpdatedAt=$updatedAt WHERE Id=$id; SELECT $id;
+            """;
+        command.Parameters.AddWithValue("$id", monitor.Id);
+        AddMonitorParameters(command, monitor, now, includeCreatedAt: false);
+        monitor.Id = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)); monitor.UpdatedAt = now.ToLocalTime(); if (monitor.CreatedAt == default) monitor.CreatedAt = now.ToLocalTime(); return monitor.Id;
+    }
+
+    public async Task<MonitorRegistrationResult> RegisterMonitorIfConversationAvailableAsync(
+        SavedMonitor monitor,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(monitor);
+        if (monitor.Id > 0)
+            throw new InvalidOperationException("Duplicate-safe monitor registration is only valid for a new monitor.");
+        if (string.IsNullOrWhiteSpace(monitor.Url))
+            throw new InvalidOperationException("A conversation URL is required to register a monitor.");
+
+        ClampMonitorSettings(monitor);
+        var now = DateTime.UtcNow;
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction(deferred: false);
+
+        try
         {
-            command.CommandText = """
+            await using (var find = connection.CreateCommand())
+            {
+                find.Transaction = transaction;
+                find.CommandText = "SELECT Id FROM SavedMonitors WHERE Url=$url COLLATE NOCASE ORDER BY Id LIMIT 1;";
+                find.Parameters.AddWithValue("$url", monitor.Url);
+                var existing = await find.ExecuteScalarAsync(cancellationToken);
+                if (existing is not null && existing is not DBNull)
+                {
+                    var existingId = Convert.ToInt64(existing);
+                    transaction.Commit();
+                    monitor.Id = existingId;
+                    return new MonitorRegistrationResult(existingId, false);
+                }
+            }
+
+            await using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = """
                 INSERT INTO SavedMonitors(TabId,Title,Url,AutoReply,ReplyDelaySeconds,TimerSeconds,Enabled,ConversationRotationEnabled,NewChatStartMessage,NewChatDelaySeconds,RotationCooldownSeconds,MaxConversationRotations,RotationCount,ModelRoutingEnabled,PreferredModel,FallbackModel,CreatedAt,UpdatedAt)
                 VALUES($tabId,$title,$url,$autoReply,$replyDelay,$timer,$enabled,$rotationEnabled,$message,$newChatDelay,$cooldown,$maxRotations,$rotationCount,$modelRouting,$preferredModel,$fallbackModel,$createdAt,$updatedAt); SELECT last_insert_rowid();
                 """;
-            command.Parameters.AddWithValue("$createdAt", now.ToString("O"));
+            AddMonitorParameters(insert, monitor, now, includeCreatedAt: true);
+            var monitorId = Convert.ToInt64(await insert.ExecuteScalarAsync(cancellationToken));
+            transaction.Commit();
+
+            monitor.Id = monitorId;
+            monitor.CreatedAt = now.ToLocalTime();
+            monitor.UpdatedAt = now.ToLocalTime();
+            return new MonitorRegistrationResult(monitorId, true);
         }
-        else
+        catch
         {
-            command.CommandText = """
-                UPDATE SavedMonitors SET TabId=$tabId,Title=$title,Url=$url,AutoReply=$autoReply,ReplyDelaySeconds=$replyDelay,TimerSeconds=$timer,Enabled=$enabled,
-                ConversationRotationEnabled=$rotationEnabled,NewChatStartMessage=$message,NewChatDelaySeconds=$newChatDelay,RotationCooldownSeconds=$cooldown,
-                MaxConversationRotations=$maxRotations,RotationCount=$rotationCount,ModelRoutingEnabled=$modelRouting,PreferredModel=$preferredModel,FallbackModel=$fallbackModel,UpdatedAt=$updatedAt WHERE Id=$id; SELECT $id;
-                """;
-            command.Parameters.AddWithValue("$id", monitor.Id);
+            try { transaction.Rollback(); } catch { }
+            throw;
         }
+    }
+
+    private static void ClampMonitorSettings(SavedMonitor monitor)
+    {
+        monitor.ReplyDelaySeconds = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300);
+        monitor.TimerSeconds = Math.Clamp(monitor.TimerSeconds, 1, 60);
+        monitor.NewChatDelaySeconds = Math.Clamp(monitor.NewChatDelaySeconds, 0, 600);
+        monitor.RotationCooldownSeconds = Math.Clamp(monitor.RotationCooldownSeconds, 0, 3600);
+        monitor.MaxConversationRotations = Math.Clamp(monitor.MaxConversationRotations, 0, 1000);
+    }
+
+    private static void AddMonitorParameters(SqliteCommand command, SavedMonitor monitor, DateTime now, bool includeCreatedAt)
+    {
         command.Parameters.AddWithValue("$tabId", monitor.TabId ?? ""); command.Parameters.AddWithValue("$title", monitor.Title ?? ""); command.Parameters.AddWithValue("$url", monitor.Url ?? "");
         command.Parameters.AddWithValue("$autoReply", monitor.AutoReply ?? ""); command.Parameters.AddWithValue("$replyDelay", monitor.ReplyDelaySeconds); command.Parameters.AddWithValue("$timer", monitor.TimerSeconds);
         command.Parameters.AddWithValue("$enabled", monitor.Enabled ? 1 : 0); command.Parameters.AddWithValue("$rotationEnabled", monitor.ConversationRotationEnabled ? 1 : 0);
         command.Parameters.AddWithValue("$message", monitor.NewChatStartMessage ?? "كمل"); command.Parameters.AddWithValue("$newChatDelay", monitor.NewChatDelaySeconds);
         command.Parameters.AddWithValue("$cooldown", monitor.RotationCooldownSeconds); command.Parameters.AddWithValue("$maxRotations", monitor.MaxConversationRotations); command.Parameters.AddWithValue("$rotationCount", monitor.RotationCount);
         command.Parameters.AddWithValue("$modelRouting", monitor.ModelRoutingEnabled ? 1 : 0); command.Parameters.AddWithValue("$preferredModel", monitor.PreferredModel ?? "Auto"); command.Parameters.AddWithValue("$fallbackModel", monitor.FallbackModel ?? "Auto");
+        if (includeCreatedAt) command.Parameters.AddWithValue("$createdAt", now.ToString("O"));
         command.Parameters.AddWithValue("$updatedAt", now.ToString("O"));
-        monitor.Id = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)); monitor.UpdatedAt = now.ToLocalTime(); if (monitor.CreatedAt == default) monitor.CreatedAt = now.ToLocalTime(); return monitor.Id;
     }
 
     public async Task<List<SavedMonitor>> GetSavedMonitorsAsync(CancellationToken cancellationToken = default)
