@@ -16,6 +16,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
     private readonly Button _resume = new() { Text = "Resume", AutoSize = true };
     private readonly Button _stop = new() { Text = "Stop", AutoSize = true };
     private readonly Button _messagesButton = new() { Text = "Messages", AutoSize = true };
+    private readonly Button _settingsButton = new() { Text = "Schedule", AutoSize = true };
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 500 };
 
     public DevelopmentTaskDashboardControl(DevelopmentTaskRuntimeBinding binding)
@@ -55,11 +56,12 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         root.Controls.Add(details, 0, 1); root.SetColumnSpan(details, 4);
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-        buttons.Controls.AddRange(new Control[] { _start, _pause, _resume, _stop, _messagesButton });
+        buttons.Controls.AddRange(new Control[] { _start, _pause, _resume, _stop, _messagesButton, _settingsButton });
         root.Controls.Add(buttons, 0, 2); root.SetColumnSpan(buttons, 4);
         Controls.Add(root);
         FluentTheme.StyleButton(_start, primary: true);
         FluentTheme.StyleButton(_stop, danger: true);
+        FluentTheme.StyleButton(_settingsButton);
     }
 
     private void WireEvents()
@@ -69,6 +71,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         _resume.Click += async (_, _) => await RunAsync(_binding.ResumeAsync);
         _stop.Click += async (_, _) => await RunAsync(_binding.StopAsync);
         _messagesButton.Click += (_, _) => OpenMessageCatalog();
+        _settingsButton.Click += (_, _) => OpenScheduleSettings();
         _binding.Engine.StateChanged += OnStateChanged;
         _binding.Engine.MessageReady += OnMessageReady;
         _binding.Engine.CoolingStarted += OnCoolingChanged;
@@ -86,6 +89,19 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
             Size = new Size(1200, 750)
         };
         dialog.Controls.Add(new DevelopmentMessageCatalogControl { Dock = DockStyle.Fill });
+        dialog.ShowDialog(FindForm());
+    }
+
+    private void OpenScheduleSettings()
+    {
+        using var dialog = new Form
+        {
+            Text = "Development Schedule",
+            StartPosition = FormStartPosition.CenterParent,
+            MinimumSize = new Size(560, 260),
+            Size = new Size(620, 300)
+        };
+        dialog.Controls.Add(new DevelopmentTaskScheduleSettingsControl { Dock = DockStyle.Fill });
         dialog.ShowDialog(FindForm());
     }
 
@@ -111,9 +127,9 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         _delivery.Text = $"Last verified: {(state.LastDeliveredMessageIndex >= 0 ? (state.LastDeliveredMessageIndex + 1).ToString() : "—")}  Receipts: {state.DeliveryReceipts.Count}  Revision: {state.Revision}";
         var now = DateTimeOffset.UtcNow;
         var remaining = state.Status == DevelopmentTaskEngineStatus.Working && state.WorkWindowStartedAt.HasValue
-            ? TimeSpan.FromMinutes(10) - (now - state.WorkWindowStartedAt.Value)
+            ? _binding.Engine.WorkWindow - (now - state.WorkWindowStartedAt.Value)
             : state.Status == DevelopmentTaskEngineStatus.Cooling && state.CoolingStartedAt.HasValue
-                ? TimeSpan.FromMinutes(5) - (now - state.CoolingStartedAt.Value)
+                ? _binding.Engine.CoolingWindow - (now - state.CoolingStartedAt.Value)
                 : TimeSpan.Zero;
         if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
         _countdown.Text = $"Time remaining: {remaining:mm\:ss}";
