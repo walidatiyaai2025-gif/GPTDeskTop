@@ -1,4 +1,5 @@
 using GPTDeskTop.Data;
+using GPTDeskTop.Services;
 
 namespace GPTDeskTop.UI;
 
@@ -15,6 +16,7 @@ public sealed class SettingsForm : Form
     private readonly TextBox _timeoutRecovery = new() { Dock = DockStyle.Fill, Text = "كمل" };
     private readonly CheckBox _soundEnabled = new() { Text = "Play sound with balloon notifications", AutoSize = true };
     private readonly ComboBox _soundType = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
+    private readonly Button _exportBackupButton = new() { Text = "&Export Configuration Backup", AutoSize = true };
     private readonly Button _saveButton = new() { Text = "Save Settings", AutoSize = true };
     private readonly Button _cancelButton = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
     private readonly TabControl _tabs = new TabControl { Dock = DockStyle.Fill };
@@ -49,6 +51,7 @@ public sealed class SettingsForm : Form
         WireEvents();
         FluentTheme.Apply(this);
         FluentTheme.StyleButton(_saveButton, primary: true);
+        FluentTheme.StyleButton(_exportBackupButton, primary: true);
         AcceptButton = _saveButton;
         CancelButton = _cancelButton;
     }
@@ -78,11 +81,12 @@ public sealed class SettingsForm : Form
             Font = new Font("Segoe UI Variable Display", 16F, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft
         }, 0, 0);
-        header.Controls.Add(FluentTheme.CreateMutedLabel("Configure monitoring defaults, conversation rotation/recovery and operator notifications."), 0, 1);
+        header.Controls.Add(FluentTheme.CreateMutedLabel("Configure monitoring defaults, continuity/recovery, notifications and portable configuration backup."), 0, 1);
 
         _tabs.TabPages.Add(BuildMonitoringTab());
         _tabs.TabPages.Add(BuildRotationTab());
         _tabs.TabPages.Add(BuildNotificationsTab());
+        _tabs.TabPages.Add(BuildBackupTab());
 
         var statusHost = new Panel
         {
@@ -150,6 +154,75 @@ public sealed class SettingsForm : Form
         return page;
     }
 
+    private TabPage BuildBackupTab()
+    {
+        var page = CreateTab("Backup & Portability");
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 7,
+            BackColor = FluentTheme.Surface,
+            AutoScroll = true,
+            Padding = new Padding(2)
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        layout.Controls.Add(FluentTheme.CreateSectionTitle("Portable configuration backup"), 0, 0);
+        layout.Controls.Add(FluentTheme.CreateMutedLabel(
+            "Export a versioned JSON snapshot of DB-backed operator settings and saved monitor configuration for migration or safekeeping."), 0, 1);
+
+        layout.Controls.Add(new Label
+        {
+            Text = "Included: monitor titles and conversation URLs, configured message text, delays/timers, enabled state, rotation settings, model routing and allowlisted application settings.",
+            Dock = DockStyle.Fill,
+            ForeColor = FluentTheme.Text,
+            Font = new Font("Segoe UI Variable Text", 9F),
+            AutoEllipsis = true,
+            Padding = new Padding(0, 8, 8, 4)
+        }, 0, 2);
+
+        layout.Controls.Add(new Label
+        {
+            Text = "Excluded: Stored History, raw SQLite, runtime Tab/monitor IDs, rotation counters, crash/recovery state, UI layout, exception logs and machine/user identity.",
+            Dock = DockStyle.Fill,
+            ForeColor = FluentTheme.Muted,
+            Font = new Font("Segoe UI Variable Text", 9F),
+            AutoEllipsis = true,
+            Padding = new Padding(0, 8, 8, 4)
+        }, 0, 3);
+
+        layout.Controls.Add(new Label
+        {
+            Text = "Sensitive data notice: unlike Support Bundle, this backup can contain conversation URLs and message templates. Store it securely.",
+            Dock = DockStyle.Fill,
+            ForeColor = FluentTheme.Warning,
+            Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold),
+            AutoEllipsis = true,
+            Padding = new Padding(0, 8, 8, 4)
+        }, 0, 4);
+
+        var actionHost = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            BackColor = FluentTheme.Surface,
+            Padding = new Padding(0, 8, 0, 0)
+        };
+        actionHost.Controls.Add(_exportBackupButton);
+        layout.Controls.Add(actionHost, 0, 5);
+
+        page.Controls.Add(layout);
+        return page;
+    }
+
     private void WireEvents()
     {
         Shown += async (_, _) =>
@@ -162,13 +235,14 @@ public sealed class SettingsForm : Form
             }
         };
         _saveButton.Click += async (_, _) => await SaveSettingsAsync();
+        _exportBackupButton.Click += async (_, _) => await ExportConfigurationBackupAsync();
         _soundEnabled.CheckedChanged += (_, _) => UpdateDependentControls();
     }
 
     private void ConfigureAccessibility()
     {
         AccessibleName = "GPTDeskTop application settings";
-        AccessibleDescription = "Configure monitoring defaults, conversation rotation, recovery and desktop notifications.";
+        AccessibleDescription = "Configure monitoring defaults, conversation continuity, recovery, notifications and portable configuration backup.";
 
         ConfigureAccessible(_defaultReply, "Default auto reply", "Message sent after a completed assistant response.", 0);
         ConfigureAccessible(_defaultDelay, "Default reply delay", "Seconds to wait before sending the automatic reply.", 1);
@@ -183,6 +257,9 @@ public sealed class SettingsForm : Form
         ConfigureAccessible(_soundType, "Notification sound type", "Windows sound used for desktop notifications.", 1);
         ConfigureAccessible(_soundEnabled, "Enable notification sound", "Play the selected Windows sound with desktop notifications.", 2);
 
+        _exportBackupButton.AccessibleName = "Export portable configuration backup";
+        _exportBackupButton.AccessibleDescription = "Create a sensitive versioned JSON backup of application settings and saved monitor configuration.";
+        _exportBackupButton.TabIndex = 0;
         _tabs.AccessibleName = "Settings categories";
         _tabs.TabIndex = 0;
         _statusLabel.AccessibleName = "Settings operation status";
@@ -209,6 +286,7 @@ public sealed class SettingsForm : Form
         _busy = busy;
         _tabs.Enabled = !busy;
         _saveButton.Enabled = !busy;
+        _exportBackupButton.Enabled = !busy;
         UseWaitCursor = busy;
         _statusLabel.Text = status;
         _statusLabel.ForeColor = busy ? FluentTheme.Accent : FluentTheme.Muted;
@@ -317,6 +395,56 @@ public sealed class SettingsForm : Form
         {
             SetBusy(false, "Settings were not saved. Review the error and try again.");
             MessageBox.Show(this, $"GPTDeskTop could not save application settings.\n\n{ex.Message}", "Settings Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private async Task ExportConfigurationBackupAsync()
+    {
+        if (_busy) return;
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export GPTDeskTop Configuration Backup",
+            Filter = "GPTDeskTop configuration backup (*.json)|*.json|JSON files (*.json)|*.json|All files (*.*)|*.*",
+            DefaultExt = "json",
+            AddExtension = true,
+            OverwritePrompt = true,
+            FileName = $"GPTDeskTop-Configuration-{DateTime.Now:yyyyMMdd-HHmmss}.json"
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            _statusLabel.Text = "Configuration backup export canceled.";
+            return;
+        }
+
+        SetBusy(true, "Exporting configuration backup…");
+        try
+        {
+            var service = new ConfigurationBackupService(_database);
+            var path = await service.ExportAsync(dialog.FileName);
+            SetBusy(false, $"Configuration backup exported: {Path.GetFileName(path)}");
+            MessageBox.Show(
+                this,
+                $"Configuration backup created successfully.\n\n{path}\n\nThis file can contain conversation URLs and configured message text. Store it securely.",
+                "Configuration Backup Created",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (OperationCanceledException)
+        {
+            SetBusy(false, "Configuration backup export canceled.");
+        }
+        catch (Exception ex)
+        {
+            await ExceptionLogService.LogAsync(ex, "SettingsForm.ExportConfigurationBackup");
+            SetBusy(false, "Configuration backup could not be created.");
+            MessageBox.Show(
+                this,
+                $"GPTDeskTop could not export the configuration backup.\n\n{ex.Message}",
+                "Configuration Backup Error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
         }
     }
 }
