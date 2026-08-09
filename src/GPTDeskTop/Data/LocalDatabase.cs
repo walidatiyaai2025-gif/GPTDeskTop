@@ -778,6 +778,44 @@ public sealed class LocalDatabase
     public async Task<List<MessageLog>> GetRecentLogsForMonitorAsync(long monitorId,int limit=12,CancellationToken cancellationToken=default)
     { var result=new List<MessageLog>(); await using var connection=new SqliteConnection(_connectionString); await connection.OpenAsync(cancellationToken); await using var command=connection.CreateCommand(); command.CommandText="SELECT Id,Timestamp,MonitorId,TabId,TabTitle,Direction,Prompt,Response,Status FROM MessageLogs WHERE MonitorId=$m ORDER BY Id DESC LIMIT $limit;"; command.Parameters.AddWithValue("$m",monitorId); command.Parameters.AddWithValue("$limit",Math.Clamp(limit,1,50)); await using var reader=await command.ExecuteReaderAsync(cancellationToken); while(await reader.ReadAsync(cancellationToken)) result.Add(new MessageLog{Id=reader.GetInt64(0),Timestamp=ParseLocal(reader.GetString(1)),MonitorId=reader.IsDBNull(2)?null:reader.GetInt64(2),TabId=reader.GetString(3),TabTitle=reader.GetString(4),Direction=reader.GetString(5),Prompt=reader.GetString(6),Response=reader.GetString(7),Status=reader.GetString(8)}); result.Reverse(); return result; }
 
+    public async Task SetSettingsAsync(
+        IReadOnlyDictionary<string, string> settings,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        if (settings.Count == 0) return;
+
+        foreach (var pair in settings)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Key))
+                throw new ArgumentException("Settings batch cannot contain an empty key.", nameof(settings));
+        }
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction(deferred: false);
+        try
+        {
+            foreach (var pair in settings)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = "INSERT INTO AppSettings(Key,Value) VALUES($key,$value) ON CONFLICT(Key) DO UPDATE SET Value=excluded.Value;";
+                command.Parameters.AddWithValue("$key", pair.Key);
+                command.Parameters.AddWithValue("$value", pair.Value ?? string.Empty);
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            transaction.Commit();
+        }
+        catch
+        {
+            try { transaction.Rollback(); } catch { }
+            throw;
+        }
+    }
+
     public async Task SetSettingAsync(string key,string value,CancellationToken cancellationToken=default)
     { await using var connection=new SqliteConnection(_connectionString); await connection.OpenAsync(cancellationToken); await using var command=connection.CreateCommand(); command.CommandText="INSERT INTO AppSettings(Key,Value) VALUES($key,$value) ON CONFLICT(Key) DO UPDATE SET Value=excluded.Value;"; command.Parameters.AddWithValue("$key",key); command.Parameters.AddWithValue("$value",value??""); await command.ExecuteNonQueryAsync(cancellationToken); }
     public async Task<string?> GetSettingAsync(string key,CancellationToken cancellationToken=default)

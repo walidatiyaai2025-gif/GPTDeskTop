@@ -381,28 +381,32 @@ public sealed class SettingsForm : Form
             return;
         }
         var rotationStartMessage = string.IsNullOrWhiteSpace(rawRotationStartMessage) ? "كمل" : rawRotationStartMessage;
+        var desiredSettings = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["DefaultAutoReply"] = string.IsNullOrWhiteSpace(_defaultReply.Text) ? "كمل" : _defaultReply.Text.Trim(),
+            ["DefaultMonitorDelaySeconds"] = ((int)_defaultDelay.Value).ToString(),
+            ["DefaultMonitorTimerSeconds"] = ((int)_defaultTimer.Value).ToString(),
+            ["RotateAfterAssistantMessages"] = ((int)_rotateAfterMessages.Value).ToString(),
+            ["MessageCountRotationStartMessage"] = rotationStartMessage,
+            ["NoResponseRefreshSeconds"] = ((int)_noResponseRefresh.Value).ToString(),
+            ["TimeoutRecoveryMessage"] = string.IsNullOrWhiteSpace(_timeoutRecovery.Text) ? "كمل" : _timeoutRecovery.Text.Trim(),
+            ["NotificationDurationSeconds"] = ((int)_notificationDuration.Value).ToString(),
+            ["NotificationSoundEnabled"] = _soundEnabled.Checked ? "1" : "0",
+            ["NotificationSoundType"] = _soundType.SelectedItem?.ToString() ?? "Asterisk"
+        };
 
         SetBusy(true, "Saving settings…");
         try
         {
-            await _database.SetSettingAsync("DefaultAutoReply", string.IsNullOrWhiteSpace(_defaultReply.Text) ? "كمل" : _defaultReply.Text.Trim());
-            await _database.SetSettingAsync("DefaultMonitorDelaySeconds", ((int)_defaultDelay.Value).ToString());
-            await _database.SetSettingAsync("DefaultMonitorTimerSeconds", ((int)_defaultTimer.Value).ToString());
-            await _database.SetSettingAsync("RotateAfterAssistantMessages", ((int)_rotateAfterMessages.Value).ToString());
-            await _database.SetSettingAsync("MessageCountRotationStartMessage", rotationStartMessage);
-            await _database.SetSettingAsync("NoResponseRefreshSeconds", ((int)_noResponseRefresh.Value).ToString());
-            await _database.SetSettingAsync("TimeoutRecoveryMessage", string.IsNullOrWhiteSpace(_timeoutRecovery.Text) ? "كمل" : _timeoutRecovery.Text.Trim());
-            await _database.SetSettingAsync("NotificationDurationSeconds", ((int)_notificationDuration.Value).ToString());
-            await _database.SetSettingAsync("NotificationSoundEnabled", _soundEnabled.Checked ? "1" : "0");
-            await _database.SetSettingAsync("NotificationSoundType", _soundType.SelectedItem?.ToString() ?? "Asterisk");
+            await _database.SetSettingsAsync(desiredSettings);
             _statusLabel.Text = "Settings saved.";
             DialogResult = DialogResult.OK;
             Close();
         }
         catch (Exception ex)
         {
-            SetBusy(false, "Settings were not saved. Review the error and try again.");
-            MessageBox.Show(this, $"GPTDeskTop could not save application settings.\n\n{ex.Message}", "Settings Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            SetBusy(false, "Settings were not saved. No settings changes were committed; review the error and try again.");
+            MessageBox.Show(this, $"GPTDeskTop could not save application settings. No partial settings changes were committed.\n\n{ex.Message}", "Settings Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
