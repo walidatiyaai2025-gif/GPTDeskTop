@@ -37,12 +37,12 @@ public sealed class DuplicateOwnershipRepairService
         if (!MonitorConversationOwnership.IsDuplicateOwner(monitor.Id, monitors))
             throw new InvalidOperationException("This monitor is not currently part of duplicate ChatGPT conversation ownership.");
 
-        if (string.Equals(monitor.Url, targetTab.Url, StringComparison.OrdinalIgnoreCase))
+        if (ChatGptConversationIdentity.IsSame(monitor.Url, targetTab.Url))
             throw new InvalidOperationException("Choose a different unowned ChatGPT conversation to resolve duplicate ownership.");
 
         var existingOwner = monitors.FirstOrDefault(saved =>
             saved.Id != monitor.Id
-            && string.Equals(saved.Url, targetTab.Url, StringComparison.OrdinalIgnoreCase));
+            && ChatGptConversationIdentity.IsSame(saved.Url, targetTab.Url));
         if (existingOwner is not null)
             throw new InvalidOperationException($"Monitor #{existingOwner.Id} already owns the selected ChatGPT conversation.");
 

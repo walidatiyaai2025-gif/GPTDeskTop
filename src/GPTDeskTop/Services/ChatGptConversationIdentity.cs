@@ -15,7 +15,7 @@ public static class ChatGptConversationIdentity
             || !RuntimeHealthPresentation.IsChatGptConversationUrl(right))
             return false;
 
-        return string.Equals(Normalize(left), Normalize(right), StringComparison.Ordinal);
+        return string.Equals(Normalize(left), Normalize(right), StringComparison.OrdinalIgnoreCase);
     }
 
     public static string Normalize(string value)

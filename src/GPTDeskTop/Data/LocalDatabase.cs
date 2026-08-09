@@ -1,4 +1,5 @@
 using GPTDeskTop.Models;
+using GPTDeskTop.Services;
 using Microsoft.Data.Sqlite;
 
 namespace GPTDeskTop.Data;
@@ -188,18 +189,39 @@ public sealed class LocalDatabase
         var now = DateTime.UtcNow;
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            UPDATE SavedMonitors
-            SET TabId=$tabId, Title=$title, UpdatedAt=$updatedAt
-            WHERE Id=$id AND Url=$expectedUrl COLLATE NOCASE;
-            """;
-        command.Parameters.AddWithValue("$id", monitorId);
-        command.Parameters.AddWithValue("$expectedUrl", expectedConversationUrl);
-        command.Parameters.AddWithValue("$tabId", targetTabId);
-        command.Parameters.AddWithValue("$title", targetTitle ?? string.Empty);
-        command.Parameters.AddWithValue("$updatedAt", now.ToString("O"));
-        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+        using var transaction = connection.BeginTransaction(deferred: false);
+        try
+        {
+            string? currentUrl = null;
+            await using (var load = connection.CreateCommand())
+            {
+                load.Transaction = transaction;
+                load.CommandText = "SELECT Url FROM SavedMonitors WHERE Id=$id LIMIT 1;";
+                load.Parameters.AddWithValue("$id", monitorId);
+                currentUrl = Convert.ToString(await load.ExecuteScalarAsync(cancellationToken));
+            }
+            if (string.IsNullOrWhiteSpace(currentUrl) || !ConversationIdentityMatches(currentUrl, expectedConversationUrl))
+            {
+                transaction.Rollback();
+                return false;
+            }
+
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = "UPDATE SavedMonitors SET TabId=$tabId, Title=$title, UpdatedAt=$updatedAt WHERE Id=$id;";
+            command.Parameters.AddWithValue("$id", monitorId);
+            command.Parameters.AddWithValue("$tabId", targetTabId);
+            command.Parameters.AddWithValue("$title", targetTitle ?? string.Empty);
+            command.Parameters.AddWithValue("$updatedAt", now.ToString("O"));
+            var updated = await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+            transaction.Commit();
+            return updated;
+        }
+        catch
+        {
+            try { transaction.Rollback(); } catch { }
+            throw;
+        }
     }
 
     public async Task<MonitorRegistrationResult> RegisterMonitorIfConversationAvailableAsync(
@@ -213,6 +235,8 @@ public sealed class LocalDatabase
             throw new InvalidOperationException("A conversation URL is required to register a monitor.");
 
         ClampMonitorSettings(monitor);
+        if (RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url))
+            monitor.Url = ChatGptConversationIdentity.Normalize(monitor.Url);
         var now = DateTime.UtcNow;
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
@@ -220,8 +244,19 @@ public sealed class LocalDatabase
 
         try
         {
-            await using (var find = connection.CreateCommand())
+            if (RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url))
             {
+                var existingId = await FindLogicalConversationOwnerIdAsync(connection, transaction, monitor.Url, excludeMonitorId: null, cancellationToken);
+                if (existingId.HasValue)
+                {
+                    transaction.Commit();
+                    monitor.Id = existingId.Value;
+                    return new MonitorRegistrationResult(existingId.Value, false);
+                }
+            }
+            else
+            {
+                await using var find = connection.CreateCommand();
                 find.Transaction = transaction;
                 find.CommandText = "SELECT Id FROM SavedMonitors WHERE Url=$url COLLATE NOCASE ORDER BY Id LIMIT 1;";
                 find.Parameters.AddWithValue("$url", monitor.Url);
@@ -302,33 +337,23 @@ public sealed class LocalDatabase
                 currentTitle = reader.GetString(1);
             }
 
-            if (!string.Equals(currentUrl, expectedCurrentUrl, StringComparison.Ordinal))
+            if (!ConversationIdentityMatches(currentUrl, expectedCurrentUrl))
                 throw new InvalidOperationException("Saved monitor conversation identity changed before repair could be applied. Refresh and try again.");
 
-            if (string.Equals(currentUrl, targetUrl, StringComparison.OrdinalIgnoreCase))
+            var canonicalTargetUrl = NormalizeStableConversationUrl(targetUrl);
+            if (ChatGptConversationIdentity.IsSame(currentUrl, canonicalTargetUrl))
                 throw new InvalidOperationException("Choose a different unowned ChatGPT conversation to resolve conversation ownership.");
 
             if (requireDuplicateSourceOwnership)
             {
-                await using var sourceOwners = connection.CreateCommand();
-                sourceOwners.Transaction = transaction;
-                sourceOwners.CommandText = "SELECT COUNT(*) FROM SavedMonitors WHERE Url=$url COLLATE NOCASE;";
-                sourceOwners.Parameters.AddWithValue("$url", currentUrl);
-                var sourceOwnerCount = Convert.ToInt32(await sourceOwners.ExecuteScalarAsync(cancellationToken));
+                var sourceOwnerCount = await CountLogicalConversationOwnersAsync(connection, transaction, currentUrl, cancellationToken);
                 if (sourceOwnerCount < 2)
                     throw new InvalidOperationException("This monitor is not currently part of duplicate ChatGPT conversation ownership.");
             }
 
-            await using (var targetOwner = connection.CreateCommand())
-            {
-                targetOwner.Transaction = transaction;
-                targetOwner.CommandText = "SELECT Id FROM SavedMonitors WHERE Id<>$id AND Url=$url COLLATE NOCASE ORDER BY Id LIMIT 1;";
-                targetOwner.Parameters.AddWithValue("$id", monitorId);
-                targetOwner.Parameters.AddWithValue("$url", targetUrl);
-                var existing = await targetOwner.ExecuteScalarAsync(cancellationToken);
-                if (existing is not null && existing is not DBNull)
-                    throw new InvalidOperationException($"Monitor #{Convert.ToInt64(existing)} already owns the selected ChatGPT conversation.");
-            }
+            var existingOwner = await FindLogicalConversationOwnerIdAsync(connection, transaction, canonicalTargetUrl, monitorId, cancellationToken);
+            if (existingOwner.HasValue)
+                throw new InvalidOperationException($"Monitor #{existingOwner.Value} already owns the selected ChatGPT conversation.");
 
             var now = DateTime.UtcNow.ToString("O");
             var appliedTitle = string.IsNullOrWhiteSpace(targetTitle) ? currentTitle : targetTitle;
@@ -339,7 +364,7 @@ public sealed class LocalDatabase
                 update.Parameters.AddWithValue("$id", monitorId);
                 update.Parameters.AddWithValue("$tabId", targetTabId);
                 update.Parameters.AddWithValue("$title", appliedTitle);
-                update.Parameters.AddWithValue("$url", targetUrl);
+                update.Parameters.AddWithValue("$url", canonicalTargetUrl);
                 update.Parameters.AddWithValue("$updatedAt", now);
                 if (await update.ExecuteNonQueryAsync(cancellationToken) != 1)
                     throw new InvalidOperationException($"Saved monitor #{monitorId} could not be updated.");
@@ -361,7 +386,7 @@ public sealed class LocalDatabase
             }
 
             transaction.Commit();
-            return new MonitorConversationRebindDatabaseResult(monitorId, currentUrl, targetUrl);
+            return new MonitorConversationRebindDatabaseResult(monitorId, currentUrl, canonicalTargetUrl);
         }
         catch
         {
@@ -394,7 +419,7 @@ public sealed class LocalDatabase
             throw new InvalidOperationException("The new conversation Chrome target ID is required for handoff.");
         if (string.IsNullOrWhiteSpace(targetUrl))
             throw new InvalidOperationException("The new stable conversation URL is required for handoff.");
-        if (string.Equals(expectedCurrentUrl, targetUrl, StringComparison.OrdinalIgnoreCase))
+        if (ChatGptConversationIdentity.IsSame(expectedCurrentUrl, targetUrl))
             throw new InvalidOperationException("Intentional handoff requires a different target conversation.");
 
         targetTitle ??= string.Empty;
@@ -427,19 +452,15 @@ public sealed class LocalDatabase
                 currentRotationCount = reader.GetInt32(2);
             }
 
-            if (!string.Equals(currentUrl, expectedCurrentUrl, StringComparison.Ordinal))
+            if (!ConversationIdentityMatches(currentUrl, expectedCurrentUrl))
                 throw new InvalidOperationException("Saved monitor conversation identity changed before intentional handoff could be committed.");
 
-            await using (var targetOwner = connection.CreateCommand())
-            {
-                targetOwner.Transaction = transaction;
-                targetOwner.CommandText = "SELECT Id FROM SavedMonitors WHERE Id<>$id AND Url=$url COLLATE NOCASE ORDER BY Id LIMIT 1;";
-                targetOwner.Parameters.AddWithValue("$id", monitorId);
-                targetOwner.Parameters.AddWithValue("$url", targetUrl);
-                var existing = await targetOwner.ExecuteScalarAsync(cancellationToken);
-                if (existing is not null && existing is not DBNull)
-                    throw new InvalidOperationException($"Monitor #{Convert.ToInt64(existing)} already owns the intentional handoff target conversation.");
-            }
+            var canonicalTargetUrl = NormalizeStableConversationUrl(targetUrl);
+            if (ChatGptConversationIdentity.IsSame(currentUrl, canonicalTargetUrl))
+                throw new InvalidOperationException("Intentional handoff requires a different target conversation.");
+            var existingOwner = await FindLogicalConversationOwnerIdAsync(connection, transaction, canonicalTargetUrl, monitorId, cancellationToken);
+            if (existingOwner.HasValue)
+                throw new InvalidOperationException($"Monitor #{existingOwner.Value} already owns the intentional handoff target conversation.");
 
             var nextRotationCount = incrementRotationCount ? checked(currentRotationCount + 1) : currentRotationCount;
             var appliedTitle = string.IsNullOrWhiteSpace(targetTitle) ? currentTitle : targetTitle;
@@ -452,7 +473,7 @@ public sealed class LocalDatabase
                 update.Parameters.AddWithValue("$id", monitorId);
                 update.Parameters.AddWithValue("$tabId", targetTabId);
                 update.Parameters.AddWithValue("$title", appliedTitle);
-                update.Parameters.AddWithValue("$url", targetUrl);
+                update.Parameters.AddWithValue("$url", canonicalTargetUrl);
                 update.Parameters.AddWithValue("$rotationCount", nextRotationCount);
                 update.Parameters.AddWithValue("$updatedAt", now);
                 if (await update.ExecuteNonQueryAsync(cancellationToken) != 1)
@@ -504,7 +525,7 @@ public sealed class LocalDatabase
             return new MonitorConversationHandoffDatabaseResult(
                 monitorId,
                 currentUrl,
-                targetUrl,
+                canonicalTargetUrl,
                 nextRotationCount,
                 appliedTitle);
         }
@@ -513,6 +534,66 @@ public sealed class LocalDatabase
             try { transaction.Rollback(); } catch { }
             throw;
         }
+    }
+
+    private static string NormalizeStableConversationUrl(string url)
+    {
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(url))
+            throw new InvalidOperationException("A stable ChatGPT conversation URL is required.");
+        return ChatGptConversationIdentity.Normalize(url);
+    }
+
+    private static bool ConversationIdentityMatches(string currentUrl, string expectedUrl)
+    {
+        var currentStable = RuntimeHealthPresentation.IsChatGptConversationUrl(currentUrl);
+        var expectedStable = RuntimeHealthPresentation.IsChatGptConversationUrl(expectedUrl);
+        return currentStable && expectedStable
+            ? ChatGptConversationIdentity.IsSame(currentUrl, expectedUrl)
+            : string.Equals(currentUrl, expectedUrl, StringComparison.Ordinal);
+    }
+
+    private static async Task<long?> FindLogicalConversationOwnerIdAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string targetUrl,
+        long? excludeMonitorId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = excludeMonitorId.HasValue
+            ? "SELECT Id, Url FROM SavedMonitors WHERE Id<>$id ORDER BY Id;"
+            : "SELECT Id, Url FROM SavedMonitors ORDER BY Id;";
+        if (excludeMonitorId.HasValue)
+            command.Parameters.AddWithValue("$id", excludeMonitorId.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var id = reader.GetInt64(0);
+            var url = reader.GetString(1);
+            if (ChatGptConversationIdentity.IsSame(url, targetUrl))
+                return id;
+        }
+        return null;
+    }
+
+    private static async Task<int> CountLogicalConversationOwnersAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string targetUrl,
+        CancellationToken cancellationToken)
+    {
+        var count = 0;
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT Url FROM SavedMonitors;";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (ChatGptConversationIdentity.IsSame(reader.GetString(0), targetUrl))
+                count++;
+        }
+        return count;
     }
 
     private static void ClampMonitorSettings(SavedMonitor monitor)

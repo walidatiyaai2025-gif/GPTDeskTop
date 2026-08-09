@@ -11,7 +11,7 @@ public static class MonitorConversationOwnership
 
         foreach (var group in monitors
                      .Where(monitor => monitor.Id > 0 && RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url))
-                     .GroupBy(monitor => monitor.Url, StringComparer.OrdinalIgnoreCase)
+                     .GroupBy(monitor => ChatGptConversationIdentity.Normalize(monitor.Url), StringComparer.OrdinalIgnoreCase)
                      .Where(group => group.Skip(1).Any()))
         {
             foreach (var monitor in group)
