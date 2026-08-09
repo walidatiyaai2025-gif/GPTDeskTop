@@ -40,6 +40,32 @@ public sealed class RuntimeHealthPresentationTests
     }
 
     [Fact]
+    public void GenericChatGptPagesDoNotSatisfyOperationalConversationAvailability()
+    {
+        var urls = new[]
+        {
+            "https://chatgpt.com/",
+            "https://chatgpt.com/share/shared-conversation",
+            "https://chatgpt.com/?temporary-chat=true"
+        };
+
+        Assert.All(urls, url => Assert.True(RuntimeHealthPresentation.IsChatGptTabUrl(url)));
+        var conversationCount = urls.Count(RuntimeHealthPresentation.IsChatGptConversationUrl);
+        Assert.Equal(0, conversationCount);
+
+        var snapshot = RuntimeHealthPresentation.Create(
+            chromeReachable: true,
+            databaseReachable: true,
+            chatGptTabCount: conversationCount,
+            savedMonitorCount: 1,
+            runningMonitorCount: 0,
+            checkedAt: DateTimeOffset.UtcNow);
+
+        Assert.Equal(RuntimeHealthLevel.Degraded, snapshot.Level);
+        Assert.Contains("no ChatGPT tab", snapshot.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void InvalidMonitorIdentityBlocksRecoveryAndForcesDegradedHealth()
     {
         var snapshot = RuntimeHealthPresentation.Create(
