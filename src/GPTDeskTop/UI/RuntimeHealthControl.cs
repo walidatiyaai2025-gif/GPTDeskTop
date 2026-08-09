@@ -309,7 +309,9 @@ public sealed class RuntimeHealthControl : UserControl
                 duplicateMonitorOwnershipCount: duplicateMonitorCount);
 
             Render(snapshot);
-            _repairButton.Enabled = chromeProbe.Succeeded && databaseProbe.Succeeded && invalidMonitorCount > 0;
+            _repairButton.Enabled = chromeProbe.Succeeded
+                && databaseProbe.Succeeded
+                && (invalidMonitorCount > 0 || duplicateMonitorCount > 0);
             _retryRecoveryButton.Enabled = !_recoveryRetrying
                 && chromeProbe.Succeeded
                 && databaseProbe.Succeeded
@@ -455,7 +457,7 @@ public sealed class RuntimeHealthControl : UserControl
         {
             MessageBox.Show(
                 FindForm(),
-                $"Crash recovery is blocked by duplicate ownership on {duplicateMonitorCount} saved monitor row(s). Remove or rebind the duplicate monitor rows before retrying.",
+                $"Crash recovery is blocked by duplicate ownership on {duplicateMonitorCount} saved monitor row(s). Use Repair… to move a duplicate owner to an unowned stable conversation before retrying.",
                 "Recovery Blocked",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);

@@ -63,6 +63,9 @@ The v1.8.0 release-readiness baseline remains intact. Post-1.8 maintenance is ex
 - Stable Conversation Health Counting is merged on `main` (`2891a1dea35138415480f2a7228ab028c0750e0f`): Runtime Health now presents a `Conversations` metric and counts only stable HTTPS ChatGPT `/c/{conversation-id}` targets for operational availability. Support diagnostics preserve the existing `ChatGptTabCount` schema property but apply the same strict conversation validator. Generic ChatGPT Home, share and temporary/new-chat pages no longer satisfy monitorable-conversation availability, while the broader trusted-host detector remains unchanged for configuration classification and other non-operational uses.
 - Duplicate-Safe Monitor Registration is merged on `main` (`7be9af6408dd4b2c89db0a8a26613c97111b9a72`): all new `SaveMonitorAsync` registrations now pass through `RegisterMonitorIfConversationAvailableAsync`, which starts a non-deferred SQLite writer transaction before the ownership lookup, compares conversation URLs case-insensitively with `COLLATE NOCASE`, inserts only when no owner exists, and otherwise resolves to the existing Monitor ID without overwriting its configuration. Existing-row updates remain unchanged. No UNIQUE schema migration is introduced, so legacy databases that already contain duplicate conversation ownership still open and remain detectable by import/repair ambiguity handling. Deterministic real-SQLite concurrency coverage verifies overlapping same-URL registrations create exactly one row.
 
+- Legacy Duplicate Ownership Quarantine is merged on `main` (`7535c858ea95d192a34c738d46420e0adaf8ac79`): development delivery and crash recovery now use the shared `MonitorConversationOwnership` analyzer to quarantine every row in a legacy duplicate stable-conversation ownership group before opt-in, tab resolution, Chrome target selection or recovery delivery. Duplicate ownership records explicit diagnostics, cannot create success receipts, and keeps recovery pending without changing unique-owner behavior.
+- Operator Duplicate Ownership Runtime Boundary is merged on `main` (`229d0da9d5cc7b401fa7f8ecb045cabe93d6c293`): direct operator monitor start now refuses duplicate owners before worker creation, records `MonitorStartDuplicateConversationOwnership`, Runtime Health reports duplicate-owner counts as a degraded blocker, PendingRetry is disabled while duplicates remain, and privacy-safe Support Diagnostics exports only the aggregate duplicate-owner count with no monitor/conversation identity.
+
 ## Release-Readiness Baseline
 
 - **Functional/main baseline:** commit `a8761668` passed the complete `Build GPTDeskTop` workflow, including runtime automation, all invariant checks, application build, Setup build, Build helper and rotation safety.
@@ -85,7 +88,7 @@ The v1.8.0 release-readiness baseline remains intact. Post-1.8 maintenance is ex
 
 ## Next Executable Task
 
-There is no open implementation issue after #53. Continue post-1.8 maintenance by auditing the next concrete operator/runtime gap, creating a tracked issue, implementing it on a branch, and merging only after the full CI gate set is green. Release publication remains a separate explicit operation and should not be performed implicitly.
+Issue #61 is the current tracked post-1.8 task: provide a safe guided remediation path for legacy duplicate stable-conversation ownership by rebinding exactly one duplicate owner to an unowned stable conversation while preserving its Monitor ID, history, configuration, rotation state and recovery state. Merge only after the full CI gate set is green. Release publication remains a separate explicit operation and should not be performed implicitly.
 
 ## Non-Negotiable Delivery Rules
 
