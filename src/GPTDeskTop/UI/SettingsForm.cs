@@ -6,6 +6,7 @@ namespace GPTDeskTop.UI;
 public sealed class SettingsForm : Form
 {
     private readonly LocalDatabase _database;
+    private readonly Func<bool> _hasRunningMonitors;
     private readonly NumericUpDown _defaultDelay = new() { Minimum = 0, Maximum = 300, Width = 140 };
     private readonly NumericUpDown _defaultTimer = new() { Minimum = 1, Maximum = 60, Width = 140 };
     private readonly NumericUpDown _rotateAfterMessages = new() { Minimum = 0, Maximum = 10000, Width = 140 };
@@ -33,9 +34,10 @@ public sealed class SettingsForm : Form
 
     private bool _busy;
 
-    public SettingsForm(LocalDatabase database)
+    public SettingsForm(LocalDatabase database, Func<bool>? hasRunningMonitors = null)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
+        _hasRunningMonitors = hasRunningMonitors ?? (() => false);
         Text = "GPTDeskTop Settings";
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.Sizable;
@@ -463,6 +465,7 @@ public sealed class SettingsForm : Form
     private async Task ImportConfigurationBackupAsync()
     {
         if (_busy) return;
+        if (!EnsureConfigurationImportRuntimeSafe()) return;
 
         using var dialog = new OpenFileDialog
         {
@@ -504,6 +507,8 @@ public sealed class SettingsForm : Form
                 _statusLabel.Text = "Configuration backup import canceled before changes were applied.";
                 return;
             }
+
+            if (!EnsureConfigurationImportRuntimeSafe()) return;
 
             SetBusy(true, "Importing configuration backup transactionally…");
             var result = await service.ApplyAsync(plan);
@@ -550,4 +555,19 @@ public sealed class SettingsForm : Form
                 MessageBoxIcon.Error);
         }
     }
+    private bool EnsureConfigurationImportRuntimeSafe()
+    {
+        if (!_hasRunningMonitors()) return true;
+
+        _statusLabel.Text = "Configuration import is blocked while monitor runtime is active. Stop All monitors first.";
+        MessageBox.Show(
+            this,
+            "Configuration import cannot run while one or more monitors are active. Use Stop All in the main window, then retry the import. Running monitors are never stopped automatically.",
+            "Stop Monitors Before Import",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
+        return false;
+    }
+
+
 }
