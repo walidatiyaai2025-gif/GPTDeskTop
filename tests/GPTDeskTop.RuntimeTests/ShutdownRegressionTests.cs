@@ -35,11 +35,11 @@ public sealed class ShutdownRegressionTests
     }
 
     [Fact]
-    public void FinalCleanupRunsAfterWinFormsMessageLoopAndDoesNotCaptureUiContext()
+    public void FinalCleanupRunsAfterWinFormsMessageLoopAndOffTheUiContext()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
         var runIndex = source.IndexOf("Application.Run(mainForm);", StringComparison.Ordinal);
-        var finalizeIndex = source.IndexOf("FinalizeGracefulShutdownAsync(database, developmentRuntime).GetAwaiter().GetResult();", StringComparison.Ordinal);
+        var finalizeIndex = source.IndexOf("Task.Run(() => FinalizeGracefulShutdownAsync(database, developmentRuntime)).GetAwaiter().GetResult();", StringComparison.Ordinal);
 
         Assert.True(runIndex >= 0);
         Assert.True(finalizeIndex > runIndex);
