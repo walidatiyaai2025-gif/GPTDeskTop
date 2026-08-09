@@ -37,6 +37,16 @@ public sealed class SupportBundleUiRegressionTests
     }
 
     [Fact]
+    public void BundleImplementationCountsOnlyStableConversationsButKeepsBroadConfigClassification()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "SupportBundleService.cs");
+
+        Assert.Contains("tabs.Count(tab => RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))", source, StringComparison.Ordinal);
+        Assert.Contains("RuntimeHealthPresentation.IsChatGptTabUrl(config.Chrome.StartUrl)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("tabs.Count(tab => RuntimeHealthPresentation.IsChatGptTabUrl(tab.Url))", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BundleImplementationCollectsOnlySanitizedRecoveryStateAndDoesNotCopySensitiveSourceFiles()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "SupportBundleService.cs");
