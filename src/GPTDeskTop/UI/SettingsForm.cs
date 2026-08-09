@@ -105,7 +105,7 @@ public sealed class SettingsForm : Form
         var page = CreateTab("Rotation & Recovery");
         var layout = CreateSettingsLayout(9);
         AddSectionTitle(layout, 0, "Conversation continuity", "Proactively rotate chats before they become too long while preserving the same Monitor ID.");
-        AddRow(layout, 2, "Rotate after assistant messages", _rotateAfterMessages, "0 disables proactive message-count rotation. The current visible assistant count is used.");
+        AddRow(layout, 2, "Rotate after assistant messages (0 = off)", _rotateAfterMessages, "0 disables proactive message-count rotation. The current visible assistant count is used.");
         AddRow(layout, 3, "New Chat start message", _messageCountRotationStartMessage, "Fixed message sent after a successful message-count rotation.");
         AddSectionTitle(layout, 5, "Timeout recovery", "Used when ChatGPT reports a message-delivery timeout and a recovery chat is created.");
         AddRow(layout, 7, "Recovery message", _timeoutRecovery, "Message sent to the newly-created recovery conversation.");
