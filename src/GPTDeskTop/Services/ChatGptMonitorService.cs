@@ -44,26 +44,67 @@ public sealed class ChatGptMonitorService
 
     private async Task MonitorLoopAsync(SavedMonitor monitor, ChromeTab tab, CancellationToken cancellationToken)
     {
-        var timerSeconds = Math.Clamp(monitor.TimerSeconds, 1, 60); var replyDelaySeconds = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300); var noResponseSeconds = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600, cancellationToken); var transientFailures = 0;
-        Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Timer {timerSeconds}s | Delay {replyDelaySeconds}s | No-response refresh {noResponseSeconds}s | Rotation {(monitor.ConversationRotationEnabled ? "ON" : "OFF")} | Model routing {(monitor.ModelRoutingEnabled ? "ON" : "OFF")} | Reply: {monitor.AutoReply}");
+        var timerSeconds = Math.Clamp(monitor.TimerSeconds, 1, 60);
+        var replyDelaySeconds = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300);
+        var noResponseSeconds = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600, cancellationToken);
+        var rotateAfterMessages = await _database.GetIntSettingAsync("RotateAfterAssistantMessages", 0, 0, 10000, cancellationToken);
+        var messageCountRotationStartMessage = await _database.GetSettingAsync("MessageCountRotationStartMessage", cancellationToken) ?? "كمل";
+        var transientFailures = 0;
+        Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Timer {timerSeconds}s | Delay {replyDelaySeconds}s | No-response refresh {noResponseSeconds}s | Rotation {(monitor.ConversationRotationEnabled ? "ON" : "OFF")} | Count rotation {(rotateAfterMessages > 0 ? $"{rotateAfterMessages} assistant messages" : "OFF")} | Model routing {(monitor.ModelRoutingEnabled ? "ON" : "OFF")} | Reply: {monitor.AutoReply}");
         try
         {
-            var initial = await GetChatStateWithRetryAsync(monitor.Id, tab, cancellationToken); var lastHandledText = GetEffectiveResponse(initial); var candidateText = string.Empty; var candidateSince = DateTimeOffset.MinValue; var lastResponseActivity = DateTimeOffset.UtcNow;
+            var initial = await GetChatStateWithRetryAsync(monitor.Id, tab, cancellationToken);
+            var initialCountRotationDue = monitor.ConversationRotationEnabled && rotateAfterMessages > 0 && initial.AssistantCount >= rotateAfterMessages;
+            var lastHandledText = initialCountRotationDue ? string.Empty : GetEffectiveResponse(initial);
+            var candidateText = string.Empty;
+            var candidateSince = DateTimeOffset.MinValue;
+            var lastResponseActivity = DateTimeOffset.UtcNow;
             await ApplyModelRouteAsync(monitor, tab, recovery: false, contextRotation: false, cancellationToken);
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(timerSeconds));
             while (await timer.WaitForNextTickAsync(cancellationToken))
             {
                 try
                 {
-                    var prefix = $"[{monitor.Title}]"; var state = await _chrome.GetChatStateAsync(tab, cancellationToken); var text = GetEffectiveResponse(state); transientFailures = 0;
+                    var prefix = $"[{monitor.Title}]";
+                    var state = await _chrome.GetChatStateAsync(tab, cancellationToken);
+                    var text = GetEffectiveResponse(state);
+                    transientFailures = 0;
                     noResponseSeconds = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600, cancellationToken);
+                    rotateAfterMessages = await _database.GetIntSettingAsync("RotateAfterAssistantMessages", 0, 0, 10000, cancellationToken);
+                    messageCountRotationStartMessage = await _database.GetSettingAsync("MessageCountRotationStartMessage", cancellationToken) ?? "كمل";
+                    var messageCountThresholdReached = monitor.ConversationRotationEnabled && rotateAfterMessages > 0 && state.AssistantCount >= rotateAfterMessages && !IsConversationContextLimit(text);
+                    var rotationSlotAvailable = monitor.MaxConversationRotations <= 0 || monitor.RotationCount < monitor.MaxConversationRotations;
+                    var messageCountRotationDue = messageCountThresholdReached && rotationSlotAvailable;
+
                     if ((DateTimeOffset.UtcNow - lastResponseActivity).TotalSeconds >= noResponseSeconds)
                     { Activity?.Invoke(monitor.Id, $"{prefix} No new response for {noResponseSeconds}s. Refreshing this tab..."); await _chrome.ReloadTabAsync(tab, cancellationToken); await _database.AddLogAsync("System", "Page.reload", $"No assistant response for {noResponseSeconds} seconds.", "NoResponseRefresh", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke(); lastResponseActivity = DateTimeOffset.UtcNow; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; await Task.Delay(Math.Max(1000, _config.DelayAfterSendMilliseconds), cancellationToken); continue; }
-                    if (state.IsGenerating || string.IsNullOrWhiteSpace(text) || string.Equals(text, lastHandledText, StringComparison.Ordinal)) { candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; continue; }
+                    if (state.IsGenerating || string.IsNullOrWhiteSpace(text) || (string.Equals(text, lastHandledText, StringComparison.Ordinal) && !messageCountRotationDue)) { candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; continue; }
                     if (!string.Equals(candidateText, text, StringComparison.Ordinal)) { candidateText = text; candidateSince = DateTimeOffset.UtcNow; Activity?.Invoke(monitor.Id, $"{prefix} New response detected..."); continue; }
                     if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue;
                     lastHandledText = text; lastResponseActivity = DateTimeOffset.UtcNow; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
                     var isError = !string.IsNullOrWhiteSpace(state.ErrorText) || IsErrorResponse(text); await _database.AddLogAsync("Inbound", string.Empty, text, IsConversationContextLimit(text) ? "ConversationLimit" : isError ? "Error" : "Detected", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke(); ResponseReceived?.Invoke(monitor.Id, monitor.Title, text, isError);
+
+                    if (messageCountThresholdReached && !rotationSlotAvailable)
+                    {
+                        Activity?.Invoke(monitor.Id, $"{prefix} Assistant count {state.AssistantCount} reached the configured rotation threshold {rotateAfterMessages}, but maximum rotations ({monitor.MaxConversationRotations}) has been reached. Continuing on the current chat.");
+                        await _database.AddLogAsync("System", messageCountRotationStartMessage, text, "MessageCountRotationLimitReached", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke();
+                    }
+
+                    if (messageCountRotationDue)
+                    {
+                        var oldTab = tab;
+                        var newTab = await RotateByMessageCountAsync(monitor, oldTab, state.AssistantCount, rotateAfterMessages, text, messageCountRotationStartMessage, cancellationToken);
+                        if (newTab is null)
+                        {
+                            lastHandledText = string.Empty; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; lastResponseActivity = DateTimeOffset.UtcNow;
+                            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+                            continue;
+                        }
+
+                        tab = newTab; lastHandledText = string.Empty; lastResponseActivity = DateTimeOffset.UtcNow; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
+                        continue;
+                    }
+
                     if (monitor.ConversationRotationEnabled && IsConversationContextLimit(text))
                     {
                         if (monitor.MaxConversationRotations > 0 && monitor.RotationCount >= monitor.MaxConversationRotations) { Activity?.Invoke(monitor.Id, $"{prefix} Conversation limit detected, but maximum rotations ({monitor.MaxConversationRotations}) has been reached. Monitor remains stopped on the current chat."); await _database.AddLogAsync("System", monitor.NewChatStartMessage, text, "RotationLimitReached", monitor.Id, tab.Id, monitor.Title, cancellationToken); continue; }
@@ -112,6 +153,47 @@ public sealed class ChatGptMonitorService
         catch (Exception ex) when (IsTransientChromeException(ex)) { Activity?.Invoke(monitor.Id, $"Chrome connection unavailable during startup. Monitor remains stopped and can be started again: {ex.Message}"); }
         catch (Exception ex) { await ExceptionLogService.LogAsync(ex, "ChatGptMonitorService.WorkerFatal", monitor.Id, tab.Id, monitor.Title); Activity?.Invoke(monitor.Id, $"Monitor worker stopped by exception: {ex.Message}"); }
         finally { lock (_sync) { if (_running.TryGetValue(monitor.Id, out var current) && current.Cancellation.Token == cancellationToken) _running.Remove(monitor.Id); } RunningStateChanged?.Invoke(); }
+    }
+
+    private async Task<ChromeTab?> RotateByMessageCountAsync(SavedMonitor monitor, ChromeTab oldTab, int assistantCount, int threshold, string triggerText, string configuredStartMessage, CancellationToken cancellationToken)
+    {
+        var prefix = $"[{monitor.Title}]";
+        var startMessage = string.IsNullOrWhiteSpace(configuredStartMessage) ? "كمل" : configuredStartMessage.Trim();
+        Activity?.Invoke(monitor.Id, $"{prefix} Assistant count {assistantCount} reached threshold {threshold}. Opening a new ChatGPT conversation...");
+
+        if (monitor.NewChatDelaySeconds > 0)
+            await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(monitor.NewChatDelaySeconds, 0, 600)), cancellationToken);
+
+        var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
+        await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken);
+        await ApplyModelRouteAsync(monitor, newTab, recovery: false, contextRotation: true, cancellationToken);
+        await Task.Delay(Math.Max(500, _config.DelayAfterSendMilliseconds), cancellationToken);
+
+        var sent = await SendWhenReadyAsync(monitor.Id, newTab, startMessage, allowRecoveryReload: true, cancellationToken);
+        if (!sent)
+        {
+            Activity?.Invoke(monitor.Id, $"{prefix} Message-count rotation start message was not verified. Closing the unused new tab and retrying later.");
+            await _database.AddLogAsync("System", startMessage, triggerText, "MessageCountRotationDeferred", monitor.Id, newTab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke();
+            try { await _chrome.CloseTabAsync(newTab, cancellationToken); } catch (Exception closeEx) when (IsTransientChromeException(closeEx)) { Activity?.Invoke(monitor.Id, $"Deferred message-count rotation tab close failed transiently: {closeEx.Message}"); }
+            return null;
+        }
+
+        monitor.RotationCount++;
+        monitor.TabId = newTab.Id;
+        monitor.Title = string.IsNullOrWhiteSpace(newTab.Title) ? $"ChatGPT Chat #{monitor.RotationCount + 1}" : newTab.Title;
+        monitor.Url = newTab.Url;
+        await _database.SaveMonitorAsync(monitor, cancellationToken);
+        await _database.AddConversationRotationAsync(monitor.Id, oldTab.Id, newTab.Id, "AssistantMessageCount", startMessage, cancellationToken);
+        await _database.AddLogAsync("System", startMessage, triggerText, "RotatedByMessageCount", monitor.Id, newTab.Id, monitor.Title, cancellationToken);
+        await _database.AddLogAsync("Outbound", startMessage, string.Empty, "MessageCountRotationStartSent", monitor.Id, newTab.Id, monitor.Title, cancellationToken);
+        HistoryChanged?.Invoke();
+        Activity?.Invoke(monitor.Id, $"{prefix} Message-count rotation #{monitor.RotationCount} complete. Same Monitor ID is now bound to the new conversation.");
+
+        try { await _chrome.CloseTabAsync(oldTab, cancellationToken); } catch (Exception closeEx) when (IsTransientChromeException(closeEx)) { Activity?.Invoke(monitor.Id, $"Old chat close was deferred after message-count rotation: {closeEx.Message}"); }
+        if (monitor.RotationCooldownSeconds > 0)
+            await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(monitor.RotationCooldownSeconds, 0, 3600)), cancellationToken);
+
+        return newTab;
     }
 
     private async Task WaitForChatReadyAsync(long monitorId, ChromeTab tab, CancellationToken cancellationToken)
