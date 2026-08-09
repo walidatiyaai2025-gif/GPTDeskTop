@@ -3,6 +3,8 @@ using Microsoft.Data.Sqlite;
 
 namespace GPTDeskTop.Data;
 
+public sealed record ConfigurationImportDatabaseResult(int SettingsApplied, int MonitorsUpdated, int MonitorsInserted);
+
 public sealed class LocalDatabase
 {
     private readonly string _connectionString;
@@ -146,6 +148,111 @@ public sealed class LocalDatabase
             ModelRoutingEnabled=reader.GetInt64(14)!=0,PreferredModel=reader.GetString(15),FallbackModel=reader.GetString(16),CreatedAt=ParseLocal(reader.GetString(17)),UpdatedAt=ParseLocal(reader.GetString(18))
         });
         return result;
+    }
+
+    public async Task<ConfigurationImportDatabaseResult> ApplyConfigurationImportAsync(
+        IReadOnlyDictionary<string, string> settings,
+        IReadOnlyList<SavedMonitor> monitors,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(monitors);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
+
+        var settingsApplied = 0;
+        var monitorsUpdated = 0;
+        var monitorsInserted = 0;
+        var now = DateTime.UtcNow.ToString("O");
+
+        try
+        {
+            foreach (var pair in settings)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await using var settingCommand = connection.CreateCommand();
+                settingCommand.Transaction = transaction;
+                settingCommand.CommandText = "INSERT INTO AppSettings(Key,Value) VALUES($key,$value) ON CONFLICT(Key) DO UPDATE SET Value=excluded.Value;";
+                settingCommand.Parameters.AddWithValue("$key", pair.Key);
+                settingCommand.Parameters.AddWithValue("$value", pair.Value ?? string.Empty);
+                await settingCommand.ExecuteNonQueryAsync(cancellationToken);
+                settingsApplied++;
+            }
+
+            foreach (var monitor in monitors)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var matchingIds = new List<long>(2);
+                await using (var findCommand = connection.CreateCommand())
+                {
+                    findCommand.Transaction = transaction;
+                    findCommand.CommandText = "SELECT Id FROM SavedMonitors WHERE Url=$url ORDER BY Id LIMIT 2;";
+                    findCommand.Parameters.AddWithValue("$url", monitor.Url ?? string.Empty);
+                    await using var reader = await findCommand.ExecuteReaderAsync(cancellationToken);
+                    while (await reader.ReadAsync(cancellationToken)) matchingIds.Add(reader.GetInt64(0));
+                }
+
+                if (matchingIds.Count > 1)
+                    throw new InvalidOperationException($"Cannot import monitor '{monitor.Url}' because more than one local monitor has that exact conversation URL.");
+
+                await using var monitorCommand = connection.CreateCommand();
+                monitorCommand.Transaction = transaction;
+
+                if (matchingIds.Count == 1)
+                {
+                    monitorCommand.CommandText = """
+                        UPDATE SavedMonitors SET
+                            Title=$title, AutoReply=$autoReply, ReplyDelaySeconds=$replyDelay, TimerSeconds=$timer, Enabled=$enabled,
+                            ConversationRotationEnabled=$rotationEnabled, NewChatStartMessage=$message, NewChatDelaySeconds=$newChatDelay,
+                            RotationCooldownSeconds=$cooldown, MaxConversationRotations=$maxRotations,
+                            ModelRoutingEnabled=$modelRouting, PreferredModel=$preferredModel, FallbackModel=$fallbackModel, UpdatedAt=$updatedAt
+                        WHERE Id=$id;
+                        """;
+                    monitorCommand.Parameters.AddWithValue("$id", matchingIds[0]);
+                    monitorsUpdated++;
+                }
+                else
+                {
+                    monitorCommand.CommandText = """
+                        INSERT INTO SavedMonitors(
+                            TabId,Title,Url,AutoReply,ReplyDelaySeconds,TimerSeconds,Enabled,ConversationRotationEnabled,
+                            NewChatStartMessage,NewChatDelaySeconds,RotationCooldownSeconds,MaxConversationRotations,RotationCount,
+                            ModelRoutingEnabled,PreferredModel,FallbackModel,CreatedAt,UpdatedAt)
+                        VALUES('', $title,$url,$autoReply,$replyDelay,$timer,$enabled,$rotationEnabled,$message,$newChatDelay,$cooldown,$maxRotations,0,$modelRouting,$preferredModel,$fallbackModel,$createdAt,$updatedAt);
+                        """;
+                    monitorCommand.Parameters.AddWithValue("$url", monitor.Url ?? string.Empty);
+                    monitorCommand.Parameters.AddWithValue("$createdAt", now);
+                    monitorsInserted++;
+                }
+
+                monitorCommand.Parameters.AddWithValue("$title", monitor.Title ?? string.Empty);
+                monitorCommand.Parameters.AddWithValue("$autoReply", monitor.AutoReply ?? string.Empty);
+                monitorCommand.Parameters.AddWithValue("$replyDelay", Math.Clamp(monitor.ReplyDelaySeconds, 0, 300));
+                monitorCommand.Parameters.AddWithValue("$timer", Math.Clamp(monitor.TimerSeconds, 1, 60));
+                monitorCommand.Parameters.AddWithValue("$enabled", monitor.Enabled ? 1 : 0);
+                monitorCommand.Parameters.AddWithValue("$rotationEnabled", monitor.ConversationRotationEnabled ? 1 : 0);
+                monitorCommand.Parameters.AddWithValue("$message", monitor.NewChatStartMessage ?? string.Empty);
+                monitorCommand.Parameters.AddWithValue("$newChatDelay", Math.Clamp(monitor.NewChatDelaySeconds, 0, 600));
+                monitorCommand.Parameters.AddWithValue("$cooldown", Math.Clamp(monitor.RotationCooldownSeconds, 0, 3600));
+                monitorCommand.Parameters.AddWithValue("$maxRotations", Math.Clamp(monitor.MaxConversationRotations, 0, 1000));
+                monitorCommand.Parameters.AddWithValue("$modelRouting", monitor.ModelRoutingEnabled ? 1 : 0);
+                monitorCommand.Parameters.AddWithValue("$preferredModel", string.IsNullOrWhiteSpace(monitor.PreferredModel) ? "Auto" : monitor.PreferredModel);
+                monitorCommand.Parameters.AddWithValue("$fallbackModel", string.IsNullOrWhiteSpace(monitor.FallbackModel) ? "Auto" : monitor.FallbackModel);
+                monitorCommand.Parameters.AddWithValue("$updatedAt", now);
+                await monitorCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            transaction.Commit();
+            return new ConfigurationImportDatabaseResult(settingsApplied, monitorsUpdated, monitorsInserted);
+        }
+        catch
+        {
+            try { transaction.Rollback(); } catch { }
+            throw;
+        }
     }
 
     public async Task DeleteMonitorAsync(long monitorId, CancellationToken cancellationToken = default)
