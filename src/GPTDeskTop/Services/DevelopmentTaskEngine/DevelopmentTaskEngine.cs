@@ -298,7 +298,10 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
     {
         if (!File.Exists(_messagesPath)) return [];
         await using var stream = File.OpenRead(_messagesPath);
-        var document = await JsonSerializer.DeserializeAsync<MessageDocument>(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var document = await JsonSerializer.DeserializeAsync<MessageDocument>(
+            stream,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true },
+            cancellationToken).ConfigureAwait(false);
         return document?.Messages?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
     }
 
