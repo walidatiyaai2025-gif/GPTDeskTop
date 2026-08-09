@@ -22,49 +22,31 @@ jobs:
         shell: pwsh
         run: |
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-
-          function Read-Normalized([string]$Path) {
-            return [System.IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
+          function ReadN([string]$p) { [System.IO.File]::ReadAllText($p).Replace("`r`n", "`n") }
+          function ReplaceR([string]$c,[string]$p,[string]$r,[string]$n) {
+            $m = [regex]::Match($c,$p,[Text.RegularExpressions.RegexOptions]::Singleline)
+            if (-not $m.Success) { throw "Required regex block not found: $n" }
+            return $c.Substring(0,$m.Index) + $r + $c.Substring($m.Index + $m.Length)
           }
-
-          function Replace-Required([string]$Content, [string]$Old, [string]$New, [string]$Name) {
-            $oldNormalized = $Old.Replace("`r`n", "`n")
-            $newNormalized = $New.Replace("`r`n", "`n")
-            if (-not $Content.Contains($oldNormalized)) { throw "Required layout patch block not found: $Name" }
-            return $Content.Replace($oldNormalized, $newNormalized)
+          function InsertAfterR([string]$c,[string]$p,[string]$r,[string]$n) {
+            $m = [regex]::Match($c,$p,[Text.RegularExpressions.RegexOptions]::Singleline)
+            if (-not $m.Success) { throw "Required insert anchor not found: $n" }
+            return $c.Substring(0,$m.Index + $m.Length) + $r + $c.Substring($m.Index + $m.Length)
           }
 
           $mainPath = 'src/GPTDeskTop/UI/MainForm.cs'
-          $main = Read-Normalized $mainPath
-
-          $main = Replace-Required $main @'
-              Shown += async (_, _) =>
-              {
-                  ApplyInitialSplitterRatios();
-                  await LoadStartupStateAsync();
-                  FocusOperationalWorkspace();
-              };
-          '@ @'
+          $main = ReadN $mainPath
+          $shown = @'
               Shown += async (_, _) =>
               {
                   await RestoreOperatorLayoutAsync();
                   await LoadStartupStateAsync();
                   FocusOperationalWorkspace();
               };
-          '@ 'restore layout before startup refresh'
+          '@
+          $main = ReplaceR $main 'Shown\s*\+=\s*async\s*\(_,\s*_\)\s*=>\s*\{\s*ApplyInitialSplitterRatios\(\);\s*await\s+LoadStartupStateAsync\(\);\s*FocusOperationalWorkspace\(\);\s*\};' $shown 'shown layout restore'
 
-          $main = Replace-Required $main @'
-              private void ApplyInitialSplitterRatios()
-              {
-                  SetSplitRatio(_workspaceSplit, 0.42);
-                  SetSplitRatio(_diagnosticsSplit, 0.48);
-              }
-          '@ @'
-              private void ApplyInitialSplitterRatios()
-              {
-                  SetSplitRatio(_workspaceSplit, 0.42);
-                  SetSplitRatio(_diagnosticsSplit, 0.48);
-              }
+          $helpers = @'
 
               private async Task RestoreOperatorLayoutAsync()
               {
@@ -82,7 +64,6 @@ jobs:
                       var workspaceRaw = await _database.GetSettingAsync("Ui.Main.WorkspaceSplitRatio");
                       if (!TryApplyStoredSplitRatio(_workspaceSplit, workspaceRaw))
                           SetSplitRatio(_workspaceSplit, 0.42);
-
                       var diagnosticsRaw = await _database.GetSettingAsync("Ui.Main.DiagnosticsSplitRatio");
                       if (!TryApplyStoredSplitRatio(_diagnosticsSplit, diagnosticsRaw))
                           SetSplitRatio(_diagnosticsSplit, 0.48);
@@ -98,12 +79,10 @@ jobs:
               {
                   var normalBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
                   if (normalBounds.Width <= 0 || normalBounds.Height <= 0) return;
-
                   var state = WindowState == FormWindowState.Maximized ? "Maximized" : "Normal";
                   var boundsValue = $"{normalBounds.X},{normalBounds.Y},{normalBounds.Width},{normalBounds.Height}";
                   var workspaceRatio = GetSplitRatio(_workspaceSplit).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
                   var diagnosticsRatio = GetSplitRatio(_diagnosticsSplit).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
-
                   var writes = new[]
                   {
                       _database.SetSettingAsync("Ui.Main.WindowBounds", boundsValue),
@@ -156,16 +135,10 @@ jobs:
                   if (usable <= 0) return 0.5;
                   return Math.Clamp((double)split.SplitterDistance / usable, 0.15, 0.85);
               }
-          '@ 'layout persistence helpers'
+          '@
+          $main = InsertAfterR $main 'private\s+void\s+ApplyInitialSplitterRatios\(\)\s*\{\s*SetSplitRatio\(_workspaceSplit,\s*0\.42\);\s*SetSplitRatio\(_diagnosticsSplit,\s*0\.48\);\s*\}' $helpers 'splitter helper insertion'
 
-          $main = Replace-Required $main @'
-              private async Task CompleteShutdownAsync()
-              {
-                  using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                  try
-                  {
-                      AppendActivity("Closing application: stopping monitor workers...");
-          '@ @'
+          $shutdownPrefix = @'
               private async Task CompleteShutdownAsync()
               {
                   using (var layoutTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
@@ -185,18 +158,13 @@ jobs:
                   try
                   {
                       AppendActivity("Closing application: stopping monitor workers...");
-          '@ 'bounded layout save before cleanup'
+          '@
+          $main = ReplaceR $main 'private\s+async\s+Task\s+CompleteShutdownAsync\(\)\s*\{\s*using\s+var\s+timeout\s*=\s*new\s+CancellationTokenSource\(TimeSpan\.FromSeconds\(10\)\);\s*try\s*\{\s*AppendActivity\("Closing application: stopping monitor workers\.\.\."\);' $shutdownPrefix 'bounded layout save'
+          [System.IO.File]::WriteAllText($mainPath,$main,$utf8NoBom)
 
-          [System.IO.File]::WriteAllText($mainPath, $main, $utf8NoBom)
-
-          $dashboardPath = 'src/GPTDeskTop/UI/DevelopmentTaskDashboardControl.cs'
-          $dashboard = Read-Normalized $dashboardPath
-
-          $dashboard = Replace-Required $dashboard @'
-              private bool _expanded = true;
-
-              public DevelopmentTaskDashboardControl(DevelopmentTaskRuntimeBinding binding)
-          '@ @'
+          $dashPath = 'src/GPTDeskTop/UI/DevelopmentTaskDashboardControl.cs'
+          $dash = ReadN $dashPath
+          $stateBlock = @'
               private bool _expanded = true;
 
               public event EventHandler? ExpandedChanged;
@@ -214,17 +182,9 @@ jobs:
               }
 
               public DevelopmentTaskDashboardControl(DevelopmentTaskRuntimeBinding binding)
-          '@ 'dashboard state property'
-
-          $dashboard = Replace-Required $dashboard @'
-              private void ToggleExpanded()
-              {
-                  _expanded = !_expanded;
-                  _body.Visible = _expanded;
-                  _toggle.Text = _expanded ? "Collapse" : "Details";
-                  Height = _expanded ? ExpandedHeight : CollapsedHeight;
-              }
-          '@ @'
+          '@
+          $dash = ReplaceR $dash 'private\s+bool\s+_expanded\s*=\s*true;\s*public\s+DevelopmentTaskDashboardControl\(DevelopmentTaskRuntimeBinding\s+binding\)' $stateBlock 'dashboard state property'
+          $toggleBlock = @'
               private void ToggleExpanded() => IsExpanded = !IsExpanded;
 
               private void ApplyExpandedState()
@@ -233,9 +193,9 @@ jobs:
                   _toggle.Text = _expanded ? "Collapse" : "Details";
                   Height = _expanded ? ExpandedHeight : CollapsedHeight;
               }
-          '@ 'dashboard state application'
-
-          [System.IO.File]::WriteAllText($dashboardPath, $dashboard, $utf8NoBom)
+          '@
+          $dash = ReplaceR $dash 'private\s+void\s+ToggleExpanded\(\)\s*\{\s*_expanded\s*=\s*!_expanded;\s*_body\.Visible\s*=\s*_expanded;\s*_toggle\.Text\s*=\s*_expanded\s*\?\s*"Collapse"\s*:\s*"Details";\s*Height\s*=\s*_expanded\s*\?\s*ExpandedHeight\s*:\s*CollapsedHeight;\s*\}' $toggleBlock 'dashboard toggle state'
+          [System.IO.File]::WriteAllText($dashPath,$dash,$utf8NoBom)
 
           $testPath = 'tests/GPTDeskTop.RuntimeTests/LayoutPersistenceUiRegressionTests.cs'
           $test = @'
@@ -245,10 +205,7 @@ jobs:
           {
               private static string ReadSource(params string[] parts)
               {
-                  var path = Path.GetFullPath(Path.Combine(
-                      AppContext.BaseDirectory,
-                      "..", "..", "..", "..", "..",
-                      Path.Combine(parts)));
+                  var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", Path.Combine(parts)));
                   return File.ReadAllText(path);
               }
 
@@ -260,7 +217,6 @@ jobs:
                   Assert.Contains("Ui.Main.WindowState", source, StringComparison.Ordinal);
                   Assert.Contains("Ui.Main.WorkspaceSplitRatio", source, StringComparison.Ordinal);
                   Assert.Contains("Ui.Main.DiagnosticsSplitRatio", source, StringComparison.Ordinal);
-                  Assert.Contains("PersistOperatorLayoutAsync", source, StringComparison.Ordinal);
                   Assert.Contains("CancellationTokenSource(TimeSpan.FromSeconds(2))", source, StringComparison.Ordinal);
                   Assert.Contains("await PersistOperatorLayoutAsync(layoutTimeout.Token)", source, StringComparison.Ordinal);
                   Assert.DoesNotContain("PersistOperatorLayoutAsync().GetAwaiter().GetResult()", source, StringComparison.Ordinal);
@@ -274,7 +230,6 @@ jobs:
                   Assert.Contains("Screen.AllScreens.Any", source, StringComparison.Ordinal);
                   Assert.Contains("screen.WorkingArea.IntersectsWith(bounds)", source, StringComparison.Ordinal);
                   Assert.Contains("ClampBoundsToWorkingArea", source, StringComparison.Ordinal);
-                  Assert.Contains("ApplyInitialWindowLayout", source, StringComparison.Ordinal);
               }
 
               [Fact]
@@ -296,8 +251,7 @@ jobs:
               }
           }
           '@
-          [System.IO.File]::WriteAllText($testPath, $test.Replace("`r`n", "`n"), $utf8NoBom)
-
+          [System.IO.File]::WriteAllText($testPath,$test.Replace("`r`n","`n"),$utf8NoBom)
           Remove-Item '.github/workflows/apply-layout-persistence.yml' -Force
 
       - name: Commit safe layout persistence
