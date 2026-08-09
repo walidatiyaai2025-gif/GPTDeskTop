@@ -5,12 +5,24 @@ namespace GPTDeskTop.Services;
 
 public static class CrashRecoveryService
 {
-    public static async Task RecoverIfPendingAsync(
+    public static Task RecoverIfPendingAsync(
         ChromeDevToolsService chrome,
         ChatGptMonitorService monitorService,
         LocalDatabase database,
         CancellationToken cancellationToken = default)
+        => RecoverIfPendingAsync(
+            new CrashRecoveryRuntimeAdapter(chrome, monitorService),
+            database,
+            cancellationToken);
+
+    public static async Task RecoverIfPendingAsync(
+        ICrashRecoveryRuntime runtime,
+        LocalDatabase database,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(runtime);
+        ArgumentNullException.ThrowIfNull(database);
+
         var pending = await database.GetSettingAsync("CrashRecoveryPending", cancellationToken);
         if (!string.Equals(pending, "1", StringComparison.Ordinal))
             return;
@@ -34,15 +46,15 @@ public static class CrashRecoveryService
 
         try
         {
-            await monitorService.StopAllAsync();
-            await chrome.CloseAllMonitorTabsAsync(cancellationToken);
-            await Task.Delay(700, cancellationToken);
+            await runtime.StopAllMonitorsAsync();
+            await runtime.CloseAllMonitorTabsAsync(cancellationToken);
+            await runtime.DelayAsync(TimeSpan.FromMilliseconds(700), cancellationToken);
 
             var firstMonitor = monitors[0];
-            chrome.LaunchMonitorChrome(string.IsNullOrWhiteSpace(firstMonitor.Url) ? null : firstMonitor.Url);
-            await Task.Delay(2200, cancellationToken);
+            runtime.LaunchMonitorChrome(string.IsNullOrWhiteSpace(firstMonitor.Url) ? null : firstMonitor.Url);
+            await runtime.DelayAsync(TimeSpan.FromMilliseconds(2200), cancellationToken);
 
-            var currentTabs = await chrome.GetTabsAsync(cancellationToken);
+            var currentTabs = await runtime.GetTabsAsync(cancellationToken);
             ChromeTab? firstTab = currentTabs.FirstOrDefault(t =>
                 string.Equals(t.Url, firstMonitor.Url, StringComparison.OrdinalIgnoreCase))
                 ?? currentTabs.FirstOrDefault();
@@ -64,7 +76,7 @@ public static class CrashRecoveryService
                 else
                 {
                     var url = string.IsNullOrWhiteSpace(saved.Url) ? "https://chatgpt.com/" : saved.Url;
-                    tab = await chrome.CreateTabAsync(url, cancellationToken);
+                    tab = await runtime.CreateTabAsync(url, cancellationToken);
                 }
 
                 // A monitor that already recovered successfully during this incident
@@ -79,11 +91,11 @@ public static class CrashRecoveryService
                     await database.SaveMonitorAsync(saved, cancellationToken);
                     await database.AddLogAsync("System", recoveryMessage, string.Empty, "CrashRecoveryAlreadyVerified", saved.Id, tab.Id, saved.Title, cancellationToken);
                     if (saved.Enabled)
-                        await monitorService.StartMonitorAsync(saved, tab);
+                        await runtime.StartMonitorAsync(saved, tab);
                     continue;
                 }
 
-                var sent = await SendWithRetryAsync(chrome, tab, recoveryMessage, cancellationToken);
+                var sent = await SendWithRetryAsync(runtime, tab, recoveryMessage, cancellationToken);
                 var outcome = sent ? CrashRecoveryOutcome.Success : CrashRecoveryOutcome.SendFailed;
                 outcomes.Add(outcome);
 
@@ -106,7 +118,7 @@ public static class CrashRecoveryService
                     await database.SetSettingAsync(successKey, "1", cancellationToken);
 
                 if (CrashRecoveryOutcomePolicy.ShouldStartMonitor(outcome, saved.Enabled))
-                    await monitorService.StartMonitorAsync(saved, tab);
+                    await runtime.StartMonitorAsync(saved, tab);
             }
 
             if (CrashRecoveryOutcomePolicy.ShouldClearPending(outcomes))
@@ -129,7 +141,7 @@ public static class CrashRecoveryService
     }
 
     private static async Task<bool> SendWithRetryAsync(
-        ChromeDevToolsService chrome,
+        ICrashRecoveryRuntime runtime,
         ChromeTab tab,
         string message,
         CancellationToken cancellationToken)
@@ -137,10 +149,12 @@ public static class CrashRecoveryService
         for (var attempt = 1; attempt <= 6; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await Task.Delay(attempt == 1 ? 1200 : 700, cancellationToken);
+            await runtime.DelayAsync(
+                attempt == 1 ? TimeSpan.FromMilliseconds(1200) : TimeSpan.FromMilliseconds(700),
+                cancellationToken);
             try
             {
-                if (await chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken))
+                if (await runtime.SendChatMessageVerifiedAsync(tab, message, cancellationToken))
                     return true;
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("Promise was collected", StringComparison.OrdinalIgnoreCase))
