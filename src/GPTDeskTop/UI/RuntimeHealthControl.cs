@@ -84,7 +84,7 @@ public sealed class RuntimeHealthControl : UserControl
         BackColor = FluentTheme.Background;
         Padding = new Padding(12, 4, 12, 4);
         AccessibleName = "Runtime health and connection center";
-        AccessibleDescription = "Shows Chrome DevTools, SQLite, ChatGPT conversation, saved monitor and crash recovery health without changing runtime state during health probes.";
+        AccessibleDescription = "Shows Chrome DevTools, SQLite, ChatGPT conversation, saved monitor, duplicate ownership and crash recovery health without changing runtime state during health probes.";
 
         BuildUi();
         ConfigureAccessibility();
@@ -252,7 +252,7 @@ public sealed class RuntimeHealthControl : UserControl
         _toolTip.SetToolTip(_toggleButton, "Show or hide runtime health details.");
         _toolTip.SetToolTip(_chromeValue, "Read-only Chrome DevTools /json/list reachability probe.");
         _toolTip.SetToolTip(_databaseValue, "Read-only SavedMonitors query against the configured SQLite database.");
-        _toolTip.SetToolTip(_recoveryValue, "Shows whether crash recovery is clear, pending, or blocked by invalid saved conversation identities.");
+        _toolTip.SetToolTip(_recoveryValue, "Shows whether crash recovery is clear, pending, or blocked by invalid identities or duplicate conversation ownership.");
     }
 
     private void WireEvents()
@@ -293,6 +293,7 @@ public sealed class RuntimeHealthControl : UserControl
             var conversationTabs = tabs.Count(tab => RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url));
             var runningMonitors = _savedMonitors.Count(monitor => _monitor.IsMonitorRunning(monitor.Id));
             var invalidMonitorCount = _savedMonitors.Count(monitor => !RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url));
+            var duplicateMonitorCount = MonitorConversationOwnership.CountDuplicateMonitors(_savedMonitors);
             var recoveryPending = databaseProbe.Value?.CrashRecoveryPending == true;
             var snapshot = RuntimeHealthPresentation.Create(
                 chromeProbe.Succeeded,
@@ -304,7 +305,8 @@ public sealed class RuntimeHealthControl : UserControl
                 chromeProbe.Error,
                 databaseProbe.Error,
                 crashRecoveryPending: recoveryPending,
-                invalidMonitorIdentityCount: invalidMonitorCount);
+                invalidMonitorIdentityCount: invalidMonitorCount,
+                duplicateMonitorOwnershipCount: duplicateMonitorCount);
 
             Render(snapshot);
             _repairButton.Enabled = chromeProbe.Succeeded && databaseProbe.Succeeded && invalidMonitorCount > 0;
@@ -312,7 +314,8 @@ public sealed class RuntimeHealthControl : UserControl
                 && chromeProbe.Succeeded
                 && databaseProbe.Succeeded
                 && recoveryPending
-                && invalidMonitorCount == 0;
+                && invalidMonitorCount == 0
+                && duplicateMonitorCount == 0;
         }
         catch (Exception ex)
         {
@@ -396,18 +399,21 @@ public sealed class RuntimeHealthControl : UserControl
         SetMetric(_tabsValue, snapshot.ChromeReachable ? snapshot.ChatGptTabCount.ToString() : "—", snapshot.ChatGptTabCount > 0 ? FluentTheme.Success : FluentTheme.Muted, "Open stable ChatGPT conversations visible through CDP.");
         SetMetric(_monitorsValue, snapshot.DatabaseReachable ? $"{snapshot.SavedMonitorCount} / {snapshot.RunningMonitorCount}" : "—", snapshot.RunningMonitorCount > 0 ? FluentTheme.Success : FluentTheme.Muted, "Saved monitors / currently running monitor workers.");
 
+        var hasRecoveryBlocker = snapshot.InvalidMonitorIdentityCount > 0 || snapshot.DuplicateMonitorOwnershipCount > 0;
         var recoveryText = snapshot.InvalidMonitorIdentityCount > 0
             ? $"Blocked ({snapshot.InvalidMonitorIdentityCount})"
-            : snapshot.CrashRecoveryPending ? "Pending" : "Clear";
-        var recoveryColor = snapshot.InvalidMonitorIdentityCount > 0 || snapshot.CrashRecoveryPending
+            : snapshot.DuplicateMonitorOwnershipCount > 0
+                ? $"Blocked (D{snapshot.DuplicateMonitorOwnershipCount})"
+                : snapshot.CrashRecoveryPending ? "Pending" : "Clear";
+        var recoveryColor = hasRecoveryBlocker || snapshot.CrashRecoveryPending
             ? FluentTheme.Warning
             : FluentTheme.Success;
         SetMetric(
             _recoveryValue,
             snapshot.DatabaseReachable ? recoveryText : "—",
             snapshot.DatabaseReachable ? recoveryColor : FluentTheme.Muted,
-            snapshot.InvalidMonitorIdentityCount > 0
-                ? "One or more saved monitors need a stable ChatGPT conversation rebind before crash recovery can complete."
+            hasRecoveryBlocker
+                ? $"Invalid conversation identities: {snapshot.InvalidMonitorIdentityCount}. Duplicate conversation owners: {snapshot.DuplicateMonitorOwnershipCount}."
                 : snapshot.CrashRecoveryPending
                     ? "Crash recovery still has unresolved work pending."
                     : "No pending crash recovery blocker is recorded.");
@@ -437,6 +443,19 @@ public sealed class RuntimeHealthControl : UserControl
             MessageBox.Show(
                 FindForm(),
                 "Crash recovery is still blocked by an invalid saved monitor identity. Use Repair… first.",
+                "Recovery Blocked",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            await RefreshAsync();
+            return;
+        }
+
+        var duplicateMonitorCount = MonitorConversationOwnership.CountDuplicateMonitors(monitors);
+        if (duplicateMonitorCount > 0)
+        {
+            MessageBox.Show(
+                FindForm(),
+                $"Crash recovery is blocked by duplicate ownership on {duplicateMonitorCount} saved monitor row(s). Remove or rebind the duplicate monitor rows before retrying.",
                 "Recovery Blocked",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
