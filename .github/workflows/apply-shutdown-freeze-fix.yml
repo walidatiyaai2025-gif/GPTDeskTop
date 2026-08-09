@@ -1,0 +1,255 @@
+name: Apply shutdown freeze fix
+
+on:
+  push:
+    branches:
+      - fix/async-shutdown-freeze
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: ${{ !contains(github.event.head_commit.message, '[shutdown-fix-applied]') }}
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/async-shutdown-freeze
+          fetch-depth: 0
+
+      - name: Apply targeted shutdown fix and regression coverage
+        shell: pwsh
+        run: |
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+          function Read-Normalized([string]$Path) {
+            return [System.IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
+          }
+
+          function Replace-Required([string]$Content, [string]$Old, [string]$New, [string]$Name) {
+            $oldNormalized = $Old.Replace("`r`n", "`n")
+            $newNormalized = $New.Replace("`r`n", "`n")
+            if (-not $Content.Contains($oldNormalized)) {
+              throw "Required shutdown patch block not found: $Name"
+            }
+            return $Content.Replace($oldNormalized, $newNormalized)
+          }
+
+          $mainPath = 'src/GPTDeskTop/UI/MainForm.cs'
+          $main = Read-Normalized $mainPath
+
+          $main = Replace-Required $main @'
+              private SavedMonitor? _selectedMonitor;
+              private bool _chromeHidden;
+          '@ @'
+              private SavedMonitor? _selectedMonitor;
+              private bool _chromeHidden;
+              private bool _shutdownRequested;
+              private bool _shutdownCompleted;
+          '@ 'MainForm shutdown state fields'
+
+          $main = Replace-Required $main @'
+              private void Ui(Action action)
+              {
+                  if (IsDisposed || Disposing) return;
+                  if (InvokeRequired) BeginInvoke(action); else action();
+              }
+          '@ @'
+              private void Ui(Action action)
+              {
+                  if (_shutdownRequested || IsDisposed || Disposing) return;
+                  if (InvokeRequired) BeginInvoke(action); else action();
+              }
+          '@ 'MainForm shutdown event guard'
+
+          $main = Replace-Required $main @'
+              protected override void OnFormClosing(FormClosingEventArgs e)
+              {
+                  try
+                  {
+                      if (_monitor.IsRunning) _monitor.StopAllAsync().GetAwaiter().GetResult();
+                      _chrome.CloseAllMonitorTabsAsync().GetAwaiter().GetResult();
+                  }
+                  catch { }
+                  _toolTip.Dispose();
+                  base.OnFormClosing(e);
+              }
+          '@ @'
+              protected override void OnFormClosing(FormClosingEventArgs e)
+              {
+                  if (_shutdownCompleted)
+                  {
+                      _toolTip.Dispose();
+                      base.OnFormClosing(e);
+                      return;
+                  }
+
+                  e.Cancel = true;
+                  if (_shutdownRequested) return;
+
+                  _shutdownRequested = true;
+                  ControlBox = false;
+                  Enabled = false;
+                  UseWaitCursor = true;
+                  Text = $"GPTDeskTop v{GetAppVersion()} - Closing...";
+                  _ = CompleteShutdownAsync();
+              }
+
+              private async Task CompleteShutdownAsync()
+              {
+                  using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                  try
+                  {
+                      AppendActivity("Closing application: stopping monitor workers...");
+                      if (_monitor.IsRunning)
+                          await _monitor.StopAllAsync().WaitAsync(timeout.Token);
+
+                      AppendActivity("Closing application: closing monitor Chrome tabs...");
+                      await _chrome.CloseAllMonitorTabsAsync(timeout.Token);
+                  }
+                  catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+                  {
+                      AppendActivity("Shutdown cleanup reached the 10-second safety timeout. Continuing application exit.");
+                  }
+                  catch (Exception ex)
+                  {
+                      ExceptionLogService.Log(ex, "MainForm.GracefulShutdown");
+                      AppendActivity($"Shutdown cleanup warning: {ex.Message}");
+                  }
+                  finally
+                  {
+                      _shutdownCompleted = true;
+                      if (!IsDisposed && IsHandleCreated)
+                      {
+                          try { BeginInvoke(new Action(Close)); }
+                          catch (InvalidOperationException) { }
+                      }
+                  }
+              }
+          '@ 'MainForm async close path'
+
+          [System.IO.File]::WriteAllText($mainPath, $main, $utf8NoBom)
+
+          $programPath = 'src/GPTDeskTop/Program.cs'
+          $program = Read-Normalized $programPath
+
+          $program = Replace-Required $program @'
+                      mainForm.FormClosed += (_, _) =>
+                      {
+                          try { CrashRecoveryStateService.MarkCleanShutdownAsync(database).GetAwaiter().GetResult(); }
+                          catch (Exception ex) { ExceptionLogService.Log(ex, "Program.MarkCleanShutdown"); }
+                          try { developmentRuntime?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+                          catch (Exception ex) { ExceptionLogService.Log(ex, "Program.DisposeDevelopmentRuntime"); }
+                          developmentRuntime = null;
+                      };
+
+                      Application.Run(mainForm);
+          '@ @'
+                      Application.Run(mainForm);
+                      FinalizeGracefulShutdownAsync(database, developmentRuntime).GetAwaiter().GetResult();
+                      developmentRuntime = null;
+          '@ 'Program post-message-loop cleanup'
+
+          $program = Replace-Required $program @'
+              private static bool TryRestartAfterFatal(LocalDatabase? database)
+          '@ @'
+              private static async Task FinalizeGracefulShutdownAsync(LocalDatabase database, DevelopmentTaskRuntimeBinding? developmentRuntime)
+              {
+                  try
+                  {
+                      await CrashRecoveryStateService.MarkCleanShutdownAsync(database)
+                          .WaitAsync(TimeSpan.FromSeconds(5))
+                          .ConfigureAwait(false);
+                  }
+                  catch (Exception ex)
+                  {
+                      ExceptionLogService.Log(ex, "Program.MarkCleanShutdown");
+                  }
+
+                  if (developmentRuntime is null) return;
+
+                  try
+                  {
+                      await developmentRuntime.DisposeAsync().AsTask()
+                          .WaitAsync(TimeSpan.FromSeconds(5))
+                          .ConfigureAwait(false);
+                  }
+                  catch (Exception ex)
+                  {
+                      ExceptionLogService.Log(ex, "Program.DisposeDevelopmentRuntime");
+                  }
+              }
+
+              private static bool TryRestartAfterFatal(LocalDatabase? database)
+          '@ 'Program bounded finalizer'
+
+          [System.IO.File]::WriteAllText($programPath, $program, $utf8NoBom)
+
+          $testPath = 'tests/GPTDeskTop.RuntimeTests/ShutdownRegressionTests.cs'
+          $test = @'
+          namespace GPTDeskTop.RuntimeTests;
+
+          public sealed class ShutdownRegressionTests
+          {
+              private static string ReadSource(params string[] parts)
+              {
+                  var path = Path.GetFullPath(Path.Combine(
+                      AppContext.BaseDirectory,
+                      "..", "..", "..", "..", "..",
+                      Path.Combine(parts)));
+                  return File.ReadAllText(path);
+              }
+
+              [Fact]
+              public void MainFormCloseIsAsyncIdempotentAndBounded()
+              {
+                  var source = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
+
+                  Assert.Contains("private bool _shutdownRequested;", source, StringComparison.Ordinal);
+                  Assert.Contains("private bool _shutdownCompleted;", source, StringComparison.Ordinal);
+                  Assert.Contains("e.Cancel = true;", source, StringComparison.Ordinal);
+                  Assert.Contains("CompleteShutdownAsync", source, StringComparison.Ordinal);
+                  Assert.Contains("TimeSpan.FromSeconds(10)", source, StringComparison.Ordinal);
+                  Assert.Contains("_monitor.StopAllAsync().WaitAsync(timeout.Token)", source, StringComparison.Ordinal);
+                  Assert.Contains("_chrome.CloseAllMonitorTabsAsync(timeout.Token)", source, StringComparison.Ordinal);
+                  Assert.DoesNotContain("_monitor.StopAllAsync().GetAwaiter().GetResult()", source, StringComparison.Ordinal);
+                  Assert.DoesNotContain("_chrome.CloseAllMonitorTabsAsync().GetAwaiter().GetResult()", source, StringComparison.Ordinal);
+              }
+
+              [Fact]
+              public void RuntimeEventsAreIgnoredOnceShutdownBegins()
+              {
+                  var source = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
+                  Assert.Contains("if (_shutdownRequested || IsDisposed || Disposing) return;", source, StringComparison.Ordinal);
+              }
+
+              [Fact]
+              public void FinalCleanupRunsAfterWinFormsMessageLoopAndDoesNotCaptureUiContext()
+              {
+                  var source = ReadSource("src", "GPTDeskTop", "Program.cs");
+                  var runIndex = source.IndexOf("Application.Run(mainForm);", StringComparison.Ordinal);
+                  var finalizeIndex = source.IndexOf("FinalizeGracefulShutdownAsync(database, developmentRuntime).GetAwaiter().GetResult();", StringComparison.Ordinal);
+
+                  Assert.True(runIndex >= 0);
+                  Assert.True(finalizeIndex > runIndex);
+                  Assert.Contains(".ConfigureAwait(false);", source, StringComparison.Ordinal);
+                  Assert.Contains("WaitAsync(TimeSpan.FromSeconds(5))", source, StringComparison.Ordinal);
+                  Assert.DoesNotContain("mainForm.FormClosed +=", source, StringComparison.Ordinal);
+                  Assert.DoesNotContain("CrashRecoveryStateService.MarkCleanShutdownAsync(database).GetAwaiter().GetResult()", source, StringComparison.Ordinal);
+              }
+          }
+          '@
+          [System.IO.File]::WriteAllText($testPath, $test.Replace("`r`n", "`n"), $utf8NoBom)
+
+          Remove-Item '.github/workflows/apply-shutdown-freeze-fix.yml' -Force
+
+      - name: Commit targeted fix
+        shell: pwsh
+        run: |
+          git config user.name "gptdesktop-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: prevent UI deadlock during application shutdown [shutdown-fix-applied]"
+          git push origin HEAD:fix/async-shutdown-freeze
