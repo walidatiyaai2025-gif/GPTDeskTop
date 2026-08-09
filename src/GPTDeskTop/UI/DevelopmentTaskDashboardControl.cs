@@ -15,6 +15,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
     private readonly Button _pause = new() { Text = "Pause", AutoSize = true };
     private readonly Button _resume = new() { Text = "Resume", AutoSize = true };
     private readonly Button _stop = new() { Text = "Stop", AutoSize = true };
+    private readonly Button _messagesButton = new() { Text = "Messages", AutoSize = true };
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 500 };
 
     public DevelopmentTaskDashboardControl(DevelopmentTaskRuntimeBinding binding)
@@ -54,7 +55,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         root.Controls.Add(details, 0, 1); root.SetColumnSpan(details, 4);
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-        buttons.Controls.AddRange(new Control[] { _start, _pause, _resume, _stop });
+        buttons.Controls.AddRange(new Control[] { _start, _pause, _resume, _stop, _messagesButton });
         root.Controls.Add(buttons, 0, 2); root.SetColumnSpan(buttons, 4);
         Controls.Add(root);
         FluentTheme.StyleButton(_start, primary: true);
@@ -67,12 +68,30 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         _pause.Click += async (_, _) => await RunAsync(_binding.PauseAsync);
         _resume.Click += async (_, _) => await RunAsync(_binding.ResumeAsync);
         _stop.Click += async (_, _) => await RunAsync(_binding.StopAsync);
-        _binding.Engine.StateChanged += (_, _) => Ui(Render);
-        _binding.Engine.MessageReady += _ => Ui(Render);
-        _binding.Engine.CoolingStarted += (_, _) => Ui(Render);
-        _binding.Engine.CoolingCompleted += (_, _) => Ui(Render);
+        _messagesButton.Click += (_, _) => OpenMessageCatalog();
+        _binding.Engine.StateChanged += OnStateChanged;
+        _binding.Engine.MessageReady += OnMessageReady;
+        _binding.Engine.CoolingStarted += OnCoolingChanged;
+        _binding.Engine.CoolingCompleted += OnCoolingChanged;
         _timer.Tick += (_, _) => Render();
     }
+
+    private void OpenMessageCatalog()
+    {
+        using var dialog = new Form
+        {
+            Text = "Development Message Catalog",
+            StartPosition = FormStartPosition.CenterParent,
+            MinimumSize = new Size(1000, 650),
+            Size = new Size(1200, 750)
+        };
+        dialog.Controls.Add(new DevelopmentMessageCatalogControl { Dock = DockStyle.Fill });
+        dialog.ShowDialog(FindForm());
+    }
+
+    private void OnStateChanged(object? sender, DevelopmentTaskState e) => Ui(Render);
+    private void OnMessageReady(string _) => Ui(Render);
+    private void OnCoolingChanged(object? sender, EventArgs e) => Ui(Render);
 
     private async Task RunAsync(Func<Task> action)
     {
@@ -114,7 +133,10 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
     {
         if (disposing)
         {
-            _binding.Engine.StateChanged -= (_, _) => Render();
+            _binding.Engine.StateChanged -= OnStateChanged;
+            _binding.Engine.MessageReady -= OnMessageReady;
+            _binding.Engine.CoolingStarted -= OnCoolingChanged;
+            _binding.Engine.CoolingCompleted -= OnCoolingChanged;
             _timer.Dispose();
         }
         base.Dispose(disposing);
