@@ -16,8 +16,17 @@ public sealed class MonitorSettingsForm : Form
     private readonly CheckBox _modelRoutingEnabledCheck = new() { Text = "Use model routing for new and recovery chats", AutoSize = true };
     private readonly TextBox _preferredModelBox = new() { Dock = DockStyle.Fill, PlaceholderText = "Auto (leave current model)" };
     private readonly TextBox _fallbackModelBox = new() { Dock = DockStyle.Fill, PlaceholderText = "Auto (leave current model)" };
-    private readonly Button _saveButton = new() { Text = "Save Monitor", AutoSize = true, DialogResult = DialogResult.OK };
+    private readonly Button _saveButton = new() { Text = "Save Monitor", AutoSize = true };
     private readonly Button _cancelButton = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+    private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
+    private readonly Label _runtimeStatus = new()
+    {
+        Dock = DockStyle.Fill,
+        TextAlign = ContentAlignment.MiddleCenter,
+        Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold),
+        AutoEllipsis = true,
+        Padding = new Padding(8, 2, 8, 2)
+    };
 
     public string AutoReply => _autoReplyBox.Text.Trim();
     public int ReplyDelaySeconds => (int)_delaySeconds.Value;
@@ -34,13 +43,17 @@ public sealed class MonitorSettingsForm : Form
 
     public MonitorSettingsForm(string title, string url, SavedMonitor monitor)
     {
+        ArgumentNullException.ThrowIfNull(monitor);
+
         Text = "Monitor Settings";
         StartPosition = FormStartPosition.CenterParent;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
+        FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(820, 610);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        MinimumSize = new Size(740, 540);
+        ClientSize = new Size(900, 680);
 
         _autoReplyBox.Text = string.IsNullOrWhiteSpace(monitor.AutoReply) ? "كمل" : monitor.AutoReply;
         _delaySeconds.Value = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300);
@@ -56,9 +69,12 @@ public sealed class MonitorSettingsForm : Form
         _fallbackModelBox.Text = string.IsNullOrWhiteSpace(monitor.FallbackModel) ? "Auto" : monitor.FallbackModel;
 
         BuildUi(title, url);
-        WireValidation();
+        ConfigureAccessibility();
+        WireEvents();
         FluentTheme.Apply(this);
         FluentTheme.StyleButton(_saveButton, primary: true);
+        ApplyMonitorStatus(monitor);
+        UpdateDependentControls();
         AcceptButton = _saveButton;
         CancelButton = _cancelButton;
     }
@@ -73,14 +89,24 @@ public sealed class MonitorSettingsForm : Form
             Padding = new Padding(18),
             BackColor = FluentTheme.Background
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
 
-        var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = FluentTheme.Background };
-        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        var header = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 3,
+            BackColor = FluentTheme.Background,
+            Margin = Padding.Empty
+        };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
+
         header.Controls.Add(new Label
         {
             Text = string.IsNullOrWhiteSpace(title) ? "ChatGPT Monitor" : title,
@@ -89,21 +115,38 @@ public sealed class MonitorSettingsForm : Form
             AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleLeft
         }, 0, 0);
-        header.Controls.Add(FluentTheme.CreateMutedLabel("Configure this monitor without changing global defaults for other conversations."), 0, 1);
-        header.Controls.Add(new Label
+
+        var statusHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(4, 4, 0, 4),
+            BackColor = FluentTheme.Background,
+            Margin = Padding.Empty
+        };
+        statusHost.Controls.Add(_runtimeStatus);
+        header.Controls.Add(statusHost, 1, 0);
+
+        var description = FluentTheme.CreateMutedLabel("Configure this monitor without changing global defaults for other conversations.");
+        header.Controls.Add(description, 0, 1);
+        header.SetColumnSpan(description, 2);
+
+        var urlLabel = new Label
         {
             Text = url,
             Dock = DockStyle.Fill,
             AutoEllipsis = true,
             ForeColor = FluentTheme.Muted,
             Font = new Font("Segoe UI Variable Text", 8F),
-            TextAlign = ContentAlignment.MiddleLeft
-        }, 0, 2);
+            TextAlign = ContentAlignment.MiddleLeft,
+            AccessibleName = "Monitored conversation URL",
+            AccessibleDescription = url
+        };
+        header.Controls.Add(urlLabel, 0, 2);
+        header.SetColumnSpan(urlLabel, 2);
 
-        var tabs = new TabControl { Dock = DockStyle.Fill };
-        tabs.TabPages.Add(BuildGeneralTab());
-        tabs.TabPages.Add(BuildRotationTab());
-        tabs.TabPages.Add(BuildModelTab());
+        _tabs.TabPages.Add(BuildGeneralTab());
+        _tabs.TabPages.Add(BuildRotationTab());
+        _tabs.TabPages.Add(BuildModelTab());
 
         var buttons = new FlowLayoutPanel
         {
@@ -117,7 +160,7 @@ public sealed class MonitorSettingsForm : Form
         buttons.Controls.Add(_saveButton);
 
         root.Controls.Add(header, 0, 0);
-        root.Controls.Add(tabs, 0, 1);
+        root.Controls.Add(_tabs, 0, 1);
         root.Controls.Add(buttons, 0, 2);
         Controls.Add(root);
     }
@@ -167,22 +210,107 @@ public sealed class MonitorSettingsForm : Form
         return page;
     }
 
-    private void WireValidation()
+    private void WireEvents()
     {
-        _saveButton.Click += (_, _) =>
+        _saveButton.Click += (_, _) => TrySaveAndClose();
+        _rotationEnabledCheck.CheckedChanged += (_, _) => UpdateDependentControls();
+        _modelRoutingEnabledCheck.CheckedChanged += (_, _) => UpdateDependentControls();
+        Shown += (_, _) =>
         {
-            if (string.IsNullOrWhiteSpace(_autoReplyBox.Text))
-            {
-                MessageBox.Show(this, "Auto reply cannot be empty.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                DialogResult = DialogResult.None;
-                return;
-            }
-            if (_rotationEnabledCheck.Checked && string.IsNullOrWhiteSpace(_newChatMessageBox.Text))
-            {
-                MessageBox.Show(this, "Context-limit new Chat start message cannot be empty when rotation is enabled.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                DialogResult = DialogResult.None;
-            }
+            _autoReplyBox.Focus();
+            _autoReplyBox.SelectAll();
         };
+    }
+
+    private void ConfigureAccessibility()
+    {
+        AccessibleName = "Monitor settings";
+        AccessibleDescription = "Configure automation, rotation and model routing for the selected ChatGPT monitor.";
+        _tabs.AccessibleName = "Monitor settings categories";
+        _tabs.TabIndex = 0;
+
+        ConfigureAccessible(_autoReplyBox, "Monitor auto reply", "Message sent after a stable assistant response.", 0);
+        ConfigureAccessible(_delaySeconds, "Monitor reply delay", "Seconds to wait before sending the automatic reply.", 1);
+        ConfigureAccessible(_timerSeconds, "Monitor polling timer", "Seconds between state checks for this monitor.", 2);
+        ConfigureAccessible(_enabledCheck, "Monitor enabled", "Controls whether this saved monitor is eligible to run.", 3);
+
+        ConfigureAccessible(_rotationEnabledCheck, "Conversation rotation enabled", "Allow this monitor to create a replacement chat when the current conversation reaches a supported rotation condition.", 0);
+        ConfigureAccessible(_newChatMessageBox, "Context limit start message", "Message sent to the replacement chat after context-limit rotation.", 1);
+        ConfigureAccessible(_newChatDelaySeconds, "New chat delay", "Seconds to wait before preparing a replacement conversation.", 2);
+        ConfigureAccessible(_rotationCooldownSeconds, "Rotation cooldown", "Seconds to pause after a successful conversation handoff.", 3);
+        ConfigureAccessible(_maxRotations, "Maximum rotations", "Maximum successful rotations for this monitor. Zero means unlimited.", 4);
+
+        ConfigureAccessible(_modelRoutingEnabledCheck, "Model routing enabled", "Apply model routing only to newly-created rotation and recovery chats.", 0);
+        ConfigureAccessible(_preferredModelBox, "Preferred model label", "Visible ChatGPT model label to try first. Auto keeps the current model.", 1);
+        ConfigureAccessible(_fallbackModelBox, "Fallback model label", "Visible ChatGPT model label tried once if the preferred model is unavailable.", 2);
+
+        _runtimeStatus.AccessibleName = "Monitor runtime status";
+        _saveButton.AccessibleName = "Save monitor settings";
+        _saveButton.TabIndex = 0;
+        _cancelButton.AccessibleName = "Cancel monitor settings changes";
+        _cancelButton.TabIndex = 1;
+    }
+
+    private static void ConfigureAccessible(Control control, string name, string description, int tabIndex)
+    {
+        control.AccessibleName = name;
+        control.AccessibleDescription = description;
+        control.TabIndex = tabIndex;
+    }
+
+    private void ApplyMonitorStatus(SavedMonitor monitor)
+    {
+        var running = monitor.RuntimeStatus.Contains("Running", StringComparison.OrdinalIgnoreCase);
+        if (!monitor.Enabled)
+        {
+            _runtimeStatus.Text = "DISABLED";
+            _runtimeStatus.ForeColor = FluentTheme.Muted;
+            _runtimeStatus.BackColor = FluentTheme.SurfaceAlt;
+            _runtimeStatus.AccessibleDescription = "This saved monitor is disabled.";
+            return;
+        }
+
+        _runtimeStatus.Text = running ? "RUNNING" : "STOPPED";
+        _runtimeStatus.ForeColor = running ? FluentTheme.Success : FluentTheme.Warning;
+        _runtimeStatus.BackColor = running ? FluentTheme.SuccessSubtle : FluentTheme.WarningSubtle;
+        _runtimeStatus.AccessibleDescription = running
+            ? "This monitor is currently running."
+            : "This monitor is currently stopped and can be edited.";
+    }
+
+    private void UpdateDependentControls()
+    {
+        var rotationEnabled = _rotationEnabledCheck.Checked;
+        _newChatMessageBox.Enabled = rotationEnabled;
+        _newChatDelaySeconds.Enabled = rotationEnabled;
+        _rotationCooldownSeconds.Enabled = rotationEnabled;
+        _maxRotations.Enabled = rotationEnabled;
+
+        var routingEnabled = _modelRoutingEnabledCheck.Checked;
+        _preferredModelBox.Enabled = routingEnabled;
+        _fallbackModelBox.Enabled = routingEnabled;
+    }
+
+    private void TrySaveAndClose()
+    {
+        if (string.IsNullOrWhiteSpace(_autoReplyBox.Text))
+        {
+            _tabs.SelectedIndex = 0;
+            _autoReplyBox.Focus();
+            MessageBox.Show(this, "Auto reply cannot be empty.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (_rotationEnabledCheck.Checked && string.IsNullOrWhiteSpace(_newChatMessageBox.Text))
+        {
+            _tabs.SelectedIndex = 1;
+            _newChatMessageBox.Focus();
+            MessageBox.Show(this, "Context-limit new Chat start message cannot be empty when rotation is enabled.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        DialogResult = DialogResult.OK;
+        Close();
     }
 
     private static TabPage CreateTab(string title)
