@@ -24,11 +24,12 @@ When a stable, non-error, non-context-limit assistant response is present and th
 3. Open a fresh ChatGPT conversation and wait for the composer to become available.
 4. Apply the monitor's existing model-routing policy.
 5. Send the fixed `MessageCountRotationStartMessage` using verified delivery.
-6. Only after verified delivery, increment the rotation count, persist the new Tab ID/title/URL under the same Monitor ID, and record the rotation.
-7. Close the old chat only after the new-chat handoff has succeeded.
+6. After verified delivery, re-enumerate the same Chrome target until it exposes the stable `/c/{conversation-id}` URL created by ChatGPT.
+7. Commit the identity move through one immediate SQLite writer transaction: the old saved conversation must still match the monitor snapshot, the new stable conversation must be unowned, RotationCount is incremented, and the rotation + success receipts are written atomically under the same Monitor ID.
+8. Close the old chat only after that transaction commits successfully.
 8. Apply the existing rotation cooldown and continue monitoring.
 
-If verified delivery fails, the new unused tab is closed, the old conversation remains authoritative, and the same rotation remains eligible for a later retry.
+If verified delivery fails, the new unused tab is closed, the old conversation remains authoritative, and the same rotation remains eligible for a later retry. If the post-send target never exposes a stable conversation URL, another monitor owns the new URL, or the source monitor binding changed concurrently, the new tab is left unclaimed/closed and the old tab is not closed by the handoff path.
 
 ## Compatibility
 

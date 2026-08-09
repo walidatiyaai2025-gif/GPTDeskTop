@@ -6,6 +6,7 @@ namespace GPTDeskTop.Data;
 public sealed record ConfigurationImportDatabaseResult(int SettingsApplied, int MonitorsUpdated, int MonitorsInserted);
 public sealed record MonitorRegistrationResult(long MonitorId, bool Created);
 public sealed record MonitorConversationRebindDatabaseResult(long MonitorId, string PreviousUrl, string NewUrl);
+public sealed record MonitorConversationHandoffDatabaseResult(long MonitorId, string PreviousUrl, string NewUrl, int RotationCount, string Title);
 
 public sealed class LocalDatabase
 {
@@ -315,6 +316,151 @@ public sealed class LocalDatabase
 
             transaction.Commit();
             return new MonitorConversationRebindDatabaseResult(monitorId, currentUrl, targetUrl);
+        }
+        catch
+        {
+            try { transaction.Rollback(); } catch { }
+            throw;
+        }
+    }
+
+    public async Task<MonitorConversationHandoffDatabaseResult> CommitMonitorConversationHandoffAsync(
+        long monitorId,
+        string expectedCurrentUrl,
+        string targetTabId,
+        string targetTitle,
+        string targetUrl,
+        bool incrementRotationCount,
+        bool recordRotation,
+        string oldTabId,
+        string rotationTrigger,
+        string startMessage,
+        string triggerResponse,
+        string successStatus,
+        string outboundStatus,
+        CancellationToken cancellationToken = default)
+    {
+        if (monitorId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(monitorId));
+        if (string.IsNullOrWhiteSpace(expectedCurrentUrl))
+            throw new InvalidOperationException("The current monitor conversation identity is required for handoff.");
+        if (string.IsNullOrWhiteSpace(targetTabId))
+            throw new InvalidOperationException("The new conversation Chrome target ID is required for handoff.");
+        if (string.IsNullOrWhiteSpace(targetUrl))
+            throw new InvalidOperationException("The new stable conversation URL is required for handoff.");
+        if (string.Equals(expectedCurrentUrl, targetUrl, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Intentional handoff requires a different target conversation.");
+
+        targetTitle ??= string.Empty;
+        oldTabId ??= string.Empty;
+        rotationTrigger ??= string.Empty;
+        startMessage ??= string.Empty;
+        triggerResponse ??= string.Empty;
+        successStatus ??= string.Empty;
+        outboundStatus ??= string.Empty;
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction(deferred: false);
+
+        try
+        {
+            string currentUrl;
+            string currentTitle;
+            int currentRotationCount;
+            await using (var load = connection.CreateCommand())
+            {
+                load.Transaction = transaction;
+                load.CommandText = "SELECT Url, Title, RotationCount FROM SavedMonitors WHERE Id=$id LIMIT 1;";
+                load.Parameters.AddWithValue("$id", monitorId);
+                await using var reader = await load.ExecuteReaderAsync(cancellationToken);
+                if (!await reader.ReadAsync(cancellationToken))
+                    throw new InvalidOperationException($"Saved monitor #{monitorId} no longer exists.");
+                currentUrl = reader.GetString(0);
+                currentTitle = reader.GetString(1);
+                currentRotationCount = reader.GetInt32(2);
+            }
+
+            if (!string.Equals(currentUrl, expectedCurrentUrl, StringComparison.Ordinal))
+                throw new InvalidOperationException("Saved monitor conversation identity changed before intentional handoff could be committed.");
+
+            await using (var targetOwner = connection.CreateCommand())
+            {
+                targetOwner.Transaction = transaction;
+                targetOwner.CommandText = "SELECT Id FROM SavedMonitors WHERE Id<>$id AND Url=$url COLLATE NOCASE ORDER BY Id LIMIT 1;";
+                targetOwner.Parameters.AddWithValue("$id", monitorId);
+                targetOwner.Parameters.AddWithValue("$url", targetUrl);
+                var existing = await targetOwner.ExecuteScalarAsync(cancellationToken);
+                if (existing is not null && existing is not DBNull)
+                    throw new InvalidOperationException($"Monitor #{Convert.ToInt64(existing)} already owns the intentional handoff target conversation.");
+            }
+
+            var nextRotationCount = incrementRotationCount ? checked(currentRotationCount + 1) : currentRotationCount;
+            var appliedTitle = string.IsNullOrWhiteSpace(targetTitle) ? currentTitle : targetTitle;
+            var now = DateTime.UtcNow.ToString("O");
+
+            await using (var update = connection.CreateCommand())
+            {
+                update.Transaction = transaction;
+                update.CommandText = "UPDATE SavedMonitors SET TabId=$tabId, Title=$title, Url=$url, RotationCount=$rotationCount, UpdatedAt=$updatedAt WHERE Id=$id;";
+                update.Parameters.AddWithValue("$id", monitorId);
+                update.Parameters.AddWithValue("$tabId", targetTabId);
+                update.Parameters.AddWithValue("$title", appliedTitle);
+                update.Parameters.AddWithValue("$url", targetUrl);
+                update.Parameters.AddWithValue("$rotationCount", nextRotationCount);
+                update.Parameters.AddWithValue("$updatedAt", now);
+                if (await update.ExecuteNonQueryAsync(cancellationToken) != 1)
+                    throw new InvalidOperationException($"Saved monitor #{monitorId} could not be moved to the new conversation.");
+            }
+
+            if (recordRotation)
+            {
+                await using var rotation = connection.CreateCommand();
+                rotation.Transaction = transaction;
+                rotation.CommandText = "INSERT INTO ConversationRotations(MonitorId,OldTabId,NewTabId,Trigger,StartMessage,Timestamp) VALUES($m,$o,$n,$t,$s,$ts);";
+                rotation.Parameters.AddWithValue("$m", monitorId);
+                rotation.Parameters.AddWithValue("$o", oldTabId);
+                rotation.Parameters.AddWithValue("$n", targetTabId);
+                rotation.Parameters.AddWithValue("$t", rotationTrigger);
+                rotation.Parameters.AddWithValue("$s", startMessage);
+                rotation.Parameters.AddWithValue("$ts", now);
+                await rotation.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var systemLog = connection.CreateCommand())
+            {
+                systemLog.Transaction = transaction;
+                systemLog.CommandText = "INSERT INTO MessageLogs(Timestamp,MonitorId,TabId,TabTitle,Direction,Prompt,Response,Status) VALUES($ts,$m,$id,$title,'System',$p,$r,$s);";
+                systemLog.Parameters.AddWithValue("$ts", now);
+                systemLog.Parameters.AddWithValue("$m", monitorId);
+                systemLog.Parameters.AddWithValue("$id", targetTabId);
+                systemLog.Parameters.AddWithValue("$title", appliedTitle);
+                systemLog.Parameters.AddWithValue("$p", startMessage);
+                systemLog.Parameters.AddWithValue("$r", triggerResponse);
+                systemLog.Parameters.AddWithValue("$s", successStatus);
+                await systemLog.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var outboundLog = connection.CreateCommand())
+            {
+                outboundLog.Transaction = transaction;
+                outboundLog.CommandText = "INSERT INTO MessageLogs(Timestamp,MonitorId,TabId,TabTitle,Direction,Prompt,Response,Status) VALUES($ts,$m,$id,$title,'Outbound',$p,'',$s);";
+                outboundLog.Parameters.AddWithValue("$ts", now);
+                outboundLog.Parameters.AddWithValue("$m", monitorId);
+                outboundLog.Parameters.AddWithValue("$id", targetTabId);
+                outboundLog.Parameters.AddWithValue("$title", appliedTitle);
+                outboundLog.Parameters.AddWithValue("$p", startMessage);
+                outboundLog.Parameters.AddWithValue("$s", outboundStatus);
+                await outboundLog.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            transaction.Commit();
+            return new MonitorConversationHandoffDatabaseResult(
+                monitorId,
+                currentUrl,
+                targetUrl,
+                nextRotationCount,
+                appliedTitle);
         }
         catch
         {
