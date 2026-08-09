@@ -48,22 +48,48 @@ public static class CrashRecoveryService
         {
             await runtime.StopAllMonitorsAsync();
             await runtime.CloseAllMonitorTabsAsync(cancellationToken);
-            await runtime.DelayAsync(TimeSpan.FromMilliseconds(700), cancellationToken);
 
-            var firstMonitor = monitors[0];
-            runtime.LaunchMonitorChrome(string.IsNullOrWhiteSpace(firstMonitor.Url) ? null : firstMonitor.Url);
-            await runtime.DelayAsync(TimeSpan.FromMilliseconds(2200), cancellationToken);
+            var validMonitors = monitors
+                .Where(saved => RuntimeHealthPresentation.IsChatGptConversationUrl(saved.Url))
+                .ToList();
 
-            var currentTabs = await runtime.GetTabsAsync(cancellationToken);
-            ChromeTab? firstTab = currentTabs.FirstOrDefault(t =>
-                string.Equals(t.Url, firstMonitor.Url, StringComparison.OrdinalIgnoreCase))
-                ?? currentTabs.FirstOrDefault();
+            ChromeTab? firstTab = null;
+            SavedMonitor? firstValidMonitor = validMonitors.FirstOrDefault();
+            if (firstValidMonitor is not null)
+            {
+                await runtime.DelayAsync(TimeSpan.FromMilliseconds(700), cancellationToken);
+                runtime.LaunchMonitorChrome(firstValidMonitor.Url);
+                await runtime.DelayAsync(TimeSpan.FromMilliseconds(2200), cancellationToken);
+
+                var currentTabs = await runtime.GetTabsAsync(cancellationToken);
+                firstTab = currentTabs.FirstOrDefault(t =>
+                    RuntimeHealthPresentation.IsChatGptConversationUrl(t.Url)
+                    && string.Equals(t.Url, firstValidMonitor.Url, StringComparison.OrdinalIgnoreCase));
+
+                if (firstTab is null)
+                    firstTab = await runtime.CreateTabAsync(firstValidMonitor.Url, cancellationToken);
+            }
 
             var outcomes = new List<CrashRecoveryOutcome>(monitors.Count);
-            for (var index = 0; index < monitors.Count; index++)
+            foreach (var saved in monitors)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var saved = monitors[index];
+
+                if (!RuntimeHealthPresentation.IsChatGptConversationUrl(saved.Url))
+                {
+                    outcomes.Add(CrashRecoveryOutcome.InvalidConversationIdentity);
+                    await database.AddLogAsync(
+                        "System",
+                        "CrashRecovery",
+                        "Saved monitor URL is not a stable ChatGPT conversation identity. Re-add this monitor from an open conversation before recovery can complete.",
+                        "CrashRecoveryInvalidConversationIdentity",
+                        saved.Id,
+                        saved.TabId,
+                        saved.Title,
+                        cancellationToken);
+                    continue;
+                }
+
                 var successKey = $"CrashRecovery.{recoveryId}.Monitor.{saved.Id}.Success";
                 var alreadyRecovered = string.Equals(
                     await database.GetSettingAsync(successKey, cancellationToken),
@@ -71,12 +97,24 @@ public static class CrashRecoveryService
                     StringComparison.Ordinal);
 
                 ChromeTab tab;
-                if (index == 0 && firstTab is not null)
+                if (firstValidMonitor is not null && saved.Id == firstValidMonitor.Id && firstTab is not null)
                     tab = firstTab;
                 else
+                    tab = await runtime.CreateTabAsync(saved.Url, cancellationToken);
+
+                if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
                 {
-                    var url = string.IsNullOrWhiteSpace(saved.Url) ? "https://chatgpt.com/" : saved.Url;
-                    tab = await runtime.CreateTabAsync(url, cancellationToken);
+                    outcomes.Add(CrashRecoveryOutcome.SendFailed);
+                    await database.AddLogAsync(
+                        "System",
+                        "CrashRecovery",
+                        "Chrome did not return a stable ChatGPT conversation tab for the saved monitor URL.",
+                        "CrashRecoveryTabIdentityMismatch",
+                        saved.Id,
+                        tab.Id,
+                        saved.Title,
+                        cancellationToken);
+                    continue;
                 }
 
                 // A monitor that already recovered successfully during this incident
