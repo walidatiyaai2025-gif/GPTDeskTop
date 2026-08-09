@@ -24,6 +24,7 @@ public sealed class DialogAccessibilityUiRegressionTests
         Assert.Contains("_defaultReply.Focus();", source, StringComparison.Ordinal);
         Assert.Contains("AcceptButton = _saveButton", source, StringComparison.Ordinal);
         Assert.Contains("CancelButton = _cancelButton", source, StringComparison.Ordinal);
+        Assert.Contains("new TabControl", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -38,6 +39,16 @@ public sealed class DialogAccessibilityUiRegressionTests
         Assert.Contains("_saveButton.Enabled = !busy", source, StringComparison.Ordinal);
         Assert.Contains("Settings Save Error", source, StringComparison.Ordinal);
         Assert.Contains("Settings Load Error", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnabledMessageCountRotationRejectsBlankStartMessageBeforeDefaulting()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "SettingsForm.cs");
+
+        Assert.Contains("var rawRotationStartMessage = _messageCountRotationStartMessage.Text.Trim();", source, StringComparison.Ordinal);
+        Assert.Contains("_rotateAfterMessages.Value > 0 && string.IsNullOrWhiteSpace(rawRotationStartMessage)", source, StringComparison.Ordinal);
+        Assert.Contains("var rotationStartMessage = string.IsNullOrWhiteSpace(rawRotationStartMessage) ? \"كمل\" : rawRotationStartMessage;", source, StringComparison.Ordinal);
     }
 
     [Fact]
