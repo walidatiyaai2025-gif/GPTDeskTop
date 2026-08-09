@@ -48,6 +48,10 @@ The final destination is never written directly. GPTDeskTop creates a unique tem
 
 The Settings dialog uses its existing busy guard while export is running, so Save and another backup operation cannot run concurrently.
 
+## Export round-trip safety
+
+A configuration backup is created only when every saved monitor has a stable ChatGPT `/c/...` conversation identity and no two saved monitors own the same logical conversation. Legacy invalid identities or canonical-equivalent duplicate owners must be repaired through **Runtime Health Repair** before export. GPTDeskTop never silently drops or merges monitors during export. Stable conversation URLs written to the portable backup are canonicalized. If validation fails, an existing destination backup is left unchanged and temporary export files are removed.
+
 ## Restore / import
 
 Open **Settings > Backup & Portability** and choose **Import Configuration Backup**. GPTDeskTop first reads and validates the selected file without changing the database. The import accepts only schema **1.0** and uses strict JSON parsing: unknown top-level fields, unknown/duplicate setting keys, invalid setting ranges, invalid monitor values, duplicate monitor URLs inside the backup, and invalid monitor conversation identities are rejected before mutation.
@@ -59,11 +63,11 @@ After validation, the operator receives a summary of how many settings and monit
 The database apply phase uses one SQLite transaction:
 
 - allowlisted settings present in the backup are upserted;
-- a backup monitor whose conversation URL exactly matches one local monitor updates only operator-controlled monitor configuration;
+- a backup monitor whose canonical conversation identity matches one local monitor updates only operator-controlled monitor configuration while preserving the local stored URL spelling;
 - that existing monitor keeps its local SQLite `Id`, runtime `TabId`, `RotationCount`, CreatedAt/history identity and existing Stored History;
 - a backup monitor that does not exist locally is inserted with a new SQLite ID, an empty runtime `TabId`, and `RotationCount = 0`;
 - local monitors that are absent from the backup are left untouched and are never deleted by import;
-- if more than one local monitor has the same exact URL being imported, the import is considered ambiguous and the entire transaction is rolled back.
+- if more than one local monitor owns the same logical conversation identity being imported, the import is considered ambiguous and the entire transaction is rolled back.
 
 Import never reads or writes Stored History, ConversationRotations history, crash/recovery markers, runtime identities, UI layout state, exception-log contents, or machine/user identity from the backup.
 
