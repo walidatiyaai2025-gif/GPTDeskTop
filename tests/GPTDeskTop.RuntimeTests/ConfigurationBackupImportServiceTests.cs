@@ -1,6 +1,7 @@
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
 using GPTDeskTop.Services;
+using Microsoft.Data.Sqlite;
 
 namespace GPTDeskTop.RuntimeTests;
 
@@ -122,12 +123,13 @@ public sealed class ConfigurationBackupImportServiceTests
         var root = CreateTempRoot();
         try
         {
-            var database = new LocalDatabase(Path.Combine(root, "test.db"));
+            var databasePath = Path.Combine(root, "test.db");
+            var database = new LocalDatabase(databasePath);
             await database.InitializeAsync();
             await database.SetSettingAsync("DefaultAutoReply", "before-import");
 
             const string duplicateUrl = "https://chatgpt.com/c/duplicate-local-import-test";
-            await database.SaveMonitorAsync(new SavedMonitor
+            var firstId = await database.SaveMonitorAsync(new SavedMonitor
             {
                 TabId = "TAB-A",
                 Title = "Duplicate A",
@@ -135,14 +137,11 @@ public sealed class ConfigurationBackupImportServiceTests
                 AutoReply = "reply-a",
                 RotationCount = 2
             });
-            await database.SaveMonitorAsync(new SavedMonitor
-            {
-                TabId = "TAB-B",
-                Title = "Duplicate B",
-                Url = duplicateUrl,
-                AutoReply = "reply-b",
-                RotationCount = 3
-            });
+
+            // Registration now prevents new duplicate ownership. Inject a second row
+            // below that public boundary to preserve coverage for legacy databases
+            // that already contain ambiguous exact conversation URLs.
+            await InsertLegacyDuplicateAsync(databasePath, firstId, "TAB-B", "Duplicate B", "reply-b", rotationCount: 3);
 
             var plan = ConfigurationBackupImportService.CreatePlan(
                 Path.Combine(root, "backup.json"),
@@ -271,6 +270,40 @@ public sealed class ConfigurationBackupImportServiceTests
         {
             DeleteTempRoot(root);
         }
+    }
+
+    private static async Task InsertLegacyDuplicateAsync(
+        string databasePath,
+        long sourceMonitorId,
+        string tabId,
+        string title,
+        string autoReply,
+        int rotationCount)
+    {
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWrite
+        }.ToString());
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO SavedMonitors(
+                TabId,Title,Url,AutoReply,ReplyDelaySeconds,TimerSeconds,Enabled,ConversationRotationEnabled,
+                NewChatStartMessage,NewChatDelaySeconds,RotationCooldownSeconds,MaxConversationRotations,RotationCount,
+                ModelRoutingEnabled,PreferredModel,FallbackModel,CreatedAt,UpdatedAt)
+            SELECT
+                $tabId,$title,Url,$autoReply,ReplyDelaySeconds,TimerSeconds,Enabled,ConversationRotationEnabled,
+                NewChatStartMessage,NewChatDelaySeconds,RotationCooldownSeconds,MaxConversationRotations,$rotationCount,
+                ModelRoutingEnabled,PreferredModel,FallbackModel,CreatedAt,UpdatedAt
+            FROM SavedMonitors WHERE Id=$sourceMonitorId;
+            """;
+        command.Parameters.AddWithValue("$tabId", tabId);
+        command.Parameters.AddWithValue("$title", title);
+        command.Parameters.AddWithValue("$autoReply", autoReply);
+        command.Parameters.AddWithValue("$rotationCount", rotationCount);
+        command.Parameters.AddWithValue("$sourceMonitorId", sourceMonitorId);
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
     }
 
     private static ConfigurationBackupDocument CreateDocument(
