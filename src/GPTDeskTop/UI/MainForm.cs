@@ -73,12 +73,12 @@ public sealed class MainForm : Form
         FluentTheme.StyleButton(_deleteMonitorButton, danger: true);
         FluentTheme.StyleButton(_quickMonitorSettingsButton, primary: true);
         UpdateActionStates();
-        Shown += async (_, _) =>
-        {
-            ApplyInitialSplitterRatios();
-            await LoadStartupStateAsync();
-            FocusOperationalWorkspace();
-        };
+            Shown += async (_, _) =>
+    {
+        await RestoreOperatorLayoutAsync();
+        await LoadStartupStateAsync();
+        FocusOperationalWorkspace();
+    };
         SizeChanged += (_, _) => ClampResponsiveSplitters();
     }
 
@@ -394,6 +394,93 @@ public sealed class MainForm : Form
     {
         SetSplitRatio(_workspaceSplit, 0.42);
         SetSplitRatio(_diagnosticsSplit, 0.48);
+    }
+    private async Task RestoreOperatorLayoutAsync()
+    {
+        try
+        {
+            var boundsRaw = await _database.GetSettingAsync("Ui.Main.WindowBounds");
+            if (TryParseBounds(boundsRaw, out var savedBounds) && IsBoundsVisible(savedBounds))
+            {
+                Bounds = ClampBoundsToWorkingArea(savedBounds);
+                var state = await _database.GetSettingAsync("Ui.Main.WindowState");
+                if (string.Equals(state, "Maximized", StringComparison.OrdinalIgnoreCase))
+                    WindowState = FormWindowState.Maximized;
+            }
+
+            var workspaceRaw = await _database.GetSettingAsync("Ui.Main.WorkspaceSplitRatio");
+            if (!TryApplyStoredSplitRatio(_workspaceSplit, workspaceRaw))
+                SetSplitRatio(_workspaceSplit, 0.42);
+            var diagnosticsRaw = await _database.GetSettingAsync("Ui.Main.DiagnosticsSplitRatio");
+            if (!TryApplyStoredSplitRatio(_diagnosticsSplit, diagnosticsRaw))
+                SetSplitRatio(_diagnosticsSplit, 0.48);
+        }
+        catch (Exception ex)
+        {
+            ExceptionLogService.Log(ex, "MainForm.RestoreOperatorLayout");
+            ApplyInitialSplitterRatios();
+        }
+    }
+
+    private async Task PersistOperatorLayoutAsync(CancellationToken cancellationToken)
+    {
+        var normalBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+        if (normalBounds.Width <= 0 || normalBounds.Height <= 0) return;
+        var state = WindowState == FormWindowState.Maximized ? "Maximized" : "Normal";
+        var boundsValue = $"{normalBounds.X},{normalBounds.Y},{normalBounds.Width},{normalBounds.Height}";
+        var workspaceRatio = GetSplitRatio(_workspaceSplit).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        var diagnosticsRatio = GetSplitRatio(_diagnosticsSplit).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        var writes = new[]
+        {
+            _database.SetSettingAsync("Ui.Main.WindowBounds", boundsValue),
+            _database.SetSettingAsync("Ui.Main.WindowState", state),
+            _database.SetSettingAsync("Ui.Main.WorkspaceSplitRatio", workspaceRatio),
+            _database.SetSettingAsync("Ui.Main.DiagnosticsSplitRatio", diagnosticsRatio)
+        };
+        await Task.WhenAll(writes).WaitAsync(cancellationToken);
+    }
+
+    private static bool TryParseBounds(string? value, out Rectangle bounds)
+    {
+        bounds = Rectangle.Empty;
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var parts = value.Split(',', StringSplitOptions.TrimEntries);
+        if (parts.Length != 4) return false;
+        if (!int.TryParse(parts[0], out var x) || !int.TryParse(parts[1], out var y) ||
+            !int.TryParse(parts[2], out var width) || !int.TryParse(parts[3], out var height)) return false;
+        if (width < 320 || height < 240) return false;
+        bounds = new Rectangle(x, y, width, height);
+        return true;
+    }
+
+    private static bool IsBoundsVisible(Rectangle bounds)
+        => Screen.AllScreens.Any(screen => screen.WorkingArea.IntersectsWith(bounds));
+
+    private Rectangle ClampBoundsToWorkingArea(Rectangle bounds)
+    {
+        var area = Screen.FromRectangle(bounds).WorkingArea;
+        var minimumWidth = Math.Min(MinimumSize.Width, area.Width);
+        var minimumHeight = Math.Min(MinimumSize.Height, area.Height);
+        var width = Math.Min(Math.Max(bounds.Width, minimumWidth), area.Width);
+        var height = Math.Min(Math.Max(bounds.Height, minimumHeight), area.Height);
+        var x = Math.Clamp(bounds.X, area.Left, area.Right - width);
+        var y = Math.Clamp(bounds.Y, area.Top, area.Bottom - height);
+        return new Rectangle(x, y, width, height);
+    }
+
+    private static bool TryApplyStoredSplitRatio(SplitContainer split, string? raw)
+    {
+        if (!double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ratio)) return false;
+        if (ratio is < 0.15 or > 0.85) return false;
+        SetSplitRatio(split, ratio);
+        return true;
+    }
+
+    private static double GetSplitRatio(SplitContainer split)
+    {
+        var usable = split.Width - split.SplitterWidth;
+        if (usable <= 0) return 0.5;
+        return Math.Clamp((double)split.SplitterDistance / usable, 0.15, 0.85);
     }
 
     private void ClampResponsiveSplitters()
@@ -1037,8 +1124,21 @@ public sealed class MainForm : Form
         _ = CompleteShutdownAsync();
     }
 
-    private async Task CompleteShutdownAsync()
+        private async Task CompleteShutdownAsync()
     {
+        using (var layoutTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+        {
+            try
+            {
+                AppendActivity("Closing application: saving workspace layout...");
+                await PersistOperatorLayoutAsync(layoutTimeout.Token);
+            }
+            catch (Exception ex)
+            {
+                ExceptionLogService.Log(ex, "MainForm.PersistOperatorLayout");
+            }
+        }
+
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         try
         {

@@ -41,7 +41,21 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
     private readonly Button _toggle = new() { Text = "Collapse", AutoSize = true };
     private readonly Panel _body = new() { Dock = DockStyle.Fill, BackColor = FluentTheme.Surface };
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 500 };
-    private bool _expanded = true;
+        private bool _expanded = true;
+
+    public event EventHandler? ExpandedChanged;
+
+    public bool IsExpanded
+    {
+        get => _expanded;
+        set
+        {
+            if (_expanded == value) return;
+            _expanded = value;
+            ApplyExpandedState();
+            ExpandedChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
 
     public DevelopmentTaskDashboardControl(DevelopmentTaskRuntimeBinding binding)
     {
@@ -173,9 +187,10 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         _timer.Tick += (_, _) => Render();
     }
 
-    private void ToggleExpanded()
+        private void ToggleExpanded() => IsExpanded = !IsExpanded;
+
+    private void ApplyExpandedState()
     {
-        _expanded = !_expanded;
         _body.Visible = _expanded;
         _toggle.Text = _expanded ? "Collapse" : "Details";
         Height = _expanded ? ExpandedHeight : CollapsedHeight;
