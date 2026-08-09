@@ -54,8 +54,16 @@ public sealed class ChatGptMonitorService
         try
         {
             var initial = await GetChatStateWithRetryAsync(monitor.Id, tab, cancellationToken);
-            var initialCountRotationDue = monitor.ConversationRotationEnabled && rotateAfterMessages > 0 && initial.AssistantCount >= rotateAfterMessages;
-            var lastHandledText = initialCountRotationDue ? string.Empty : GetEffectiveResponse(initial);
+            var initialText = GetEffectiveResponse(initial);
+            var initialCountRotationDue = monitor.ConversationRotationEnabled
+                && rotateAfterMessages > 0
+                && !initial.IsGenerating
+                && !string.IsNullOrWhiteSpace(initialText)
+                && string.IsNullOrWhiteSpace(initial.ErrorText)
+                && !IsErrorResponse(initialText)
+                && !IsConversationContextLimit(initialText)
+                && initial.AssistantCount >= rotateAfterMessages;
+            var lastHandledText = initialCountRotationDue ? string.Empty : initialText;
             var candidateText = string.Empty;
             var candidateSince = DateTimeOffset.MinValue;
             var lastResponseActivity = DateTimeOffset.UtcNow;
@@ -72,7 +80,14 @@ public sealed class ChatGptMonitorService
                     noResponseSeconds = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600, cancellationToken);
                     rotateAfterMessages = await _database.GetIntSettingAsync("RotateAfterAssistantMessages", 0, 0, 10000, cancellationToken);
                     messageCountRotationStartMessage = await _database.GetSettingAsync("MessageCountRotationStartMessage", cancellationToken) ?? "كمل";
-                    var messageCountThresholdReached = monitor.ConversationRotationEnabled && rotateAfterMessages > 0 && state.AssistantCount >= rotateAfterMessages && !IsConversationContextLimit(text);
+                    var messageCountThresholdReached = monitor.ConversationRotationEnabled
+                        && rotateAfterMessages > 0
+                        && !state.IsGenerating
+                        && !string.IsNullOrWhiteSpace(text)
+                        && string.IsNullOrWhiteSpace(state.ErrorText)
+                        && !IsErrorResponse(text)
+                        && !IsConversationContextLimit(text)
+                        && state.AssistantCount >= rotateAfterMessages;
                     var rotationSlotAvailable = monitor.MaxConversationRotations <= 0 || monitor.RotationCount < monitor.MaxConversationRotations;
                     var messageCountRotationDue = messageCountThresholdReached && rotationSlotAvailable;
 
