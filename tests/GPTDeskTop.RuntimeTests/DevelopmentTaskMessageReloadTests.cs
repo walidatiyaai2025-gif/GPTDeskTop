@@ -75,7 +75,7 @@ public sealed class DevelopmentTaskMessageReloadTests
             await coolingStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
             WriteCatalog(messagesPath, "one", "two", "three");
 
-            await Task.Delay(250);
+            await WaitForAsync(() => engine.State.TotalMessages == 3, TimeSpan.FromSeconds(2));
             Assert.Equal(3, engine.State.TotalMessages);
             await engine.StopAsync();
             await engine.DisposeAsync();
@@ -83,6 +83,17 @@ public sealed class DevelopmentTaskMessageReloadTests
         finally
         {
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static async Task WaitForAsync(Func<bool> predicate, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!predicate())
+        {
+            if (DateTimeOffset.UtcNow >= deadline)
+                throw new TimeoutException("Timed out waiting for the development message catalog to reload.");
+            await Task.Delay(20);
         }
     }
 

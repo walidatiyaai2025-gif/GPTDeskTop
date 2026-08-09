@@ -20,7 +20,7 @@ public sealed class ChatGptRotationHandoffRegressionTests
             StringComparison.Ordinal);
         var deferred = source.IndexOf("\"RotationHandoffDeferred\"", rotationStart, StringComparison.Ordinal);
         var resetHandledText = source.IndexOf("lastHandledText = string.Empty", deferred, StringComparison.Ordinal);
-        var successfulRotation = source.IndexOf("monitor.RotationCount++", deferred, StringComparison.Ordinal);
+        var successfulRotation = source.IndexOf("CommitVerifiedConversationHandoffAsync", deferred, StringComparison.Ordinal);
         var closeOldTab = source.IndexOf("await _chrome.CloseTabAsync(oldTab", successfulRotation, StringComparison.Ordinal);
 
         Assert.True(rotationStart >= 0);

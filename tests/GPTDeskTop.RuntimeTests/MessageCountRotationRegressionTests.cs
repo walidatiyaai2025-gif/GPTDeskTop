@@ -40,14 +40,13 @@ public sealed class MessageCountRotationRegressionTests
         var source = ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs");
         var helper = source.IndexOf("private async Task<ChromeTab?> RotateByMessageCountAsync", StringComparison.Ordinal);
         var verifiedSend = source.IndexOf("SendWhenReadyAsync(monitor.Id, newTab, startMessage, allowRecoveryReload: true", helper, StringComparison.Ordinal);
-        var increment = source.IndexOf("monitor.RotationCount++", helper, StringComparison.Ordinal);
-        var save = source.IndexOf("await _database.SaveMonitorAsync(monitor", increment, StringComparison.Ordinal);
-        var closeOld = source.IndexOf("await _chrome.CloseTabAsync(oldTab", save, StringComparison.Ordinal);
+        var commit = source.IndexOf("CommitVerifiedConversationHandoffAsync", verifiedSend, StringComparison.Ordinal);
+        var closeOld = source.IndexOf("await _chrome.CloseTabAsync(oldTab", commit, StringComparison.Ordinal);
 
         Assert.True(helper >= 0);
         Assert.True(verifiedSend > helper);
-        Assert.True(increment > verifiedSend);
-        Assert.True(save > increment);
-        Assert.True(closeOld > save);
+        Assert.True(commit > verifiedSend);
+        Assert.True(closeOld > commit);
+        Assert.DoesNotContain("await _database.SaveMonitorAsync(monitor", source[helper..closeOld], StringComparison.Ordinal);
     }
 }
