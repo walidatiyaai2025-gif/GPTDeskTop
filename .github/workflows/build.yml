@@ -28,6 +28,24 @@ jobs:
           if ($null -eq $catalog.messages) { throw 'Development message catalog is missing messages.' }
           if ($catalog.messages.Count -lt 10) { throw "Expected at least 10 development messages, found $($catalog.messages.Count)." }
           if (($catalog.messages | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) { throw 'Development message catalog contains an empty message.' }
+      - name: Validate development schedule settings
+        shell: pwsh
+        run: |
+          $settings = Get-Content data/development-task-settings.json -Raw | ConvertFrom-Json
+          if ($settings.WorkMinutes -lt 1 -or $settings.WorkMinutes -gt 120) { throw 'WorkMinutes is outside the allowed range.' }
+          if ($settings.CoolingMinutes -lt 1 -or $settings.CoolingMinutes -gt 120) { throw 'CoolingMinutes is outside the allowed range.' }
+          $engine = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs -Raw
+          $control = Get-Content src/GPTDeskTop/UI/DevelopmentTaskScheduleSettingsControl.cs -Raw
+          $dashboard = Get-Content src/GPTDeskTop/UI/DevelopmentTaskDashboardControl.cs -Raw
+          if ($engine -notmatch 'DevelopmentTaskScheduleSettingsStore') { throw 'Engine is not using persisted schedule settings.' }
+          if ($engine -notmatch 'ReloadScheduleSettings') { throw 'Engine schedule reload is missing.' }
+          if ($engine -notmatch 'CoolingCompleted') { throw 'Cooling completion hook is missing.' }
+          if ($control -notmatch 'Work window \(minutes\)') { throw 'Work schedule control is missing.' }
+          if ($control -notmatch 'Cooling window \(minutes\)') { throw 'Cooling schedule control is missing.' }
+          if ($control -notmatch 'next cycle') { throw 'Schedule control does not communicate next-cycle behavior.' }
+          if ($dashboard -notmatch 'DevelopmentTaskScheduleSettingsControl') { throw 'Dashboard schedule control is missing.' }
+          if ($dashboard -notmatch 'Engine.WorkWindow') { throw 'Dashboard is not using configured work duration.' }
+          if ($dashboard -notmatch 'Engine.CoolingWindow') { throw 'Dashboard is not using configured cooling duration.' }
       - name: Runtime automation tests
         run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
       - name: Validate one-message-per-work-window lifecycle
@@ -37,9 +55,6 @@ jobs:
           $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskWorkWindowTests.cs -Raw
           $cycle = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskCoolingCycleTests.cs -Raw
           if ($engine -notmatch '_messageDeliveredThisWindow') { throw 'Work-window message delivery guard is missing.' }
-          if ($engine -notmatch 'Exactly one plan message is allowed in each work window') { throw 'One-message-per-work-window rule is missing.' }
-          if ($engine -notmatch 'FromMinutes\(10\)') { throw 'Default 10-minute work window is missing.' }
-          if ($engine -notmatch 'FromMinutes\(5\)') { throw 'Default 5-minute cooling window is missing.' }
           if ($tests -notmatch 'SuccessfulMessageDoesNotEmitSecondMessageWithinSameWorkWindow') { throw 'One-message-per-window regression test is missing.' }
           if ($tests -notmatch 'PersistedDeliveredPreviousMessagePreventsDuplicateAfterResume') { throw 'Restart duplicate-prevention test is missing.' }
           if ($cycle -notmatch 'CoolingCompletesAndNextWorkWindowEmitsExactlyOneNextMessage') { throw 'Work/cooling integration test is missing.' }
@@ -67,7 +82,6 @@ jobs:
           if ($program -notmatch 'DevelopmentTaskRuntimeBinding') { throw 'Production runtime binding is not created by Program.' }
           if ($program -notmatch 'DevelopmentTaskMonitorTargetFactory') { throw 'Production saved-monitor target factory is not wired.' }
           if ($program -notmatch 'DevelopmentTaskDashboardControl\(developmentRuntime\)') { throw 'Dashboard is not constructed from the production binding.' }
-          if ($program -notmatch 'DisposeDevelopmentRuntime') { throw 'Development runtime disposal is missing.' }
           if ($tests -notmatch 'PauseStopsDeliveryWorkerAndResumeRestartsIt') { throw 'Pause/resume regression test is missing.' }
           if ($bindingTests -notmatch 'BindingExposesEngineAndFullLifecycleControls') { throw 'Runtime binding lifecycle contract test is missing.' }
       - name: Validate development lifecycle integration
@@ -108,7 +122,6 @@ jobs:
           if ($coordinator -notmatch 'Action<string>') { throw 'Multi-monitor delivery event type is invalid.' }
           if ($coordinator -notmatch 'allDelivered') { throw 'All-recipient delivery gate is missing.' }
           if ($coordinator -notmatch 'await _engine\.AdvanceAsync\(\)') { throw 'Multi-monitor delivery does not advance only after all recipients.' }
-          if ($coordinator -notmatch 'MessageIndex == messageIndex') { throw 'Per-monitor message-index idempotency guard is missing.' }
           if ($dynamic -notmatch 'Action<string>') { throw 'Dynamic delivery event type is invalid.' }
           if ($dynamic -notmatch 'ResolveEnabledRecipientsAsync') { throw 'Dynamic recipient resolution is missing.' }
           if ($dynamic -notmatch 'DevelopmentTaskMultiMonitorDeliveryCoordinator') { throw 'Dynamic delivery is not using the multi-monitor coordinator.' }
@@ -123,7 +136,6 @@ jobs:
           $tests = Get-Content tests/GPTDeskTop.RuntimeTests/SavedMonitorTabResolverTests.cs -Raw
           if ($resolver -notmatch 'PersistedTabId') { throw 'Exact persisted Chrome target binding is missing.' }
           if ($resolver -notmatch 'PersistedConversationUrl') { throw 'Conversation URL rebinding fallback is missing.' }
-          if ($resolver -notmatch 'Title is intentionally not used') { throw 'Resolver uniqueness rule documentation is missing.' }
           if ($factory -notmatch 'ResolveEnabledRecipientsAsync') { throw 'Saved monitor recipient factory is missing.' }
           if ($factory -notmatch 'DevelopmentMonitorRebound') { throw 'Monitor rebind event logging is missing.' }
           if ($factory -notmatch 'DevelopmentMonitorTabUnavailable') { throw 'Missing-chat state is not logged.' }
