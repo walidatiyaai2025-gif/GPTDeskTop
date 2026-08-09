@@ -2,6 +2,7 @@ using System.Diagnostics;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Data;
 using GPTDeskTop.Services;
+using GPTDeskTop.Services.DevelopmentTaskEngine;
 using GPTDeskTop.UI;
 
 namespace GPTDeskTop;
@@ -48,6 +49,19 @@ internal static class Program
             // appear while RecoverIfPendingAsync was waiting for Chrome, making the main form
             // look as if it had failed to load. Show the UI first and recover asynchronously.
             var mainForm = new MainForm(chrome, monitor, database);
+
+            // Development-plan lifecycle dashboard. The dashboard owns only the plan engine;
+            // verified ChatGPT delivery remains behind the existing runtime binding layer.
+            var developmentEngine = new DevelopmentTaskEngine();
+            var developmentDashboard = new DevelopmentTaskDashboardControl(developmentEngine)
+            {
+                Height = 190,
+                Dock = DockStyle.Top,
+                TabStop = false
+            };
+            mainForm.Controls.Add(developmentDashboard);
+            mainForm.Controls.SetChildIndex(developmentDashboard, 0);
+
             using var metrics = new HomeMetricsService(mainForm, database, monitor);
 
             mainForm.Shown += async (_, _) =>
@@ -66,6 +80,8 @@ internal static class Program
             {
                 try { CrashRecoveryStateService.MarkCleanShutdownAsync(database).GetAwaiter().GetResult(); }
                 catch (Exception ex) { ExceptionLogService.Log(ex, "Program.MarkCleanShutdown"); }
+                try { developmentEngine.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+                catch (Exception ex) { ExceptionLogService.Log(ex, "Program.DisposeDevelopmentEngine"); }
             };
 
             Application.Run(mainForm);
