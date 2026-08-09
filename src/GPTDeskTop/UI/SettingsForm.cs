@@ -487,7 +487,7 @@ public sealed class SettingsForm : Form
                 this,
                 $"The backup is valid (schema {plan.SchemaVersion}).\n\n" +
                 $"Settings to apply: {plan.Settings.Count}\nMonitors to merge: {plan.Monitors.Count}\n\n" +
-                "Exact conversation-URL matches update only operator configuration while preserving the local monitor ID, runtime Tab ID, rotation counter and history. " +
+                "Canonical conversation-identity matches update only operator configuration while preserving the local monitor ID, runtime Tab ID, stored URL spelling, rotation counter and history. " +
                 "Missing monitors are added without a runtime Tab ID. Local monitors absent from the backup are not deleted.\n\n" +
                 "This changes persistent configuration. Restart GPTDeskTop after import before relying on the imported configuration.\n\nContinue?",
                 "Confirm Configuration Import",

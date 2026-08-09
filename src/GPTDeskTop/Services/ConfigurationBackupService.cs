@@ -166,12 +166,28 @@ public sealed class ConfigurationBackupService
         settings ??= new Dictionary<string, string?>();
         monitors ??= Array.Empty<SavedMonitor>();
 
+        var monitorSnapshot = monitors.ToArray();
+        var invalidIdentity = monitorSnapshot.FirstOrDefault(monitor =>
+            !RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url));
+        if (invalidIdentity is not null)
+        {
+            throw new InvalidOperationException(
+                $"Configuration backup cannot be created because monitor #{invalidIdentity.Id} does not have a stable ChatGPT conversation identity. Use Runtime Health Repair before exporting a portable backup.");
+        }
+
+        var duplicateMonitorIds = MonitorConversationOwnership.FindDuplicateMonitorIds(monitorSnapshot);
+        if (duplicateMonitorIds.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Configuration backup cannot be created while {duplicateMonitorIds.Count} monitors are blocked by duplicate ChatGPT conversation ownership. Use Runtime Health Repair before exporting a portable backup.");
+        }
+
         var projectedSettings = AllowedSettingKeys
             .Where(key => settings.TryGetValue(key, out var value) && value is not null)
             .Select(key => new ConfigurationBackupSetting(key, settings[key] ?? string.Empty))
             .ToArray();
 
-        var projectedMonitors = monitors
+        var projectedMonitors = monitorSnapshot
             .Select(CreateMonitorBackup)
             .ToArray();
 
@@ -197,7 +213,7 @@ public sealed class ConfigurationBackupService
 
         return new ConfigurationBackupMonitor(
             monitor.Title ?? string.Empty,
-            monitor.Url ?? string.Empty,
+            ChatGptConversationIdentity.Normalize(monitor.Url ?? string.Empty),
             monitor.AutoReply ?? string.Empty,
             Math.Clamp(monitor.ReplyDelaySeconds, 0, 300),
             Math.Clamp(monitor.TimerSeconds, 1, 60),

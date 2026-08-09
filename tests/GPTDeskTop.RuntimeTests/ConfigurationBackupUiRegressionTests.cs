@@ -35,6 +35,9 @@ public sealed class ConfigurationBackupUiRegressionTests
         Assert.Contains("AllowedSettingKeys", source, StringComparison.Ordinal);
         Assert.Contains("GetSettingAsync(key, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("GetSavedMonitorsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("RuntimeHealthPresentation.IsChatGptConversationUrl", source, StringComparison.Ordinal);
+        Assert.Contains("MonitorConversationOwnership.FindDuplicateMonitorIds", source, StringComparison.Ordinal);
+        Assert.Contains("ChatGptConversationIdentity.Normalize", source, StringComparison.Ordinal);
         Assert.Contains("FileMode.CreateNew", source, StringComparison.Ordinal);
         Assert.Contains("File.Move(tempPath, outputPath, overwrite: true)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("GetRecentLogsAsync", source, StringComparison.Ordinal);
@@ -43,6 +46,16 @@ public sealed class ConfigurationBackupUiRegressionTests
         Assert.DoesNotContain("monitor.TabId", source, StringComparison.Ordinal);
         Assert.DoesNotContain("monitor.Id", source, StringComparison.Ordinal);
         Assert.DoesNotContain("monitor.RotationCount", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ImportConfirmationDescribesCanonicalConversationIdentityMatching()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "SettingsForm.cs");
+
+        Assert.Contains("Canonical conversation-identity matches update only operator configuration", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Exact conversation-URL matches update only operator configuration", source, StringComparison.Ordinal);
+        Assert.Contains("stored URL spelling", source, StringComparison.Ordinal);
     }
 
     [Fact]
