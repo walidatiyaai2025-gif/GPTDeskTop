@@ -53,6 +53,22 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
+    public async Task PauseAsync(CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_state.Status is not (DevelopmentTaskEngineStatus.Working or DevelopmentTaskEngineStatus.Cooling)) return;
+            _cts?.Cancel();
+            _state.Status = DevelopmentTaskEngineStatus.Paused;
+            _state.LastCheckpointAt = DateTimeOffset.UtcNow;
+            _state.Revision++;
+            await SaveStateAsync(cancellationToken).ConfigureAwait(false);
+            PublishState();
+        }
+        finally { _gate.Release(); }
+    }
+
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -208,7 +224,6 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
                         CoolingStarted?.Invoke(this, EventArgs.Empty);
                         continue;
                     }
-                    // Exactly one plan message is allowed in each work window.
                     if (!_messageDeliveredThisWindow && _lastEmittedMessageIndex != _state.CurrentMessageIndex)
                     {
                         var message = BuildPlanMessage(messages[_state.CurrentMessageIndex], _state);
