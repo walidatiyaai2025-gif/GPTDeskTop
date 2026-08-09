@@ -83,7 +83,7 @@ public sealed class ConfigurationBackupImportServiceTests
             var monitors = await database.GetSavedMonitorsAsync();
             Assert.Equal(3, monitors.Count);
 
-            var importedExisting = Assert.Single(monitors.Where(x => x.Url == existing.Url));
+            var importedExisting = Assert.Single(monitors, x => x.Url == existing.Url);
             Assert.Equal(existingId, importedExisting.Id);
             Assert.Equal("LIVE-TAB-42", importedExisting.TabId);
             Assert.Equal(7, importedExisting.RotationCount);
@@ -93,12 +93,12 @@ public sealed class ConfigurationBackupImportServiceTests
             Assert.Equal(5, importedExisting.TimerSeconds);
             Assert.Equal("GPT-5", importedExisting.PreferredModel);
 
-            var preservedLocalOnly = Assert.Single(monitors.Where(x => x.Id == localOnlyId));
+            var preservedLocalOnly = Assert.Single(monitors, x => x.Id == localOnlyId);
             Assert.Equal("LOCAL-ONLY-TAB", preservedLocalOnly.TabId);
             Assert.Equal(4, preservedLocalOnly.RotationCount);
             Assert.Equal("keep me", preservedLocalOnly.AutoReply);
 
-            var inserted = Assert.Single(monitors.Where(x => x.Url == "https://chatgpt.com/c/new-import-test"));
+            var inserted = Assert.Single(monitors, x => x.Url == "https://chatgpt.com/c/new-import-test");
             Assert.True(inserted.Id > 0);
             Assert.Equal(string.Empty, inserted.TabId);
             Assert.Equal(0, inserted.RotationCount);
