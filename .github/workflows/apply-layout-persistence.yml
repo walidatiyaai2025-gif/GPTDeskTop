@@ -1,0 +1,356 @@
+name: Apply safe layout persistence
+
+on:
+  push:
+    branches:
+      - feature/uiux-layout-persistence
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[layout-persistence-applied]') }}
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/uiux-layout-persistence
+          fetch-depth: 0
+
+      - name: Apply safe window and panel state persistence
+        shell: pwsh
+        run: |
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+          function Read-Normalized([string]$Path) {
+            return [System.IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
+          }
+
+          function Replace-Required([string]$Content, [string]$Old, [string]$New, [string]$Name) {
+            $oldNormalized = $Old.Replace("`r`n", "`n")
+            $newNormalized = $New.Replace("`r`n", "`n")
+            if (-not $Content.Contains($oldNormalized)) {
+              throw "Required layout patch block not found: $Name"
+            }
+            return $Content.Replace($oldNormalized, $newNormalized)
+          }
+
+          $mainPath = 'src/GPTDeskTop/UI/MainForm.cs'
+          $main = Read-Normalized $mainPath
+
+          $main = Replace-Required $main @'
+                  Shown += async (_, _) =>
+                  {
+                      ApplyInitialSplitterRatios();
+                      await LoadStartupStateAsync();
+                      FocusOperationalWorkspace();
+                  };
+          '@ @'
+                  Shown += async (_, _) =>
+                  {
+                      await RestoreOperatorLayoutAsync();
+                      await LoadStartupStateAsync();
+                      FocusOperationalWorkspace();
+                  };
+          '@ 'restore layout before startup refresh'
+
+          $main = Replace-Required $main @'
+              private void ApplyInitialSplitterRatios()
+              {
+                  SetSplitRatio(_workspaceSplit, 0.42);
+                  SetSplitRatio(_diagnosticsSplit, 0.48);
+              }
+          '@ @'
+              private void ApplyInitialSplitterRatios()
+              {
+                  SetSplitRatio(_workspaceSplit, 0.42);
+                  SetSplitRatio(_diagnosticsSplit, 0.48);
+              }
+
+              private async Task RestoreOperatorLayoutAsync()
+              {
+                  try
+                  {
+                      var boundsRaw = await _database.GetSettingAsync("Ui.Main.WindowBounds");
+                      if (TryParseBounds(boundsRaw, out var savedBounds) && IsBoundsVisible(savedBounds))
+                      {
+                          Bounds = ClampBoundsToWorkingArea(savedBounds);
+                          var state = await _database.GetSettingAsync("Ui.Main.WindowState");
+                          if (string.Equals(state, "Maximized", StringComparison.OrdinalIgnoreCase))
+                              WindowState = FormWindowState.Maximized;
+                      }
+
+                      var workspaceRaw = await _database.GetSettingAsync("Ui.Main.WorkspaceSplitRatio");
+                      if (!TryApplyStoredSplitRatio(_workspaceSplit, workspaceRaw))
+                          SetSplitRatio(_workspaceSplit, 0.42);
+
+                      var diagnosticsRaw = await _database.GetSettingAsync("Ui.Main.DiagnosticsSplitRatio");
+                      if (!TryApplyStoredSplitRatio(_diagnosticsSplit, diagnosticsRaw))
+                          SetSplitRatio(_diagnosticsSplit, 0.48);
+                  }
+                  catch (Exception ex)
+                  {
+                      ExceptionLogService.Log(ex, "MainForm.RestoreOperatorLayout");
+                      ApplyInitialSplitterRatios();
+                  }
+              }
+
+              private async Task PersistOperatorLayoutAsync(CancellationToken cancellationToken)
+              {
+                  var normalBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+                  if (normalBounds.Width <= 0 || normalBounds.Height <= 0) return;
+
+                  var state = WindowState == FormWindowState.Maximized ? "Maximized" : "Normal";
+                  var boundsValue = $"{normalBounds.X},{normalBounds.Y},{normalBounds.Width},{normalBounds.Height}";
+                  var workspaceRatio = GetSplitRatio(_workspaceSplit).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                  var diagnosticsRatio = GetSplitRatio(_diagnosticsSplit).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+
+                  var writes = new[]
+                  {
+                      _database.SetSettingAsync("Ui.Main.WindowBounds", boundsValue),
+                      _database.SetSettingAsync("Ui.Main.WindowState", state),
+                      _database.SetSettingAsync("Ui.Main.WorkspaceSplitRatio", workspaceRatio),
+                      _database.SetSettingAsync("Ui.Main.DiagnosticsSplitRatio", diagnosticsRatio)
+                  };
+                  await Task.WhenAll(writes).WaitAsync(cancellationToken);
+              }
+
+              private static bool TryParseBounds(string? value, out Rectangle bounds)
+              {
+                  bounds = Rectangle.Empty;
+                  if (string.IsNullOrWhiteSpace(value)) return false;
+                  var parts = value.Split(',', StringSplitOptions.TrimEntries);
+                  if (parts.Length != 4) return false;
+                  if (!int.TryParse(parts[0], out var x) || !int.TryParse(parts[1], out var y) ||
+                      !int.TryParse(parts[2], out var width) || !int.TryParse(parts[3], out var height)) return false;
+                  if (width < 320 || height < 240) return false;
+                  bounds = new Rectangle(x, y, width, height);
+                  return true;
+              }
+
+              private static bool IsBoundsVisible(Rectangle bounds)
+                  => Screen.AllScreens.Any(screen => screen.WorkingArea.IntersectsWith(bounds));
+
+              private Rectangle ClampBoundsToWorkingArea(Rectangle bounds)
+              {
+                  var area = Screen.FromRectangle(bounds).WorkingArea;
+                  var minimumWidth = Math.Min(MinimumSize.Width, area.Width);
+                  var minimumHeight = Math.Min(MinimumSize.Height, area.Height);
+                  var width = Math.Min(Math.Max(bounds.Width, minimumWidth), area.Width);
+                  var height = Math.Min(Math.Max(bounds.Height, minimumHeight), area.Height);
+                  var x = Math.Clamp(bounds.X, area.Left, area.Right - width);
+                  var y = Math.Clamp(bounds.Y, area.Top, area.Bottom - height);
+                  return new Rectangle(x, y, width, height);
+              }
+
+              private static bool TryApplyStoredSplitRatio(SplitContainer split, string? raw)
+              {
+                  if (!double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ratio)) return false;
+                  if (ratio is < 0.15 or > 0.85) return false;
+                  SetSplitRatio(split, ratio);
+                  return true;
+              }
+
+              private static double GetSplitRatio(SplitContainer split)
+              {
+                  var usable = split.Width - split.SplitterWidth;
+                  if (usable <= 0) return 0.5;
+                  return Math.Clamp((double)split.SplitterDistance / usable, 0.15, 0.85);
+              }
+          '@ 'layout persistence helpers'
+
+          $main = Replace-Required $main @'
+              private async Task CompleteShutdownAsync()
+              {
+                  using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                  try
+                  {
+                      AppendActivity("Closing application: stopping monitor workers...");
+          '@ @'
+              private async Task CompleteShutdownAsync()
+              {
+                  using (var layoutTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+                  {
+                      try
+                      {
+                          AppendActivity("Closing application: saving workspace layout...");
+                          await PersistOperatorLayoutAsync(layoutTimeout.Token);
+                      }
+                      catch (Exception ex)
+                      {
+                          ExceptionLogService.Log(ex, "MainForm.PersistOperatorLayout");
+                      }
+                  }
+
+                  using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                  try
+                  {
+                      AppendActivity("Closing application: stopping monitor workers...");
+          '@ 'bounded layout save before cleanup'
+
+          [System.IO.File]::WriteAllText($mainPath, $main, $utf8NoBom)
+
+          $dashboardPath = 'src/GPTDeskTop/UI/DevelopmentTaskDashboardControl.cs'
+          $dashboard = Read-Normalized $dashboardPath
+
+          $dashboard = Replace-Required $dashboard @'
+              private bool _expanded = true;
+
+              public DevelopmentTaskDashboardControl(DevelopmentTaskRuntimeBinding binding)
+          '@ @'
+              private bool _expanded = true;
+
+              public event EventHandler? ExpandedChanged;
+
+              public bool IsExpanded
+              {
+                  get => _expanded;
+                  set
+                  {
+                      if (_expanded == value) return;
+                      _expanded = value;
+                      ApplyExpandedState();
+                      ExpandedChanged?.Invoke(this, EventArgs.Empty);
+                  }
+              }
+
+              public DevelopmentTaskDashboardControl(DevelopmentTaskRuntimeBinding binding)
+          '@ 'dashboard persisted state property'
+
+          $dashboard = Replace-Required $dashboard @'
+              private void ToggleExpanded()
+              {
+                  _expanded = !_expanded;
+                  _body.Visible = _expanded;
+                  _toggle.Text = _expanded ? "Collapse" : "Details";
+                  Height = _expanded ? ExpandedHeight : CollapsedHeight;
+              }
+          '@ @'
+              private void ToggleExpanded() => IsExpanded = !IsExpanded;
+
+              private void ApplyExpandedState()
+              {
+                  _body.Visible = _expanded;
+                  _toggle.Text = _expanded ? "Collapse" : "Details";
+                  Height = _expanded ? ExpandedHeight : CollapsedHeight;
+              }
+          '@ 'dashboard state application'
+
+          [System.IO.File]::WriteAllText($dashboardPath, $dashboard, $utf8NoBom)
+
+          $programPath = 'src/GPTDeskTop/Program.cs'
+          $program = Read-Normalized $programPath
+
+          $program = Replace-Required $program @'
+                  developmentRuntime = new DevelopmentTaskRuntimeBinding(developmentEngine, targetFactory);
+                  var developmentDashboard = new DevelopmentTaskDashboardControl(developmentRuntime)
+                  {
+                      Dock = DockStyle.Top,
+                      TabStop = false
+                  };
+                  mainForm.Controls.Add(developmentDashboard);
+          '@ @'
+                  developmentRuntime = new DevelopmentTaskRuntimeBinding(developmentEngine, targetFactory);
+                  var developmentDashboardExpanded = !string.Equals(
+                      database.GetSettingAsync("Ui.DevelopmentDashboard.Expanded").GetAwaiter().GetResult(),
+                      "0",
+                      StringComparison.Ordinal);
+                  var developmentDashboard = new DevelopmentTaskDashboardControl(developmentRuntime)
+                  {
+                      Dock = DockStyle.Top,
+                      TabStop = false,
+                      IsExpanded = developmentDashboardExpanded
+                  };
+                  developmentDashboard.ExpandedChanged += async (_, _) =>
+                  {
+                      try
+                      {
+                          await database.SetSettingAsync("Ui.DevelopmentDashboard.Expanded", developmentDashboard.IsExpanded ? "1" : "0");
+                      }
+                      catch (Exception ex)
+                      {
+                          await ExceptionLogService.LogAsync(ex, "Program.PersistDevelopmentDashboardState");
+                      }
+                  };
+                  mainForm.Controls.Add(developmentDashboard);
+          '@ 'dashboard state restore and save'
+
+          [System.IO.File]::WriteAllText($programPath, $program, $utf8NoBom)
+
+          $testPath = 'tests/GPTDeskTop.RuntimeTests/LayoutPersistenceUiRegressionTests.cs'
+          $test = @'
+          namespace GPTDeskTop.RuntimeTests;
+
+          public sealed class LayoutPersistenceUiRegressionTests
+          {
+              private static string ReadSource(params string[] parts)
+              {
+                  var path = Path.GetFullPath(Path.Combine(
+                      AppContext.BaseDirectory,
+                      "..", "..", "..", "..", "..",
+                      Path.Combine(parts)));
+                  return File.ReadAllText(path);
+              }
+
+              [Fact]
+              public void MainWindowPersistsBoundsStateAndSplitterRatiosWithoutBlockingShutdown()
+              {
+                  var source = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
+                  Assert.Contains("Ui.Main.WindowBounds", source, StringComparison.Ordinal);
+                  Assert.Contains("Ui.Main.WindowState", source, StringComparison.Ordinal);
+                  Assert.Contains("Ui.Main.WorkspaceSplitRatio", source, StringComparison.Ordinal);
+                  Assert.Contains("Ui.Main.DiagnosticsSplitRatio", source, StringComparison.Ordinal);
+                  Assert.Contains("PersistOperatorLayoutAsync", source, StringComparison.Ordinal);
+                  Assert.Contains("CancellationTokenSource(TimeSpan.FromSeconds(2))", source, StringComparison.Ordinal);
+                  Assert.Contains("await PersistOperatorLayoutAsync(layoutTimeout.Token)", source, StringComparison.Ordinal);
+                  Assert.DoesNotContain("PersistOperatorLayoutAsync().GetAwaiter().GetResult()", source, StringComparison.Ordinal);
+              }
+
+              [Fact]
+              public void SavedWindowBoundsAreRestoredOnlyWhenVisibleOnAConnectedScreen()
+              {
+                  var source = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
+                  Assert.Contains("IsBoundsVisible(savedBounds)", source, StringComparison.Ordinal);
+                  Assert.Contains("Screen.AllScreens.Any", source, StringComparison.Ordinal);
+                  Assert.Contains("screen.WorkingArea.IntersectsWith(bounds)", source, StringComparison.Ordinal);
+                  Assert.Contains("ClampBoundsToWorkingArea", source, StringComparison.Ordinal);
+                  Assert.Contains("ApplyInitialWindowLayout", source, StringComparison.Ordinal);
+              }
+
+              [Fact]
+              public void InvalidSplitterStateFallsBackToResponsiveDefaults()
+              {
+                  var source = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
+                  Assert.Contains("ratio is < 0.15 or > 0.85", source, StringComparison.Ordinal);
+                  Assert.Contains("SetSplitRatio(_workspaceSplit, 0.42)", source, StringComparison.Ordinal);
+                  Assert.Contains("SetSplitRatio(_diagnosticsSplit, 0.48)", source, StringComparison.Ordinal);
+              }
+
+              [Fact]
+              public void DevelopmentDashboardExpansionStateIsPersistedWithoutChangingItsConstructorContract()
+              {
+                  var dashboard = ReadSource("src", "GPTDeskTop", "UI", "DevelopmentTaskDashboardControl.cs");
+                  var program = ReadSource("src", "GPTDeskTop", "Program.cs");
+                  Assert.Contains("public bool IsExpanded", dashboard, StringComparison.Ordinal);
+                  Assert.Contains("public event EventHandler? ExpandedChanged", dashboard, StringComparison.Ordinal);
+                  Assert.Contains("private void ToggleExpanded() => IsExpanded = !IsExpanded;", dashboard, StringComparison.Ordinal);
+                  Assert.Contains("new DevelopmentTaskDashboardControl(developmentRuntime)", program, StringComparison.Ordinal);
+                  Assert.Contains("Ui.DevelopmentDashboard.Expanded", program, StringComparison.Ordinal);
+                  Assert.Contains("developmentDashboard.ExpandedChanged +=", program, StringComparison.Ordinal);
+              }
+          }
+          '@
+          [System.IO.File]::WriteAllText($testPath, $test.Replace("`r`n", "`n"), $utf8NoBom)
+
+          Remove-Item '.github/workflows/apply-layout-persistence.yml' -Force
+
+      - name: Commit safe layout persistence
+        shell: pwsh
+        run: |
+          git config user.name "gptdesktop-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "ui: remember safe window and panel layout [layout-persistence-applied]"
+          git push origin HEAD:feature/uiux-layout-persistence
