@@ -18,6 +18,12 @@ internal static class Program
             return;
         }
 
+        if (HiddenChromeProcessProbe.IsProbeCommand(args))
+        {
+            Environment.ExitCode = HiddenChromeProcessProbe.Run(args);
+            return;
+        }
+
         ApplicationConfiguration.Initialize();
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         LocalDatabase? database = null;
