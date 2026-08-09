@@ -1,6 +1,7 @@
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
 using GPTDeskTop.Services;
+using GPTDeskTop.Services.DevelopmentTaskEngine;
 
 namespace GPTDeskTop.UI;
 
@@ -982,17 +983,27 @@ public sealed class MainForm : Form
             AppendActivity($"Monitor #{monitor.Id}: matching tab not open.");
             return;
         }
+        var expectedConversationUrl = monitor.Url;
+        var targetUpdated = await _database.UpdateMonitorRuntimeTargetIfConversationMatchesAsync(
+            monitor.Id,
+            expectedConversationUrl,
+            tab.Id,
+            tab.Title);
+        if (!targetUpdated)
+        {
+            AppendActivity($"Monitor #{monitor.Id}: saved conversation changed before Start could update the Chrome target. Refreshing monitor state.");
+            await RefreshMonitorsAsync();
+            return;
+        }
+
         monitor.TabId = tab.Id;
         monitor.Title = tab.Title;
-        monitor.Url = tab.Url;
-        await _database.SaveMonitorAsync(monitor);
         await _monitor.StartMonitorAsync(monitor, tab);
         await RefreshMonitorsAsync();
     }
 
     private ChromeTab? ResolveTab(SavedMonitor monitor)
-        => _tabs.FirstOrDefault(t => t.Id == monitor.TabId)
-           ?? _tabs.FirstOrDefault(t => string.Equals(t.Url, monitor.Url, StringComparison.OrdinalIgnoreCase));
+        => SavedMonitorTabResolver.Resolve(monitor, _tabs).Tab;
 
     private async Task CloseSelectedTabAsync()
     {

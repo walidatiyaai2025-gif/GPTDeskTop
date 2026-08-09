@@ -124,6 +124,37 @@ public sealed class LocalDatabase
         monitor.Id = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)); monitor.UpdatedAt = now.ToLocalTime(); if (monitor.CreatedAt == default) monitor.CreatedAt = now.ToLocalTime(); return monitor.Id;
     }
 
+    public async Task<bool> UpdateMonitorRuntimeTargetIfConversationMatchesAsync(
+        long monitorId,
+        string expectedConversationUrl,
+        string targetTabId,
+        string targetTitle,
+        CancellationToken cancellationToken = default)
+    {
+        if (monitorId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(monitorId));
+        if (string.IsNullOrWhiteSpace(expectedConversationUrl))
+            throw new InvalidOperationException("The saved monitor conversation identity is required.");
+        if (string.IsNullOrWhiteSpace(targetTabId))
+            throw new InvalidOperationException("The resolved Chrome target ID is required.");
+
+        var now = DateTime.UtcNow;
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE SavedMonitors
+            SET TabId=$tabId, Title=$title, UpdatedAt=$updatedAt
+            WHERE Id=$id AND Url=$expectedUrl COLLATE NOCASE;
+            """;
+        command.Parameters.AddWithValue("$id", monitorId);
+        command.Parameters.AddWithValue("$expectedUrl", expectedConversationUrl);
+        command.Parameters.AddWithValue("$tabId", targetTabId);
+        command.Parameters.AddWithValue("$title", targetTitle ?? string.Empty);
+        command.Parameters.AddWithValue("$updatedAt", now.ToString("O"));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
     public async Task<MonitorRegistrationResult> RegisterMonitorIfConversationAvailableAsync(
         SavedMonitor monitor,
         CancellationToken cancellationToken = default)

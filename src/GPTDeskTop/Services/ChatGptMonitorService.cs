@@ -36,6 +36,8 @@ public sealed class ChatGptMonitorService
             throw new InvalidOperationException("The saved monitor URL is not a stable ChatGPT conversation identity.");
         if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
             throw new InvalidOperationException("The selected Chrome tab is not a stable ChatGPT conversation identity.");
+        if (!ChatGptConversationIdentity.IsSame(monitor.Url, tab.Url))
+            throw new InvalidOperationException("The selected Chrome target no longer represents the saved ChatGPT conversation identity.");
 
         var savedMonitors = await _database.GetSavedMonitorsAsync();
         if (MonitorConversationOwnership.IsDuplicateOwner(monitor.Id, savedMonitors))
