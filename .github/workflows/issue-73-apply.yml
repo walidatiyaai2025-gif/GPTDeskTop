@@ -24,11 +24,14 @@ jobs:
           dotnet-version: 8.0.x
       - name: Apply focused patch
         shell: pwsh
-        run: python eng/apply-issue-73.py
+        run: |
+          python eng/fix-issue-73-patch-runner.py
+          python eng/apply-issue-73.py
       - name: Remove temporary patch infrastructure
         shell: pwsh
         run: |
           Remove-Item eng/apply-issue-73.py -Force
+          Remove-Item eng/fix-issue-73-patch-runner.py -Force
           Remove-Item .github/workflows/issue-73-apply.yml -Force
       - name: Validate runtime tests
         shell: pwsh
