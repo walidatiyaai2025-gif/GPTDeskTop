@@ -32,24 +32,38 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = (Resolve-Path 'src/GPTDeskTop/bin/Release/net8.0-windows/GPTDeskTop.exe').Path
-          $root = Join-Path $env:RUNNER_TEMP 'gptdesktop-crash-process-qa'
+          $workingDirectory = Split-Path $exe -Parent
+          $root = Join-Path $env:RUNNER_TEMP "gptdesktop-crash-process-qa-$env:GITHUB_RUN_ID"
           $db = Join-Path $root 'crash-process.db'
           $armedPath = Join-Path $root 'armed.json'
           $resultPath = Join-Path $root 'relaunch.json'
           New-Item -ItemType Directory -Path $root -Force | Out-Null
 
-          $arm = Start-Process -FilePath $exe -ArgumentList @('--qa-crash-probe-arm', $db, $armedPath) -PassThru
+          $arm = Start-Process -FilePath $exe -WorkingDirectory $workingDirectory -ArgumentList @('--qa-crash-probe-arm', $db, $armedPath) -PassThru
           try {
-            $deadline = (Get-Date).AddSeconds(20)
+            # Hosted Windows images can have a slow first .NET/SQLite native load while
+            # Defender and multiple CI jobs are active. This is startup tolerance only;
+            # the crash-state assertions below remain exact.
+            $deadline = (Get-Date).AddSeconds(60)
+            $nextDiagnostic = (Get-Date).AddSeconds(10)
             while (-not (Test-Path $armedPath)) {
+              $arm.Refresh()
               if ($arm.HasExited) {
                 $errorPath = "$armedPath.error.txt"
                 if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
                 throw "GPTDeskTop crash probe exited before arming. ExitCode=$($arm.ExitCode)"
               }
-              if ((Get-Date) -ge $deadline) { throw 'Timed out waiting for GPTDeskTop crash probe to arm.' }
-              Start-Sleep -Milliseconds 100
-              $arm.Refresh()
+              if ((Get-Date) -ge $nextDiagnostic) {
+                $elapsed = 60 - [math]::Max(0, [int](($deadline - (Get-Date)).TotalSeconds))
+                Write-Host "Crash probe PID $($arm.Id) is still running; waiting for armed state (${elapsed}s elapsed)."
+                $errorPath = "$armedPath.error.txt"
+                if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
+                $nextDiagnostic = (Get-Date).AddSeconds(10)
+              }
+              if ((Get-Date) -ge $deadline) {
+                throw "Timed out after 60 seconds waiting for GPTDeskTop crash probe PID $($arm.Id) to arm."
+              }
+              Start-Sleep -Milliseconds 250
             }
 
             $armed = Get-Content $armedPath -Raw | ConvertFrom-Json
@@ -63,10 +77,11 @@ jobs:
             Write-Host 'GPTDeskTop was force-killed without clean-shutdown handling.'
           }
           finally {
+            $arm.Refresh()
             if (-not $arm.HasExited) { Stop-Process -Id $arm.Id -Force -ErrorAction SilentlyContinue }
           }
 
-          $verify = Start-Process -FilePath $exe -ArgumentList @('--qa-crash-probe-verify', $db, $resultPath) -PassThru -Wait
+          $verify = Start-Process -FilePath $exe -WorkingDirectory $workingDirectory -ArgumentList @('--qa-crash-probe-verify', $db, $resultPath) -PassThru -Wait
           if ($verify.ExitCode -ne 0) {
             $errorPath = "$resultPath.error.txt"
             if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
