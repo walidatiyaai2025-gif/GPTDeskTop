@@ -48,13 +48,12 @@ public sealed class SavedMonitorTabResolver
             var exact = tabs.FirstOrDefault(tab =>
                 string.Equals(tab.Id, monitor.TabId, StringComparison.Ordinal));
             if (exact is not null
-                && RuntimeHealthPresentation.IsChatGptConversationUrl(exact.Url))
+                && ChatGptConversationIdentity.IsSame(exact.Url, monitor.Url))
                 return SavedMonitorTabResolution.CreateFound(exact, "PersistedTabId");
         }
 
         var sameConversation = tabs.FirstOrDefault(tab =>
-            RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url)
-            && string.Equals(NormalizeUrl(tab.Url), NormalizeUrl(monitor.Url), StringComparison.Ordinal));
+            ChatGptConversationIdentity.IsSame(tab.Url, monitor.Url));
         if (sameConversation is not null)
             return SavedMonitorTabResolution.CreateFound(sameConversation, "PersistedConversationUrl");
 
@@ -62,12 +61,6 @@ public sealed class SavedMonitorTabResolver
             "The persisted ChatGPT conversation is not currently open.");
     }
 
-    private static string NormalizeUrl(string value)
-    {
-        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri))
-            return value.Trim().TrimEnd('/');
-        return uri.GetLeftPart(UriPartial.Path).TrimEnd('/') + uri.Query;
-    }
 }
 
 public sealed record SavedMonitorTabResolution(
