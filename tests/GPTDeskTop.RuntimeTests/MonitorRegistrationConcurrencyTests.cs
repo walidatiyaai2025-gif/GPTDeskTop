@@ -21,8 +21,8 @@ public sealed class MonitorRegistrationConcurrencyTests
                 database.RegisterMonitorIfConversationAvailableAsync(first),
                 database.RegisterMonitorIfConversationAvailableAsync(second));
 
-            Assert.Single(results.Where(result => result.Created));
-            Assert.Single(results.Where(result => !result.Created));
+            Assert.Equal(1, results.Count(result => result.Created));
+            Assert.Equal(1, results.Count(result => !result.Created));
             Assert.Equal(results[0].MonitorId, results[1].MonitorId);
             Assert.Equal(results[0].MonitorId, first.Id);
             Assert.Equal(results[1].MonitorId, second.Id);
