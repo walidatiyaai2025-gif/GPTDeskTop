@@ -46,20 +46,16 @@ public sealed class DuplicateOwnershipRepairService
         if (existingOwner is not null)
             throw new InvalidOperationException($"Monitor #{existingOwner.Id} already owns the selected ChatGPT conversation.");
 
-        var previousUrl = monitor.Url ?? string.Empty;
-        monitor.TabId = targetTab.Id;
-        monitor.Title = string.IsNullOrWhiteSpace(targetTab.Title) ? monitor.Title : targetTab.Title;
-        monitor.Url = targetTab.Url;
-
-        await _database.SaveMonitorAsync(monitor, cancellationToken);
-        await _database.AddLogAsync(
-            "System",
-            "Monitor ownership repair",
-            $"Rebound duplicate owner monitor #{monitor.Id} to a different unowned stable ChatGPT conversation.",
-            "MonitorDuplicateConversationOwnershipRebound",
+        var rebind = await _database.RebindMonitorConversationIfAvailableAsync(
             monitor.Id,
-            monitor.TabId,
-            monitor.Title,
+            monitor.Url ?? string.Empty,
+            targetTab.Id,
+            targetTab.Title,
+            targetTab.Url,
+            requireDuplicateSourceOwnership: true,
+            diagnosticPrompt: "Monitor ownership repair",
+            diagnosticResponse: $"Rebound duplicate owner monitor #{monitor.Id} to a different unowned stable ChatGPT conversation.",
+            diagnosticStatus: "MonitorDuplicateConversationOwnershipRebound",
             cancellationToken);
 
         var pending = string.Equals(
@@ -67,6 +63,6 @@ public sealed class DuplicateOwnershipRepairService
             "1",
             StringComparison.Ordinal);
 
-        return new MonitorIdentityRebindResult(monitor.Id, previousUrl, monitor.Url, pending);
+        return new MonitorIdentityRebindResult(rebind.MonitorId, rebind.PreviousUrl, rebind.NewUrl, pending);
     }
 }

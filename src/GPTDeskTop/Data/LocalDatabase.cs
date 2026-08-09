@@ -5,6 +5,7 @@ namespace GPTDeskTop.Data;
 
 public sealed record ConfigurationImportDatabaseResult(int SettingsApplied, int MonitorsUpdated, int MonitorsInserted);
 public sealed record MonitorRegistrationResult(long MonitorId, bool Created);
+public sealed record MonitorConversationRebindDatabaseResult(long MonitorId, string PreviousUrl, string NewUrl);
 
 public sealed class LocalDatabase
 {
@@ -170,6 +171,119 @@ public sealed class LocalDatabase
             monitor.CreatedAt = now.ToLocalTime();
             monitor.UpdatedAt = now.ToLocalTime();
             return new MonitorRegistrationResult(monitorId, true);
+        }
+        catch
+        {
+            try { transaction.Rollback(); } catch { }
+            throw;
+        }
+    }
+
+    public async Task<MonitorConversationRebindDatabaseResult> RebindMonitorConversationIfAvailableAsync(
+        long monitorId,
+        string expectedCurrentUrl,
+        string targetTabId,
+        string targetTitle,
+        string targetUrl,
+        bool requireDuplicateSourceOwnership,
+        string diagnosticPrompt,
+        string diagnosticResponse,
+        string diagnosticStatus,
+        CancellationToken cancellationToken = default)
+    {
+        if (monitorId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(monitorId));
+        if (string.IsNullOrWhiteSpace(targetTabId))
+            throw new InvalidOperationException("The selected ChatGPT conversation does not have a usable Chrome target ID.");
+        if (string.IsNullOrWhiteSpace(targetUrl))
+            throw new InvalidOperationException("A target conversation URL is required for monitor repair.");
+
+        expectedCurrentUrl ??= string.Empty;
+        targetTitle ??= string.Empty;
+        diagnosticPrompt ??= string.Empty;
+        diagnosticResponse ??= string.Empty;
+        diagnosticStatus ??= string.Empty;
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction(deferred: false);
+
+        try
+        {
+            string currentUrl;
+            string currentTitle;
+            await using (var load = connection.CreateCommand())
+            {
+                load.Transaction = transaction;
+                load.CommandText = "SELECT Url, Title FROM SavedMonitors WHERE Id=$id LIMIT 1;";
+                load.Parameters.AddWithValue("$id", monitorId);
+                await using var reader = await load.ExecuteReaderAsync(cancellationToken);
+                if (!await reader.ReadAsync(cancellationToken))
+                    throw new InvalidOperationException($"Saved monitor #{monitorId} no longer exists.");
+                currentUrl = reader.GetString(0);
+                currentTitle = reader.GetString(1);
+            }
+
+            if (!string.Equals(currentUrl, expectedCurrentUrl, StringComparison.Ordinal))
+                throw new InvalidOperationException("Saved monitor conversation identity changed before repair could be applied. Refresh and try again.");
+
+            if (string.Equals(currentUrl, targetUrl, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Choose a different unowned ChatGPT conversation to resolve conversation ownership.");
+
+            if (requireDuplicateSourceOwnership)
+            {
+                await using var sourceOwners = connection.CreateCommand();
+                sourceOwners.Transaction = transaction;
+                sourceOwners.CommandText = "SELECT COUNT(*) FROM SavedMonitors WHERE Url=$url COLLATE NOCASE;";
+                sourceOwners.Parameters.AddWithValue("$url", currentUrl);
+                var sourceOwnerCount = Convert.ToInt32(await sourceOwners.ExecuteScalarAsync(cancellationToken));
+                if (sourceOwnerCount < 2)
+                    throw new InvalidOperationException("This monitor is not currently part of duplicate ChatGPT conversation ownership.");
+            }
+
+            await using (var targetOwner = connection.CreateCommand())
+            {
+                targetOwner.Transaction = transaction;
+                targetOwner.CommandText = "SELECT Id FROM SavedMonitors WHERE Id<>$id AND Url=$url COLLATE NOCASE ORDER BY Id LIMIT 1;";
+                targetOwner.Parameters.AddWithValue("$id", monitorId);
+                targetOwner.Parameters.AddWithValue("$url", targetUrl);
+                var existing = await targetOwner.ExecuteScalarAsync(cancellationToken);
+                if (existing is not null && existing is not DBNull)
+                    throw new InvalidOperationException($"Monitor #{Convert.ToInt64(existing)} already owns the selected ChatGPT conversation.");
+            }
+
+            var now = DateTime.UtcNow.ToString("O");
+            var appliedTitle = string.IsNullOrWhiteSpace(targetTitle) ? currentTitle : targetTitle;
+            await using (var update = connection.CreateCommand())
+            {
+                update.Transaction = transaction;
+                update.CommandText = "UPDATE SavedMonitors SET TabId=$tabId, Title=$title, Url=$url, UpdatedAt=$updatedAt WHERE Id=$id;";
+                update.Parameters.AddWithValue("$id", monitorId);
+                update.Parameters.AddWithValue("$tabId", targetTabId);
+                update.Parameters.AddWithValue("$title", appliedTitle);
+                update.Parameters.AddWithValue("$url", targetUrl);
+                update.Parameters.AddWithValue("$updatedAt", now);
+                if (await update.ExecuteNonQueryAsync(cancellationToken) != 1)
+                    throw new InvalidOperationException($"Saved monitor #{monitorId} could not be updated.");
+            }
+
+            await using (var insertLog = connection.CreateCommand())
+            {
+                insertLog.Transaction = transaction;
+                insertLog.CommandText = "INSERT INTO MessageLogs(Timestamp,MonitorId,TabId,TabTitle,Direction,Prompt,Response,Status) VALUES($ts,$m,$id,$title,$dir,$p,$r,$s);";
+                insertLog.Parameters.AddWithValue("$ts", now);
+                insertLog.Parameters.AddWithValue("$m", monitorId);
+                insertLog.Parameters.AddWithValue("$id", targetTabId);
+                insertLog.Parameters.AddWithValue("$title", appliedTitle);
+                insertLog.Parameters.AddWithValue("$dir", "System");
+                insertLog.Parameters.AddWithValue("$p", diagnosticPrompt);
+                insertLog.Parameters.AddWithValue("$r", diagnosticResponse);
+                insertLog.Parameters.AddWithValue("$s", diagnosticStatus);
+                await insertLog.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            transaction.Commit();
+            return new MonitorConversationRebindDatabaseResult(monitorId, currentUrl, targetUrl);
         }
         catch
         {
