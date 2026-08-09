@@ -13,8 +13,8 @@ public sealed class DevelopmentTaskDynamicDeliveryCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _deliveryGate = new(1, 1);
     private bool _disposed;
 
-    public event EventHandler<string>? DeliverySucceeded;
-    public event EventHandler<string>? DeliveryFailed;
+    public event Action<string>? DeliverySucceeded;
+    public event Action<string>? DeliveryFailed;
 
     public DevelopmentTaskDynamicDeliveryCoordinator(
         DevelopmentTaskEngine engine,
@@ -25,7 +25,7 @@ public sealed class DevelopmentTaskDynamicDeliveryCoordinator : IAsyncDisposable
         _engine.MessageReady += OnMessageReady;
     }
 
-    private void OnMessageReady(object? sender, string message) => _ = DeliverAsync(message);
+    private void OnMessageReady(string message) => _ = DeliverAsync(message);
 
     private async Task DeliverAsync(string message)
     {
@@ -38,26 +38,23 @@ public sealed class DevelopmentTaskDynamicDeliveryCoordinator : IAsyncDisposable
             var recipients = await _targetFactory.ResolveEnabledRecipientsAsync().ConfigureAwait(false);
             if (recipients.Count == 0)
             {
-                DeliveryFailed?.Invoke(this, message);
+                DeliveryFailed?.Invoke(message);
                 return;
             }
 
             await using var coordinator = new DevelopmentTaskMultiMonitorDeliveryCoordinator(_engine, recipients);
             var succeeded = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            coordinator.DeliverySucceeded += (_, _) => succeeded.TrySetResult(true);
-            coordinator.DeliveryFailed += (_, _) => succeeded.TrySetResult(false);
+            coordinator.DeliverySucceeded += _ => succeeded.TrySetResult(true);
+            coordinator.DeliveryFailed += _ => succeeded.TrySetResult(false);
 
-            // The coordinator subscribes during construction. Triggering delivery is
-            // deliberately done through the same engine event path, so no second copy
-            // of the message-generation logic exists here.
             await coordinator.DeliverCurrentMessageAsync(message).ConfigureAwait(false);
             var result = await succeeded.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
-            if (result) DeliverySucceeded?.Invoke(this, message);
-            else DeliveryFailed?.Invoke(this, message);
+            if (result) DeliverySucceeded?.Invoke(message);
+            else DeliveryFailed?.Invoke(message);
         }
         catch (Exception)
         {
-            DeliveryFailed?.Invoke(this, message);
+            DeliveryFailed?.Invoke(message);
         }
         finally
         {
