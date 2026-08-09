@@ -15,8 +15,8 @@ public sealed class DevelopmentTaskDeliveryCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _deliveryGate = new(1, 1);
     private bool _disposed;
 
-    public event EventHandler<string>? DeliverySucceeded;
-    public event EventHandler<string>? DeliveryFailed;
+    public event Action<string>? DeliverySucceeded;
+    public event Action<string>? DeliveryFailed;
 
     public DevelopmentTaskDeliveryCoordinator(
         DevelopmentTaskEngine engine,
@@ -29,7 +29,7 @@ public sealed class DevelopmentTaskDeliveryCoordinator : IAsyncDisposable
         _engine.MessageReady += OnMessageReady;
     }
 
-    private void OnMessageReady(object? sender, string message) => _ = DeliverAsync(message);
+    private void OnMessageReady(string message) => _ = DeliverAsync(message);
 
     private async Task DeliverAsync(string message)
     {
@@ -41,7 +41,7 @@ public sealed class DevelopmentTaskDeliveryCoordinator : IAsyncDisposable
             var sent = await _verifiedSender(message, CancellationToken.None).ConfigureAwait(false);
             if (!sent)
             {
-                DeliveryFailed?.Invoke(this, message);
+                DeliveryFailed?.Invoke(message);
                 return;
             }
 
@@ -49,11 +49,11 @@ public sealed class DevelopmentTaskDeliveryCoordinator : IAsyncDisposable
                 await _checkpointAfterDelivery(message, CancellationToken.None).ConfigureAwait(false);
 
             await _engine.AdvanceAsync().ConfigureAwait(false);
-            DeliverySucceeded?.Invoke(this, message);
+            DeliverySucceeded?.Invoke(message);
         }
         catch (Exception)
         {
-            DeliveryFailed?.Invoke(this, message);
+            DeliveryFailed?.Invoke(message);
         }
         finally
         {
