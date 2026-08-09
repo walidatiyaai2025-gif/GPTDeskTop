@@ -1,0 +1,41 @@
+name: Development Message Reload
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/GPTDeskTop/Services/DevelopmentTaskEngine/**'
+      - 'src/GPTDeskTop/UI/DevelopmentMessageCatalogControl.cs'
+      - 'data/development-task-messages.json'
+      - 'tests/GPTDeskTop.RuntimeTests/DevelopmentTaskMessageReloadTests.cs'
+      - 'tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj'
+      - '.github/workflows/development-message-reload.yml'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  reload-test:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Restore runtime tests
+        run: dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+      - name: Validate hot-reload test contract
+        shell: pwsh
+        run: |
+          $engine = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs -Raw
+          $catalog = Get-Content src/GPTDeskTop/UI/DevelopmentMessageCatalogControl.cs -Raw
+          $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskMessageReloadTests.cs -Raw
+          if ($engine -notmatch 'LoadMessagesAsync\(cancellationToken\)') { throw 'Development engine does not reload the catalog during runtime.' }
+          if ($engine -notmatch '_messagesPath') { throw 'Development message catalog path is not configurable.' }
+          if ($catalog -notmatch 'File.Move\(temp, _catalogPath, true\)') { throw 'Catalog save is not atomic.' }
+          if ($tests -notmatch 'CatalogEditedDuringCooling_IsUsedByNextWorkWindow') { throw 'Cooling hot-reload integration test is missing.' }
+          if ($tests -notmatch 'CatalogCanGrowDuringCooling_WithoutRestartingEngine') { throw 'Catalog growth hot-reload test is missing.' }
+      - name: Run message reload tests
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true --filter "FullyQualifiedName~DevelopmentTaskMessageReloadTests"
