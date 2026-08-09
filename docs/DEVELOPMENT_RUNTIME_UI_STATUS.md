@@ -13,6 +13,7 @@
 - Schedule edits apply to the next lifecycle window and are reloaded by the engine rather than mutating an active window.
 - Restart persistence is covered for both schedule settings and recreated Chrome target IDs.
 - Home monitor presentation is centralized and covered by tests for green Running lamp, red Stopped lamp, Crash Count and live/total Monitor Count.
+- Real Chrome/CDP QA verifies hidden-window polling and per-tab no-response isolation.
 - CI verifies the production wiring, lifecycle contract, persistence, delivery invariants and application/setup/helper builds.
 
 ## Delivery Guarantees Preserved
@@ -26,8 +27,8 @@
 - Start/Pause/Resume/Stop lifecycle persistence.
 - Worker shutdown completes before engine resources are released.
 
-## Current Gate
+## QA Status
 
-The previous UI gates are complete. The remaining project QA gate is the dedicated **QA-005 610-second hidden Chrome/CDP endurance run**. Normal push validation retains a 30-second hidden-Chrome smoke test so release CI does not permanently absorb a 10-minute delay.
+The runtime/UI QA board is complete. The dedicated QA-005 real Windows/Chrome/CDP hidden-window endurance run completed successfully for **610.6930764 seconds** with **606 successful polls and zero failures**, while every-push CI retains the shorter 30-second smoke test.
 
-After QA-005 succeeds, the next work is release-readiness/documentation alignment rather than another runtime UI redesign.
+The v1.8.0 runtime/UI work is therefore release-ready. Further changes should be driven by a new feature/fix task or an explicit release operation, not by repeating the completed runtime UI gates.
