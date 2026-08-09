@@ -10,6 +10,7 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
     private readonly DevelopmentTaskEngine _engine;
     private readonly IReadOnlyList<DevelopmentTaskMonitorRecipient> _recipients;
     private readonly SemaphoreSlim _deliveryGate = new(1, 1);
+    private readonly bool _subscribedToEngine;
     private bool _disposed;
 
     public event Action<string>? DeliverySucceeded;
@@ -17,13 +18,15 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
 
     public DevelopmentTaskMultiMonitorDeliveryCoordinator(
         DevelopmentTaskEngine engine,
-        IEnumerable<DevelopmentTaskMonitorRecipient> recipients)
+        IEnumerable<DevelopmentTaskMonitorRecipient> recipients,
+        bool subscribeToEngine = true)
     {
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _recipients = recipients?.Where(x => x is not null).ToArray()
             ?? throw new ArgumentNullException(nameof(recipients));
         if (_recipients.Count == 0) throw new ArgumentException("At least one monitor recipient is required.", nameof(recipients));
-        _engine.MessageReady += OnMessageReady;
+        _subscribedToEngine = subscribeToEngine;
+        if (_subscribedToEngine) _engine.MessageReady += OnMessageReady;
     }
 
     private void OnMessageReady(string message) => _ = DeliverAsync(message);
@@ -98,7 +101,7 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
     {
         if (_disposed) return ValueTask.CompletedTask;
         _disposed = true;
-        _engine.MessageReady -= OnMessageReady;
+        if (_subscribedToEngine) _engine.MessageReady -= OnMessageReady;
         _deliveryGate.Dispose();
         return ValueTask.CompletedTask;
     }
