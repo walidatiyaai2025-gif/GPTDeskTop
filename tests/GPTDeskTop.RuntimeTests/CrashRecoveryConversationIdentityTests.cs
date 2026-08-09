@@ -97,6 +97,130 @@ public sealed class CrashRecoveryConversationIdentityTests
         }
     }
 
+    [Fact]
+    public async Task PendingRetryRejectsReusedTargetIdAndFallsBackToSameConversationUrl()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var database = new LocalDatabase(Path.Combine(root, "appdata.db"));
+            await database.InitializeAsync();
+            var monitor = await SaveMonitorAsync(database, "target-reuse", "https://chatgpt.com/c/original", enabled: true);
+            monitor.TabId = "reused-target";
+            await database.SaveMonitorAsync(monitor);
+            await database.SetSettingAsync("CrashRecoveryPending", "1");
+            await database.SetSettingAsync("CrashRecovery.RecoveryId", "target-reuse");
+
+            var runtime = new FakeRuntime(
+                [
+                    Tab("reused-target", "https://chatgpt.com/c/different"),
+                    Tab("correct-target", "https://chatgpt.com/c/original/")
+                ],
+                (_, _) => true);
+
+            await CrashRecoveryService.RecoverIfPendingAsync(
+                runtime,
+                database,
+                CrashRecoveryMode.PendingRetry);
+
+            Assert.Single(runtime.Deliveries);
+            Assert.Equal("correct-target", runtime.Deliveries[0].TabId);
+            Assert.Single(runtime.StartedMonitors);
+            var saved = Assert.Single(await database.GetSavedMonitorsAsync(), item => item.Id == monitor.Id);
+            Assert.Equal("correct-target", saved.TabId);
+            Assert.Equal("https://chatgpt.com/c/original", saved.Url);
+            Assert.Equal("0", await database.GetSettingAsync("CrashRecoveryPending"));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
+    public async Task CreatedTabForDifferentConversationIsRejectedWithoutSendStartOrUrlMutation()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var database = new LocalDatabase(Path.Combine(root, "appdata.db"));
+            await database.InitializeAsync();
+            var monitor = await SaveMonitorAsync(database, "create-mismatch", "https://chatgpt.com/c/expected", enabled: true);
+            await database.SetSettingAsync("CrashRecoveryPending", "1");
+            await database.SetSettingAsync("CrashRecovery.RecoveryId", "create-mismatch");
+
+            var runtime = new FakeRuntime(
+                [],
+                (_, _) => true,
+                createTab: _ => Tab("redirected", "https://chatgpt.com/c/unexpected"));
+
+            await CrashRecoveryService.RecoverIfPendingAsync(
+                runtime,
+                database,
+                CrashRecoveryMode.PendingRetry);
+
+            Assert.Single(runtime.CreatedUrls);
+            Assert.Empty(runtime.Deliveries);
+            Assert.Empty(runtime.StartedMonitors);
+            Assert.Equal("1", await database.GetSettingAsync("CrashRecoveryPending"));
+            var saved = Assert.Single(await database.GetSavedMonitorsAsync(), item => item.Id == monitor.Id);
+            Assert.Equal("https://chatgpt.com/c/expected", saved.Url);
+            var logs = await database.GetRecentLogsForMonitorAsync(monitor.Id, 20);
+            Assert.Contains(logs, log => log.Status == "CrashRecoveryTabIdentityMismatch");
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentSavedConversationChangeBeforeRecoverySendSkipsStaleSnapshot()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var database = new LocalDatabase(Path.Combine(root, "appdata.db"));
+            await database.InitializeAsync();
+            var monitor = await SaveMonitorAsync(database, "concurrent-change", "https://chatgpt.com/c/original", enabled: true);
+            await database.SetSettingAsync("CrashRecoveryPending", "1");
+            await database.SetSettingAsync("CrashRecovery.RecoveryId", "concurrent-change");
+
+            var changed = false;
+            var runtime = new FakeRuntime(
+                [Tab("original-target", "https://chatgpt.com/c/original")],
+                (_, _) => true,
+                beforeGetTabs: async () =>
+                {
+                    if (changed) return;
+                    changed = true;
+                    var current = Assert.Single(await database.GetSavedMonitorsAsync(), item => item.Id == monitor.Id);
+                    current.Url = "https://chatgpt.com/c/repaired";
+                    current.TabId = "repair-target";
+                    current.Title = "Repaired";
+                    await database.SaveMonitorAsync(current);
+                });
+
+            await CrashRecoveryService.RecoverIfPendingAsync(
+                runtime,
+                database,
+                CrashRecoveryMode.PendingRetry);
+
+            Assert.Empty(runtime.Deliveries);
+            Assert.Empty(runtime.StartedMonitors);
+            Assert.Equal("1", await database.GetSettingAsync("CrashRecoveryPending"));
+            var saved = Assert.Single(await database.GetSavedMonitorsAsync(), item => item.Id == monitor.Id);
+            Assert.Equal("https://chatgpt.com/c/repaired", saved.Url);
+            Assert.Equal("repair-target", saved.TabId);
+            var logs = await database.GetRecentLogsForMonitorAsync(monitor.Id, 20);
+            Assert.Contains(logs, log => log.Status == "CrashRecoverySavedConversationChanged");
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
     private static async Task<SavedMonitor> SaveMonitorAsync(
         LocalDatabase database,
         string title,
@@ -144,13 +268,19 @@ public sealed class CrashRecoveryConversationIdentityTests
     {
         private readonly IReadOnlyList<ChromeTab> _initialTabs;
         private readonly Func<ChromeTab, string, bool> _send;
+        private readonly Func<string, ChromeTab>? _createTab;
+        private readonly Func<Task>? _beforeGetTabs;
 
         public FakeRuntime(
             IReadOnlyList<ChromeTab> initialTabs,
-            Func<ChromeTab, string, bool> send)
+            Func<ChromeTab, string, bool> send,
+            Func<string, ChromeTab>? createTab = null,
+            Func<Task>? beforeGetTabs = null)
         {
             _initialTabs = initialTabs;
             _send = send;
+            _createTab = createTab;
+            _beforeGetTabs = beforeGetTabs;
         }
 
         public string? LaunchedUrl { get; private set; }
@@ -162,13 +292,17 @@ public sealed class CrashRecoveryConversationIdentityTests
         public Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public void LaunchMonitorChrome(string? startUrl) => LaunchedUrl = startUrl;
 
-        public Task<IReadOnlyList<ChromeTab>> GetTabsAsync(CancellationToken cancellationToken)
-            => Task.FromResult(_initialTabs);
+        public async Task<IReadOnlyList<ChromeTab>> GetTabsAsync(CancellationToken cancellationToken)
+        {
+            if (_beforeGetTabs is not null)
+                await _beforeGetTabs();
+            return _initialTabs;
+        }
 
         public Task<ChromeTab> CreateTabAsync(string url, CancellationToken cancellationToken)
         {
             CreatedUrls.Add(url);
-            return Task.FromResult(Tab($"created-{CreatedUrls.Count}", url));
+            return Task.FromResult(_createTab?.Invoke(url) ?? Tab($"created-{CreatedUrls.Count}", url));
         }
 
         public Task<bool> SendChatMessageVerifiedAsync(
