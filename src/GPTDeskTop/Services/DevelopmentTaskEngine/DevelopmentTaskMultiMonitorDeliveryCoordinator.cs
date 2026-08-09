@@ -12,8 +12,8 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
     private readonly SemaphoreSlim _deliveryGate = new(1, 1);
     private bool _disposed;
 
-    public event EventHandler<string>? DeliverySucceeded;
-    public event EventHandler<string>? DeliveryFailed;
+    public event Action<string>? DeliverySucceeded;
+    public event Action<string>? DeliveryFailed;
 
     public DevelopmentTaskMultiMonitorDeliveryCoordinator(
         DevelopmentTaskEngine engine,
@@ -26,7 +26,7 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
         _engine.MessageReady += OnMessageReady;
     }
 
-    private void OnMessageReady(object? sender, string message) => _ = DeliverAsync(message);
+    private void OnMessageReady(string message) => _ = DeliverAsync(message);
 
     public Task DeliverCurrentMessageAsync(string message)
     {
@@ -72,25 +72,21 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
                     DeliveredAt = DateTimeOffset.UtcNow,
                     Revision = _engine.State.Revision + 1
                 };
-                _engine.State.LastMonitorId = recipient.MonitorId;
-                _engine.State.LastTabId = recipient.TabId;
-                _engine.State.LastDeliveredMessageIndex = messageIndex;
-                _engine.State.LastDeliveredMessageFingerprint = fingerprint;
-                await _engine.CheckpointAsync(recipient.MonitorId, recipient.TabId).ConfigureAwait(false);
+                await _engine.CheckpointDeliveredAsync(recipient.MonitorId, recipient.TabId, fingerprint).ConfigureAwait(false);
             }
 
             if (!allDelivered)
             {
-                DeliveryFailed?.Invoke(this, message);
+                DeliveryFailed?.Invoke(message);
                 return;
             }
 
             await _engine.AdvanceAsync().ConfigureAwait(false);
-            DeliverySucceeded?.Invoke(this, message);
+            DeliverySucceeded?.Invoke(message);
         }
         catch (Exception)
         {
-            DeliveryFailed?.Invoke(this, message);
+            DeliveryFailed?.Invoke(message);
         }
         finally
         {
