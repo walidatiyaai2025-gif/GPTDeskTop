@@ -142,17 +142,12 @@ public sealed class ConfigurationBackupService
 
     public async Task<ConfigurationBackupDocument> CollectAsync(CancellationToken cancellationToken = default)
     {
-        var settings = new Dictionary<string, string?>(StringComparer.Ordinal);
-        foreach (var key in AllowedSettingKeys)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            settings[key] = await _database.GetSettingAsync(key, cancellationToken).ConfigureAwait(false);
-        }
-
-        var monitors = await _database.GetSavedMonitorsAsync(cancellationToken).ConfigureAwait(false);
+        var snapshot = await _database
+            .ReadConfigurationBackupSnapshotAsync(AllowedSettingKeys, cancellationToken)
+            .ConfigureAwait(false);
         return CreateDocument(
-            settings,
-            monitors,
+            snapshot.Settings,
+            snapshot.Monitors,
             DateTimeOffset.UtcNow,
             GetAppVersion());
     }

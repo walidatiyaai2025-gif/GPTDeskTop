@@ -33,8 +33,9 @@ public sealed class ConfigurationBackupUiRegressionTests
         var source = ReadSource("src", "GPTDeskTop", "Services", "ConfigurationBackupService.cs");
 
         Assert.Contains("AllowedSettingKeys", source, StringComparison.Ordinal);
-        Assert.Contains("GetSettingAsync(key, cancellationToken)", source, StringComparison.Ordinal);
-        Assert.Contains("GetSavedMonitorsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("ReadConfigurationBackupSnapshotAsync(AllowedSettingKeys", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetSettingAsync(key, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetSavedMonitorsAsync(cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("RuntimeHealthPresentation.IsChatGptConversationUrl", source, StringComparison.Ordinal);
         Assert.Contains("MonitorConversationOwnership.FindDuplicateMonitorIds", source, StringComparison.Ordinal);
         Assert.Contains("ChatGptConversationIdentity.Normalize", source, StringComparison.Ordinal);
