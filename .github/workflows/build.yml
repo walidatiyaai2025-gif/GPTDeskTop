@@ -76,9 +76,11 @@ jobs:
           $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskMultiMonitorDeliveryTests.cs -Raw
           if ($state -notmatch 'DeliveryReceipts') { throw 'Per-monitor development delivery receipts are missing.' }
           if ($state -notmatch 'DevelopmentTaskDeliveryReceipt') { throw 'Development delivery receipt model is missing.' }
+          if ($coordinator -notmatch 'Action<string>') { throw 'Multi-monitor delivery event type is invalid.' }
           if ($coordinator -notmatch 'allDelivered') { throw 'All-recipient delivery gate is missing.' }
           if ($coordinator -notmatch 'await _engine\.AdvanceAsync\(\)') { throw 'Multi-monitor delivery does not advance only after all recipients.' }
           if ($coordinator -notmatch 'MessageIndex == messageIndex') { throw 'Per-monitor message-index idempotency guard is missing.' }
+          if ($dynamic -notmatch 'Action<string>') { throw 'Dynamic delivery event type is invalid.' }
           if ($dynamic -notmatch 'ResolveEnabledRecipientsAsync') { throw 'Dynamic recipient resolution is missing.' }
           if ($dynamic -notmatch 'DevelopmentTaskMultiMonitorDeliveryCoordinator') { throw 'Dynamic delivery is not using the multi-monitor coordinator.' }
           if ($binding -notmatch 'DevelopmentTaskDynamicDeliveryCoordinator') { throw 'Runtime binding is not attached to dynamic delivery.' }
