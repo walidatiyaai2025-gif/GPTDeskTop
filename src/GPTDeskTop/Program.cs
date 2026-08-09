@@ -96,7 +96,7 @@ internal static class Program
             };
 
             Application.Run(mainForm);
-            FinalizeGracefulShutdownAsync(database, developmentRuntime).GetAwaiter().GetResult();
+            Task.Run(() => FinalizeGracefulShutdownAsync(database, developmentRuntime)).GetAwaiter().GetResult();
             developmentRuntime = null;
         }
         catch (Exception ex)
