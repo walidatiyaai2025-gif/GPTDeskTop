@@ -101,6 +101,25 @@ public sealed class RuntimeHealthPresentationTests
         Assert.Equal(expected, RuntimeHealthPresentation.IsChatGptTabUrl(url));
     }
 
+    [Theory]
+    [InlineData("https://chatgpt.com/c/abc123", true)]
+    [InlineData("https://chatgpt.com/c/abc123?model=auto#message", true)]
+    [InlineData("https://chatgpt.com/g/g-example/c/abc123", true)]
+    [InlineData("https://chat.openai.com/c/legacy123", true)]
+    [InlineData("https://workspace.chatgpt.com/g/g-example/c/abc123", true)]
+    [InlineData("https://chatgpt.com/", false)]
+    [InlineData("https://chatgpt.com/c/", false)]
+    [InlineData("https://chatgpt.com/share/abc123", false)]
+    [InlineData("http://chatgpt.com/c/abc123", false)]
+    [InlineData("https://chatgpt.com.evil.example/c/abc123", false)]
+    [InlineData("https://example.com/c/abc123", false)]
+    [InlineData("not-a-url", false)]
+    [InlineData("", false)]
+    public void ConversationIdentityRequiresHttpsTrustedHostAndConversationPath(string url, bool expected)
+    {
+        Assert.Equal(expected, RuntimeHealthPresentation.IsChatGptConversationUrl(url));
+    }
+
     [Fact]
     public void NegativeCountsAreClampedAndRunningCannotExceedSaved()
     {
