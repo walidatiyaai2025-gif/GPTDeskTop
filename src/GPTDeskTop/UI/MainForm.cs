@@ -13,10 +13,11 @@ public sealed class MainForm : Form
     private readonly Button _launchChromeButton = new() { Text = "Launch Chrome", AutoSize = true };
     private readonly Button _hideChromeButton = new() { Text = "Hide Chrome", AutoSize = true };
     private readonly Button _showChromeButton = new() { Text = "Show Chrome", AutoSize = true };
-    private readonly Button _refreshTabsButton = new() { Text = "Refresh Tabs", AutoSize = true };
+    private readonly Button _refreshTabsButton = new() { Text = "Refresh", AutoSize = true };
     private readonly Button _addMonitorButton = new() { Text = "Add Monitor", AutoSize = true };
-    private readonly Button _monitorSettingsButton = new() { Text = "Monitor Settings", AutoSize = true };
-    private readonly Button _deleteMonitorButton = new() { Text = "Delete Monitor", AutoSize = true };
+    private readonly Button _monitorSettingsButton = new() { Text = "Edit Monitor", AutoSize = true };
+    private readonly Button _quickMonitorSettingsButton = new() { Text = "Edit Selected Monitor", AutoSize = true };
+    private readonly Button _deleteMonitorButton = new() { Text = "Delete", AutoSize = true };
     private readonly Button _startSelectedButton = new() { Text = "Start Selected", AutoSize = true };
     private readonly Button _stopSelectedButton = new() { Text = "Stop Selected", AutoSize = true };
     private readonly Button _startAllButton = new() { Text = "Start All", AutoSize = true };
@@ -27,10 +28,15 @@ public sealed class MainForm : Form
     private readonly DataGridView _monitorsGrid = new();
     private readonly DataGridView _historyGrid = new();
     private readonly RichTextBox _activityBox = new();
-    private readonly TextBox _autoReplyBox = new() { Text = "كمل", Dock = DockStyle.Fill };
-    private readonly CheckBox _enabledCheck = new() { Text = "Enabled", Checked = true, AutoSize = true, Anchor = AnchorStyles.Left };
-    private readonly Label _editorLabel = new() { Text = "Select tabs and add monitors. Each monitor keeps its own Delay and Timer.", AutoEllipsis = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly TextBox _autoReplyBox = new() { Text = "كمل", Dock = DockStyle.Fill, ReadOnly = true, TabStop = false };
+    private readonly CheckBox _enabledCheck = new() { Text = "Enabled", Checked = true, AutoSize = true, Anchor = AnchorStyles.Left, Enabled = false };
+    private readonly Label _editorLabel = new() { Text = "Select a monitor to review its runtime settings.", AutoEllipsis = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Label _chromeMetricValue = CreateMetricValue("Visible");
+    private readonly Label _tabsMetricValue = CreateMetricValue("0");
+    private readonly Label _monitorsMetricValue = CreateMetricValue("0");
+    private readonly Label _runningMetricValue = CreateMetricValue("0");
     private readonly Label _versionLabel = new() { Text = $"GPTDeskTop v{GetAppVersion()}  •  .NET 8  •  Chrome CDP", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold), ForeColor = FluentTheme.Muted };
+    private readonly ToolTip _toolTip = new() { AutoPopDelay = 8000, InitialDelay = 450, ReshowDelay = 100 };
 
     private List<ChromeTab> _tabs = new();
     private List<SavedMonitor> _monitors = new();
@@ -40,88 +46,369 @@ public sealed class MainForm : Form
 
     public MainForm(ChromeDevToolsService chrome, ChatGptMonitorService monitor, LocalDatabase database)
     {
-        _chrome = chrome; _monitor = monitor; _database = database;
+        _chrome = chrome;
+        _monitor = monitor;
+        _database = database;
         Text = $"GPTDeskTop v{GetAppVersion()}";
-        StartPosition = FormStartPosition.CenterScreen; MinimumSize = new Size(1220, 800); Size = new Size(1600, 980);
-        BuildUi(); BuildContextMenus(); WireEvents(); FluentTheme.Apply(this);
+        StartPosition = FormStartPosition.CenterScreen;
+        MinimumSize = new Size(1260, 820);
+        Size = new Size(1620, 980);
+
+        BuildUi();
+        BuildContextMenus();
+        WireEvents();
+        ConfigureTooltips();
+        FluentTheme.Apply(this);
         FluentTheme.StyleButton(_launchChromeButton, primary: true);
         FluentTheme.StyleButton(_startAllButton, primary: true);
         FluentTheme.StyleButton(_deleteMonitorButton, danger: true);
+        FluentTheme.StyleButton(_quickMonitorSettingsButton, primary: true);
+        UpdateActionStates();
         Shown += async (_, _) => await LoadStartupStateAsync();
     }
 
     private void BuildUi()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(14), BackColor = FluentTheme.Background };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 70)); root.RowStyles.Add(new RowStyle(SizeType.Absolute, 210)); root.RowStyles.Add(new RowStyle(SizeType.Absolute, 82)); root.RowStyles.Add(new RowStyle(SizeType.Absolute, 225)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+        ConfigureTabsGrid();
+        ConfigureMonitorsGrid();
+        ConfigureHistoryGrid();
 
-        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, Padding = new Padding(0, 4, 0, 0), BackColor = FluentTheme.Background };
-        toolbar.Controls.AddRange(new Control[] { _launchChromeButton, _hideChromeButton, _showChromeButton, _refreshTabsButton, _addMonitorButton, _monitorSettingsButton, _deleteMonitorButton, _startSelectedButton, _stopSelectedButton, _startAllButton, _stopAllButton, _settingsButton });
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 5,
+            Padding = new Padding(16),
+            BackColor = FluentTheme.Background
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 53));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 47));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
 
-        ConfigureTabsGrid(); ConfigureMonitorsGrid(); ConfigureHistoryGrid();
-
-        var editor = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 2, Padding = new Padding(10, 6, 10, 6), BackColor = FluentTheme.Surface };
-        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110)); editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); editor.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90)); editor.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
-        editor.RowStyles.Add(new RowStyle(SizeType.Percent, 50)); editor.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        editor.Controls.Add(new Label { Text = "Auto reply", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = FluentTheme.Muted }, 0, 0);
-        editor.Controls.Add(_autoReplyBox, 1, 0); editor.Controls.Add(_enabledCheck, 2, 0); editor.Controls.Add(_monitorSettingsButton, 3, 0);
-        editor.Controls.Add(new Label { Text = "Selected", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = FluentTheme.Muted }, 0, 1); editor.Controls.Add(_editorLabel, 1, 1); editor.SetColumnSpan(_editorLabel, 3);
-
-        _activityBox.Dock = DockStyle.Fill; _activityBox.ReadOnly = true; _activityBox.BackColor = Color.FromArgb(25, 28, 32); _activityBox.ForeColor = Color.FromArgb(225, 230, 235); _activityBox.Font = new Font("Cascadia Mono", 9F);
-
-        var openGroup = MakeGroup("Open Chrome Tabs", _tabsGrid);
-        var savedGroup = MakeGroup("Saved Monitors", _monitorsGrid);
-        var activityGroup = MakeGroup("Live Activity", _activityBox);
-        var historyGroup = MakeGroup("Stored History", _historyGrid);
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 700, BackColor = FluentTheme.Background };
-        split.Panel1.Padding = new Padding(0, 0, 5, 0); split.Panel2.Padding = new Padding(5, 0, 0, 0); split.Panel1.Controls.Add(activityGroup); split.Panel2.Controls.Add(historyGroup);
-
-        root.Controls.Add(toolbar, 0, 0); root.Controls.Add(openGroup, 0, 1); root.Controls.Add(editor, 0, 2); root.Controls.Add(savedGroup, 0, 3); root.Controls.Add(split, 0, 4); root.Controls.Add(_versionLabel, 0, 5);
-        Controls.Add(root); UpdateChromeVisibilityButtons();
+        root.Controls.Add(BuildHeader(), 0, 0);
+        root.Controls.Add(BuildToolbar(), 0, 1);
+        root.Controls.Add(BuildWorkspace(), 0, 2);
+        root.Controls.Add(BuildDiagnostics(), 0, 3);
+        root.Controls.Add(_versionLabel, 0, 4);
+        Controls.Add(root);
+        UpdateChromeVisibilityButtons();
     }
 
-    private static GroupBox MakeGroup(string title, Control child)
+    private Control BuildHeader()
     {
-        var group = new GroupBox { Text = title, Dock = DockStyle.Fill, Padding = new Padding(10), BackColor = FluentTheme.Background, ForeColor = FluentTheme.Text };
-        child.Dock = DockStyle.Fill; group.Controls.Add(child); return group;
+        var header = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = FluentTheme.Surface,
+            BorderStyle = BorderStyle.FixedSingle,
+            Padding = new Padding(18, 10, 12, 10),
+            Margin = new Padding(0, 0, 0, 8)
+        };
+
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = FluentTheme.Surface };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
+
+        var titleBlock = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = FluentTheme.Surface };
+        titleBlock.RowStyles.Add(new RowStyle(SizeType.Percent, 58));
+        titleBlock.RowStyles.Add(new RowStyle(SizeType.Percent, 42));
+        titleBlock.Controls.Add(new Label
+        {
+            Text = "GPTDeskTop",
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI Variable Display", 18F, FontStyle.Bold),
+            ForeColor = FluentTheme.Text,
+            TextAlign = ContentAlignment.BottomLeft
+        }, 0, 0);
+        titleBlock.Controls.Add(new Label
+        {
+            Text = "ChatGPT monitoring, recovery and conversation automation",
+            Dock = DockStyle.Fill,
+            ForeColor = FluentTheme.Muted,
+            TextAlign = ContentAlignment.TopLeft
+        }, 0, 1);
+
+        var metrics = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            BackColor = FluentTheme.Surface,
+            Padding = new Padding(0, 2, 0, 0)
+        };
+        metrics.Controls.Add(CreateMetricChip("Running", _runningMetricValue));
+        metrics.Controls.Add(CreateMetricChip("Monitors", _monitorsMetricValue));
+        metrics.Controls.Add(CreateMetricChip("Open tabs", _tabsMetricValue));
+        metrics.Controls.Add(CreateMetricChip("Chrome window", _chromeMetricValue));
+
+        layout.Controls.Add(titleBlock, 0, 0);
+        layout.Controls.Add(metrics, 1, 0);
+        header.Controls.Add(layout);
+        return header;
     }
+
+    private Control BuildToolbar()
+    {
+        var toolbar = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            WrapContents = true,
+            AutoScroll = false,
+            BackColor = FluentTheme.Background,
+            Padding = new Padding(0, 2, 0, 4),
+            Margin = Padding.Empty
+        };
+        toolbar.Controls.Add(CreateActionGroup("BROWSER", _launchChromeButton, _hideChromeButton, _showChromeButton, _refreshTabsButton));
+        toolbar.Controls.Add(CreateActionGroup("MONITOR", _addMonitorButton, _monitorSettingsButton, _deleteMonitorButton));
+        toolbar.Controls.Add(CreateActionGroup("RUNTIME", _startSelectedButton, _stopSelectedButton, _startAllButton, _stopAllButton));
+        toolbar.Controls.Add(CreateActionGroup("APP", _settingsButton));
+        return toolbar;
+    }
+
+    private Control BuildWorkspace()
+    {
+        var split = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Vertical,
+            SplitterDistance = 620,
+            Panel1MinSize = 420,
+            Panel2MinSize = 520,
+            BackColor = FluentTheme.Background,
+            Margin = new Padding(0, 0, 0, 8)
+        };
+        split.Panel1.Padding = new Padding(0, 0, 6, 0);
+        split.Panel2.Padding = new Padding(6, 0, 0, 0);
+
+        split.Panel1.Controls.Add(CreateSection(
+            "Open Chrome Tabs",
+            "Select one or more ChatGPT tabs, then add them as monitors.",
+            _tabsGrid));
+
+        var monitorPane = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, BackColor = FluentTheme.Background };
+        monitorPane.RowStyles.Add(new RowStyle(SizeType.Percent, 68));
+        monitorPane.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
+        monitorPane.Controls.Add(CreateSection(
+            "Saved Monitors",
+            "Double-click a monitor to edit it. Runtime state is highlighted live.",
+            _monitorsGrid), 0, 0);
+        monitorPane.Controls.Add(BuildSelectedMonitorCard(), 0, 1);
+        split.Panel2.Controls.Add(monitorPane);
+        return split;
+    }
+
+    private Control BuildSelectedMonitorCard()
+    {
+        var editor = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 4,
+            RowCount = 3,
+            Padding = new Padding(14, 8, 14, 8),
+            BackColor = FluentTheme.Surface,
+            Margin = new Padding(0, 8, 0, 0),
+            CellBorderStyle = TableLayoutPanelCellBorderStyle.None
+        };
+        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92));
+        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        editor.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var heading = FluentTheme.CreateSectionTitle("Selected Monitor");
+        editor.Controls.Add(heading, 0, 0);
+        editor.SetColumnSpan(heading, 4);
+        editor.Controls.Add(FluentTheme.CreateMutedLabel("Auto reply"), 0, 1);
+        editor.Controls.Add(_autoReplyBox, 1, 1);
+        editor.Controls.Add(_enabledCheck, 2, 1);
+        editor.Controls.Add(_quickMonitorSettingsButton, 3, 1);
+        editor.Controls.Add(FluentTheme.CreateMutedLabel("Summary"), 0, 2);
+        editor.Controls.Add(_editorLabel, 1, 2);
+        editor.SetColumnSpan(_editorLabel, 3);
+
+        var border = new Panel { Dock = DockStyle.Fill, BackColor = FluentTheme.Surface, BorderStyle = BorderStyle.FixedSingle, Padding = new Padding(1), Margin = new Padding(0, 8, 0, 0) };
+        border.Controls.Add(editor);
+        return border;
+    }
+
+    private Control BuildDiagnostics()
+    {
+        _activityBox.Dock = DockStyle.Fill;
+        _activityBox.ReadOnly = true;
+        _activityBox.BackColor = Color.FromArgb(25, 28, 32);
+        _activityBox.ForeColor = Color.FromArgb(225, 230, 235);
+        _activityBox.BorderStyle = BorderStyle.None;
+        _activityBox.Font = new Font("Cascadia Mono", 9F);
+
+        var split = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Vertical,
+            SplitterDistance = 650,
+            BackColor = FluentTheme.Background
+        };
+        split.Panel1.Padding = new Padding(0, 0, 6, 0);
+        split.Panel2.Padding = new Padding(6, 0, 0, 0);
+        split.Panel1.Controls.Add(CreateSection("Live Activity", "Real-time monitor and recovery events.", _activityBox));
+        split.Panel2.Controls.Add(CreateSection("Stored History", "Persisted inbound, outbound and system receipts.", _historyGrid));
+        return split;
+    }
+
+    private static Control CreateActionGroup(string title, params Control[] actions)
+    {
+        var group = new TableLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            RowCount = 2,
+            BackColor = FluentTheme.Background,
+            Margin = new Padding(0, 0, 14, 0),
+            Padding = Padding.Empty
+        };
+        group.RowStyles.Add(new RowStyle(SizeType.Absolute, 18));
+        group.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        group.Controls.Add(new Label
+        {
+            Text = title,
+            AutoSize = true,
+            ForeColor = FluentTheme.Muted,
+            Font = new Font("Segoe UI Variable Text", 8F, FontStyle.Bold),
+            Margin = new Padding(4, 0, 0, 0)
+        }, 0, 0);
+        var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = FluentTheme.Background, Margin = Padding.Empty, Padding = Padding.Empty };
+        buttons.Controls.AddRange(actions);
+        group.Controls.Add(buttons, 0, 1);
+        return group;
+    }
+
+    private static Control CreateSection(string title, string subtitle, Control child)
+    {
+        var card = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = FluentTheme.Surface,
+            BorderStyle = BorderStyle.FixedSingle,
+            Padding = new Padding(12, 8, 12, 12),
+            Margin = Padding.Empty
+        };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = FluentTheme.Surface };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.Controls.Add(FluentTheme.CreateSectionTitle(title), 0, 0);
+        layout.Controls.Add(FluentTheme.CreateMutedLabel(subtitle), 0, 1);
+        child.Dock = DockStyle.Fill;
+        layout.Controls.Add(child, 0, 2);
+        card.Controls.Add(layout);
+        return card;
+    }
+
+    private static Control CreateMetricChip(string caption, Label value)
+    {
+        var panel = new Panel
+        {
+            Width = 118,
+            Height = 54,
+            BackColor = FluentTheme.SurfaceAlt,
+            BorderStyle = BorderStyle.FixedSingle,
+            Margin = new Padding(6, 0, 0, 0),
+            Padding = new Padding(10, 6, 10, 4)
+        };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, BackColor = FluentTheme.SurfaceAlt };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 55));
+        layout.Controls.Add(new Label { Text = caption, Dock = DockStyle.Fill, ForeColor = FluentTheme.Muted, Font = new Font("Segoe UI Variable Text", 8F), TextAlign = ContentAlignment.BottomLeft }, 0, 0);
+        layout.Controls.Add(value, 0, 1);
+        panel.Controls.Add(layout);
+        return panel;
+    }
+
+    private static Label CreateMetricValue(string text)
+        => new()
+        {
+            Text = text,
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI Variable Display", 11F, FontStyle.Bold),
+            ForeColor = FluentTheme.Text,
+            TextAlign = ContentAlignment.TopLeft
+        };
 
     private void ConfigureTabsGrid()
     {
-        ConfigureReadOnlyGrid(_tabsGrid); _tabsGrid.MultiSelect = true;
-        _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Id), HeaderText = "Tab ID", Width = 220 });
-        _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Title), HeaderText = "Title", Width = 410 });
-        _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Url), HeaderText = "URL", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+        ConfigureReadOnlyGrid(_tabsGrid);
+        _tabsGrid.MultiSelect = true;
+        _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Title), HeaderText = "Chat title", Width = 280 });
+        _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Id), HeaderText = "Tab ID", Width = 155 });
+        _tabsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ChromeTab.Url), HeaderText = "Conversation URL", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
     }
 
     private void ConfigureMonitorsGrid()
     {
-        ConfigureReadOnlyGrid(_monitorsGrid); _monitorsGrid.MultiSelect = false;
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Id), HeaderText = "ID", Width = 50 });
-        _monitorsGrid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(SavedMonitor.Enabled), HeaderText = "On", Width = 45 });
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.RuntimeStatus), HeaderText = "Status", Width = 80 });
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Title), HeaderText = "Title", Width = 260 });
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.AutoReply), HeaderText = "Auto Reply", Width = 150 });
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.ReplyDelaySeconds), HeaderText = "Delay", Width = 60 });
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.TimerSeconds), HeaderText = "Timer", Width = 60 });
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Url), HeaderText = "URL", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+        ConfigureReadOnlyGrid(_monitorsGrid);
+        _monitorsGrid.MultiSelect = false;
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Id), HeaderText = "ID", Width = 48 });
+        _monitorsGrid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(SavedMonitor.Enabled), HeaderText = "On", Width = 42 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.RuntimeStatus), HeaderText = "Runtime", Width = 105 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Title), HeaderText = "Chat", Width = 230 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.AutoReply), HeaderText = "Auto reply", Width = 120 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.ReplyDelaySeconds), HeaderText = "Delay", Width = 58 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.TimerSeconds), HeaderText = "Poll", Width = 55 });
+        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Url), HeaderText = "Conversation URL", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+        _monitorsGrid.CellFormatting += FormatMonitorCell;
     }
 
     private void ConfigureHistoryGrid()
     {
-        ConfigureReadOnlyGrid(_historyGrid); _historyGrid.MultiSelect = false;
-        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Timestamp), HeaderText = "Timestamp", Width = 145, DefaultCellStyle = new DataGridViewCellStyle { Format = "yyyy-MM-dd HH:mm:ss" } });
-        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.MonitorId), HeaderText = "Monitor", Width = 65 });
-        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.TabTitle), HeaderText = "Tab", Width = 160 });
-        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Direction), HeaderText = "Direction", Width = 80 });
-        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Prompt), HeaderText = "Prompt", Width = 140 });
+        ConfigureReadOnlyGrid(_historyGrid);
+        _historyGrid.MultiSelect = false;
+        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Timestamp), HeaderText = "Time", Width = 145, DefaultCellStyle = new DataGridViewCellStyle { Format = "yyyy-MM-dd HH:mm:ss" } });
+        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.MonitorId), HeaderText = "Monitor", Width = 62 });
+        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.TabTitle), HeaderText = "Chat", Width = 145 });
+        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Direction), HeaderText = "Flow", Width = 70 });
+        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Prompt), HeaderText = "Prompt", Width = 130 });
         _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Response), HeaderText = "Response", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
-        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Status), HeaderText = "Status", Width = 120 });
+        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(MessageLog.Status), HeaderText = "Status", Width = 135 });
+        _historyGrid.CellFormatting += FormatHistoryCell;
     }
 
     private static void ConfigureReadOnlyGrid(DataGridView grid)
     {
-        grid.Dock = DockStyle.Fill; grid.ReadOnly = true; grid.AllowUserToAddRows = false; grid.AllowUserToDeleteRows = false; grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect; grid.AutoGenerateColumns = false; grid.RowHeadersVisible = false;
+        grid.Dock = DockStyle.Fill;
+        grid.ReadOnly = true;
+        grid.AllowUserToAddRows = false;
+        grid.AllowUserToDeleteRows = false;
+        grid.AllowUserToResizeRows = false;
+        grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        grid.AutoGenerateColumns = false;
+        grid.RowHeadersVisible = false;
+        grid.MultiSelect = false;
+        grid.ShowCellToolTips = true;
+    }
+
+    private void FormatMonitorCell(object? sender, DataGridViewCellFormattingEventArgs e)
+    {
+        if (e.RowIndex < 0 || _monitorsGrid.Rows[e.RowIndex].DataBoundItem is not SavedMonitor monitor) return;
+        if (_monitorsGrid.Columns[e.ColumnIndex].DataPropertyName != nameof(SavedMonitor.RuntimeStatus)) return;
+        var running = _monitor.IsMonitorRunning(monitor.Id);
+        e.CellStyle.ForeColor = running ? FluentTheme.Success : FluentTheme.Muted;
+        e.CellStyle.Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold);
+    }
+
+    private void FormatHistoryCell(object? sender, DataGridViewCellFormattingEventArgs e)
+    {
+        if (e.RowIndex < 0 || _historyGrid.Columns[e.ColumnIndex].DataPropertyName != nameof(MessageLog.Status)) return;
+        var status = Convert.ToString(e.Value) ?? string.Empty;
+        if (status.Contains("Error", StringComparison.OrdinalIgnoreCase) || status.Contains("Failed", StringComparison.OrdinalIgnoreCase) || status.Contains("Timeout", StringComparison.OrdinalIgnoreCase))
+            e.CellStyle.ForeColor = FluentTheme.Danger;
+        else if (status.Contains("Sent", StringComparison.OrdinalIgnoreCase) || status.Contains("Rotated", StringComparison.OrdinalIgnoreCase) || status.Contains("Recovered", StringComparison.OrdinalIgnoreCase))
+            e.CellStyle.ForeColor = FluentTheme.Success;
+        else if (status.Contains("Deferred", StringComparison.OrdinalIgnoreCase) || status.Contains("Limit", StringComparison.OrdinalIgnoreCase))
+            e.CellStyle.ForeColor = FluentTheme.Warning;
     }
 
     private void BuildContextMenus()
@@ -151,74 +438,180 @@ public sealed class MainForm : Form
 
     private void WireEvents()
     {
-        _launchChromeButton.Click += async (_, _) => await LaunchChromeAsync(); _hideChromeButton.Click += async (_, _) => await HideChromeAsync(); _showChromeButton.Click += async (_, _) => await ShowChromeAsync(); _refreshTabsButton.Click += async (_, _) => await RefreshTabsAsync();
-        _addMonitorButton.Click += async (_, _) => await AddSelectedTabAsync(); _monitorSettingsButton.Click += async (_, _) => await EditSelectedMonitorSettingsAsync(); _deleteMonitorButton.Click += async (_, _) => await DeleteSelectedMonitorAsync();
-        _startSelectedButton.Click += async (_, _) => await StartSelectedMonitorAsync(); _stopSelectedButton.Click += async (_, _) => await StopSelectedMonitorAsync(); _startAllButton.Click += async (_, _) => await StartAllEnabledAsync(); _stopAllButton.Click += async (_, _) => await StopAllAsync();
+        _launchChromeButton.Click += async (_, _) => await LaunchChromeAsync();
+        _hideChromeButton.Click += async (_, _) => await HideChromeAsync();
+        _showChromeButton.Click += async (_, _) => await ShowChromeAsync();
+        _refreshTabsButton.Click += async (_, _) => await RefreshTabsAsync();
+        _addMonitorButton.Click += async (_, _) => await AddSelectedTabAsync();
+        _monitorSettingsButton.Click += async (_, _) => await EditSelectedMonitorSettingsAsync();
+        _quickMonitorSettingsButton.Click += async (_, _) => await EditSelectedMonitorSettingsAsync();
+        _deleteMonitorButton.Click += async (_, _) => await DeleteSelectedMonitorAsync();
+        _startSelectedButton.Click += async (_, _) => await StartSelectedMonitorAsync();
+        _stopSelectedButton.Click += async (_, _) => await StopSelectedMonitorAsync();
+        _startAllButton.Click += async (_, _) => await StartAllEnabledAsync();
+        _stopAllButton.Click += async (_, _) => await StopAllAsync();
         _settingsButton.Click += async (_, _) => await OpenSettingsAsync();
-        _tabsGrid.SelectionChanged += (_, _) => SelectCurrentTab(); _monitorsGrid.SelectionChanged += (_, _) => SelectCurrentMonitor(); _monitorsGrid.CellDoubleClick += async (_, _) => await EditSelectedMonitorSettingsAsync();
-        _monitor.Activity += (id, message) => Ui(() => AppendActivity($"M{id}: {message}")); _monitor.HistoryChanged += () => Ui(async () => await RefreshHistoryAsync()); _monitor.RunningStateChanged += () => Ui(async () => await RefreshMonitorsAsync(false));
+        _tabsGrid.SelectionChanged += (_, _) => SelectCurrentTab();
+        _monitorsGrid.SelectionChanged += (_, _) => SelectCurrentMonitor();
+        _monitorsGrid.CellDoubleClick += async (_, _) => await EditSelectedMonitorSettingsAsync();
+        _monitor.Activity += (id, message) => Ui(() => AppendActivity($"M{id}: {message}"));
+        _monitor.HistoryChanged += () => Ui(async () => await RefreshHistoryAsync());
+        _monitor.RunningStateChanged += () => Ui(async () => { await RefreshMonitorsAsync(); UpdateActionStates(); });
+    }
+
+    private void ConfigureTooltips()
+    {
+        _toolTip.SetToolTip(_launchChromeButton, "Launch the dedicated Chrome instance used by GPTDeskTop monitoring.");
+        _toolTip.SetToolTip(_hideChromeButton, "Hide the monitor Chrome window without stopping CDP monitoring.");
+        _toolTip.SetToolTip(_showChromeButton, "Show the monitor Chrome window.");
+        _toolTip.SetToolTip(_refreshTabsButton, "Refresh the list of currently open ChatGPT tabs.");
+        _toolTip.SetToolTip(_addMonitorButton, "Create a saved monitor from the selected open ChatGPT tab(s).");
+        _toolTip.SetToolTip(_monitorSettingsButton, "Edit the selected monitor. Stop a running monitor before changing its settings.");
+        _toolTip.SetToolTip(_startAllButton, "Start every enabled saved monitor whose ChatGPT conversation is open.");
+        _toolTip.SetToolTip(_stopAllButton, "Stop all currently running monitors.");
+        _toolTip.SetToolTip(_settingsButton, "Open global monitoring, rotation, recovery and notification settings.");
+        _toolTip.SetToolTip(_autoReplyBox, "Read-only summary. Use Edit Selected Monitor to change this value.");
     }
 
     private async Task LoadStartupStateAsync()
     {
         _autoReplyBox.Text = await _database.GetSettingAsync("DefaultAutoReply") ?? "كمل";
         _chromeHidden = string.Equals(await _database.GetSettingAsync("ChromeHidden"), "1", StringComparison.Ordinal);
-        UpdateChromeVisibilityButtons(); await RefreshMonitorsAsync(); await RefreshHistoryAsync(); AppendActivity($"GPTDeskTop v{GetAppVersion()} ready.");
+        UpdateChromeVisibilityButtons();
+        await RefreshTabsAsync();
+        await RefreshMonitorsAsync();
+        await RefreshHistoryAsync();
+        UpdateDashboardSummary();
+        UpdateActionStates();
+        AppendActivity($"GPTDeskTop v{GetAppVersion()} ready.");
     }
 
     private async Task OpenSettingsAsync()
     {
         using var form = new SettingsForm(_database);
         if (form.ShowDialog(this) != DialogResult.OK) return;
-        _autoReplyBox.Text = await _database.GetSettingAsync("DefaultAutoReply") ?? "كمل";
-        AppendActivity("Default monitor and notification settings saved.");
+        if (_selectedMonitor is null) _autoReplyBox.Text = await _database.GetSettingAsync("DefaultAutoReply") ?? "كمل";
+        AppendActivity("Global monitoring, rotation and notification settings saved.");
     }
 
     private async Task LaunchChromeAsync()
     {
-        try { _chrome.LaunchMonitorChrome(); AppendActivity("Monitor Chrome launched."); await Task.Delay(1800); if (_chromeHidden) await _chrome.HideMonitorChromeAsync(); await RefreshTabsAsync(); }
+        try
+        {
+            _chrome.LaunchMonitorChrome();
+            AppendActivity("Monitor Chrome launched.");
+            await Task.Delay(1800);
+            if (_chromeHidden) await _chrome.HideMonitorChromeAsync();
+            await RefreshTabsAsync();
+        }
         catch (Exception ex) { ShowError("Chrome Launch Error", ex.Message); }
     }
 
     private async Task HideChromeAsync()
     {
-        try { if (!await _chrome.HideMonitorChromeAsync()) return; _chromeHidden = true; await _database.SetSettingAsync("ChromeHidden", "1"); UpdateChromeVisibilityButtons(); AppendActivity("Chrome hidden; monitoring continues."); }
+        try
+        {
+            if (!await _chrome.HideMonitorChromeAsync()) return;
+            _chromeHidden = true;
+            await _database.SetSettingAsync("ChromeHidden", "1");
+            UpdateChromeVisibilityButtons();
+            UpdateDashboardSummary();
+            AppendActivity("Chrome hidden; monitoring continues.");
+        }
         catch (Exception ex) { ShowError("Hide Chrome Error", ex.Message); }
     }
 
     private async Task ShowChromeAsync()
     {
-        try { if (!await _chrome.ShowMonitorChromeAsync()) return; _chromeHidden = false; await _database.SetSettingAsync("ChromeHidden", "0"); UpdateChromeVisibilityButtons(); AppendActivity("Chrome shown."); }
+        try
+        {
+            if (!await _chrome.ShowMonitorChromeAsync()) return;
+            _chromeHidden = false;
+            await _database.SetSettingAsync("ChromeHidden", "0");
+            UpdateChromeVisibilityButtons();
+            UpdateDashboardSummary();
+            AppendActivity("Chrome shown.");
+        }
         catch (Exception ex) { ShowError("Show Chrome Error", ex.Message); }
     }
 
-    private void UpdateChromeVisibilityButtons() { _hideChromeButton.Enabled = !_chromeHidden; _showChromeButton.Enabled = _chromeHidden; }
+    private void UpdateChromeVisibilityButtons()
+    {
+        _hideChromeButton.Enabled = !_chromeHidden;
+        _showChromeButton.Enabled = _chromeHidden;
+    }
 
     private async Task RefreshTabsAsync()
     {
         try
         {
-            _tabs = await _chrome.GetTabsAsync(); _tabsGrid.DataSource = null; _tabsGrid.DataSource = _tabs; AppendActivity($"Open Chrome tabs: {_tabs.Count}");
-            if (_tabs.Count > 0) { _tabsGrid.ClearSelection(); _tabsGrid.Rows[0].Selected = true; _tabsGrid.CurrentCell = _tabsGrid.Rows[0].Cells[0]; }
+            _tabs = await _chrome.GetTabsAsync();
+            _tabsGrid.DataSource = null;
+            _tabsGrid.DataSource = _tabs;
+            AppendActivity($"Open Chrome tabs: {_tabs.Count}");
+            if (_tabs.Count > 0)
+            {
+                _tabsGrid.ClearSelection();
+                _tabsGrid.Rows[0].Selected = true;
+                _tabsGrid.CurrentCell = _tabsGrid.Rows[0].Cells[0];
+            }
+            else
+            {
+                _selectedTab = null;
+            }
+            UpdateDashboardSummary();
+            UpdateActionStates();
         }
-        catch (Exception ex) { AppendActivity($"Cannot read Chrome tabs: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            _selectedTab = null;
+            UpdateDashboardSummary();
+            UpdateActionStates();
+            AppendActivity($"Cannot read Chrome tabs: {ex.Message}");
+        }
     }
 
     private void SelectCurrentTab()
     {
-        if (_tabsGrid.CurrentRow?.DataBoundItem is not ChromeTab tab) return; _selectedTab = tab; if (_selectedMonitor is null) _editorLabel.Text = $"Open tab: {tab.Title}";
+        if (_tabsGrid.CurrentRow?.DataBoundItem is not ChromeTab tab)
+        {
+            _selectedTab = null;
+            UpdateActionStates();
+            return;
+        }
+        _selectedTab = tab;
+        if (_selectedMonitor is null) _editorLabel.Text = $"Open tab selected: {tab.Title}";
+        UpdateActionStates();
     }
 
     private void SelectCurrentMonitor()
     {
-        if (_monitorsGrid.CurrentRow?.DataBoundItem is not SavedMonitor monitor) return; _selectedMonitor = monitor; _autoReplyBox.Text = monitor.AutoReply; _enabledCheck.Checked = monitor.Enabled; _editorLabel.Text = $"Monitor #{monitor.Id} • {monitor.Title} • Delay {monitor.ReplyDelaySeconds}s • Timer {monitor.TimerSeconds}s";
+        if (_monitorsGrid.CurrentRow?.DataBoundItem is not SavedMonitor monitor)
+        {
+            _selectedMonitor = null;
+            _autoReplyBox.Text = string.Empty;
+            _enabledCheck.Checked = false;
+            _editorLabel.Text = "Select a monitor to review its runtime settings.";
+            UpdateActionStates();
+            return;
+        }
+
+        _selectedMonitor = monitor;
+        _autoReplyBox.Text = monitor.AutoReply;
+        _enabledCheck.Checked = monitor.Enabled;
+        _editorLabel.Text = $"#{monitor.Id} • {monitor.Title} • Delay {monitor.ReplyDelaySeconds}s • Poll {monitor.TimerSeconds}s • Rotations {monitor.RotationCount}";
+        UpdateActionStates();
     }
 
     private async Task AddSelectedTabAsync()
     {
         var selectedTabs = _tabsGrid.SelectedRows.Cast<DataGridViewRow>().Select(r => r.DataBoundItem).OfType<ChromeTab>().DistinctBy(t => t.Id).ToList();
         if (selectedTabs.Count == 0 && _selectedTab is not null) selectedTabs.Add(_selectedTab);
-        if (selectedTabs.Count == 0) { MessageBox.Show(this, "Select one or more Chrome tabs first.", "Add Monitor", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+        if (selectedTabs.Count == 0)
+        {
+            MessageBox.Show(this, "Select one or more Chrome tabs first.", "Add Monitor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
 
         var defaultReply = await _database.GetSettingAsync("DefaultAutoReply") ?? "كمل";
         var defaultDelay = await _database.GetIntSettingAsync("DefaultMonitorDelaySeconds", 3, 0, 300);
@@ -227,60 +620,138 @@ public sealed class MainForm : Form
         foreach (var tab in selectedTabs)
         {
             var duplicate = _monitors.FirstOrDefault(m => string.Equals(m.Url, tab.Url, StringComparison.OrdinalIgnoreCase));
-            if (duplicate is not null) { lastId = duplicate.Id; continue; }
+            if (duplicate is not null)
+            {
+                lastId = duplicate.Id;
+                AppendActivity($"Monitor #{duplicate.Id} already tracks: {tab.Title}");
+                continue;
+            }
             var monitor = new SavedMonitor { TabId = tab.Id, Title = tab.Title, Url = tab.Url, AutoReply = defaultReply, ReplyDelaySeconds = defaultDelay, TimerSeconds = defaultTimer, Enabled = true };
             if (!MonitorSettingsForm.Edit(this, monitor)) continue;
-            await _database.SaveMonitorAsync(monitor); lastId = monitor.Id; AppendActivity($"Added monitor #{monitor.Id}: Delay {monitor.ReplyDelaySeconds}s / Timer {monitor.TimerSeconds}s");
+            await _database.SaveMonitorAsync(monitor);
+            lastId = monitor.Id;
+            AppendActivity($"Added monitor #{monitor.Id}: Delay {monitor.ReplyDelaySeconds}s / Timer {monitor.TimerSeconds}s");
         }
-        await RefreshMonitorsAsync(); if (lastId.HasValue) SelectMonitorRow(lastId.Value);
+        await RefreshMonitorsAsync();
+        if (lastId.HasValue) SelectMonitorRow(lastId.Value);
     }
 
     private async Task EditSelectedMonitorSettingsAsync()
     {
         if (_selectedMonitor is null) return;
-        if (_monitor.IsMonitorRunning(_selectedMonitor.Id)) { MessageBox.Show(this, "Stop this monitor before changing Delay/Timer.", "Monitor Running", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+        if (_monitor.IsMonitorRunning(_selectedMonitor.Id))
+        {
+            MessageBox.Show(this, "Stop this monitor before changing its settings.", "Monitor Running", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
         if (!MonitorSettingsForm.Edit(this, _selectedMonitor)) return;
-        await _database.SaveMonitorAsync(_selectedMonitor); var id = _selectedMonitor.Id; await RefreshMonitorsAsync(); SelectMonitorRow(id);
+        await _database.SaveMonitorAsync(_selectedMonitor);
+        var id = _selectedMonitor.Id;
+        await RefreshMonitorsAsync();
+        SelectMonitorRow(id);
     }
 
     private async Task DeleteSelectedMonitorAsync()
     {
         if (_selectedMonitor is null) return;
         if (MessageBox.Show(this, $"Delete monitor #{_selectedMonitor.Id}?", "Delete Monitor", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-        var id = _selectedMonitor.Id; await _monitor.StopMonitorAsync(id); await _database.DeleteMonitorAsync(id); _selectedMonitor = null; await RefreshMonitorsAsync(); AppendActivity($"Monitor #{id} deleted.");
+        var id = _selectedMonitor.Id;
+        await _monitor.StopMonitorAsync(id);
+        await _database.DeleteMonitorAsync(id);
+        _selectedMonitor = null;
+        await RefreshMonitorsAsync();
+        AppendActivity($"Monitor #{id} deleted.");
     }
 
-    private async Task StartSelectedMonitorAsync() { if (_selectedMonitor is not null) await StartMonitorAsync(_selectedMonitor); }
-    private async Task StopSelectedMonitorAsync() { if (_selectedMonitor is not null) { await _monitor.StopMonitorAsync(_selectedMonitor.Id); await RefreshMonitorsAsync(false); } }
-    private async Task StopAllAsync() { await _monitor.StopAllAsync(); await RefreshMonitorsAsync(false); AppendActivity("All monitors stopped."); }
+    private async Task StartSelectedMonitorAsync()
+    {
+        if (_selectedMonitor is not null) await StartMonitorAsync(_selectedMonitor);
+    }
+
+    private async Task StopSelectedMonitorAsync()
+    {
+        if (_selectedMonitor is null) return;
+        await _monitor.StopMonitorAsync(_selectedMonitor.Id);
+        await RefreshMonitorsAsync();
+    }
+
+    private async Task StopAllAsync()
+    {
+        await _monitor.StopAllAsync();
+        await RefreshMonitorsAsync();
+        AppendActivity("All monitors stopped.");
+    }
 
     private async Task StartAllEnabledAsync()
     {
-        await RefreshTabsAsync(); foreach (var monitor in _monitors.Where(m => m.Enabled).ToList()) await StartMonitorAsync(monitor, false); await RefreshMonitorsAsync(false);
+        await RefreshTabsAsync();
+        foreach (var monitor in _monitors.Where(m => m.Enabled).ToList()) await StartMonitorAsync(monitor, false);
+        await RefreshMonitorsAsync();
     }
 
     private async Task StartMonitorAsync(SavedMonitor monitor, bool refreshTabsIfMissing = true)
     {
         if (_monitor.IsMonitorRunning(monitor.Id)) return;
         var tab = ResolveTab(monitor);
-        if (tab is null && refreshTabsIfMissing) { await RefreshTabsAsync(); tab = ResolveTab(monitor); }
-        if (tab is null) { AppendActivity($"Monitor #{monitor.Id}: matching tab not open."); return; }
-        monitor.TabId = tab.Id; monitor.Title = tab.Title; monitor.Url = tab.Url; await _database.SaveMonitorAsync(monitor); await _monitor.StartMonitorAsync(monitor, tab); await RefreshMonitorsAsync(false);
+        if (tab is null && refreshTabsIfMissing)
+        {
+            await RefreshTabsAsync();
+            tab = ResolveTab(monitor);
+        }
+        if (tab is null)
+        {
+            AppendActivity($"Monitor #{monitor.Id}: matching tab not open.");
+            return;
+        }
+        monitor.TabId = tab.Id;
+        monitor.Title = tab.Title;
+        monitor.Url = tab.Url;
+        await _database.SaveMonitorAsync(monitor);
+        await _monitor.StartMonitorAsync(monitor, tab);
+        await RefreshMonitorsAsync();
     }
 
-    private ChromeTab? ResolveTab(SavedMonitor monitor) => _tabs.FirstOrDefault(t => t.Id == monitor.TabId) ?? _tabs.FirstOrDefault(t => string.Equals(t.Url, monitor.Url, StringComparison.OrdinalIgnoreCase));
+    private ChromeTab? ResolveTab(SavedMonitor monitor)
+        => _tabs.FirstOrDefault(t => t.Id == monitor.TabId)
+           ?? _tabs.FirstOrDefault(t => string.Equals(t.Url, monitor.Url, StringComparison.OrdinalIgnoreCase));
 
     private async Task CloseSelectedTabAsync()
     {
         if (_tabsGrid.CurrentRow?.DataBoundItem is not ChromeTab tab) return;
-        await _chrome.CloseTabAsync(tab); AppendActivity($"Closed Chrome tab: {tab.Title}"); await RefreshTabsAsync();
+        await _chrome.CloseTabAsync(tab);
+        AppendActivity($"Closed Chrome tab: {tab.Title}");
+        await RefreshTabsAsync();
     }
 
     private async Task RefreshMonitorsAsync(bool preserveSelection = true)
     {
-        var selectedId = preserveSelection ? _selectedMonitor?.Id : null; _monitors = await _database.GetSavedMonitorsAsync();
+        var selectedId = preserveSelection ? _selectedMonitor?.Id : null;
+        _monitors = await _database.GetSavedMonitorsAsync();
         foreach (var monitor in _monitors) monitor.RuntimeStatus = _monitor.IsMonitorRunning(monitor.Id) ? "Running" : "Stopped";
-        _monitorsGrid.DataSource = null; _monitorsGrid.DataSource = _monitors; if (selectedId.HasValue) SelectMonitorRow(selectedId.Value);
+        _monitorsGrid.DataSource = null;
+        _monitorsGrid.DataSource = _monitors;
+
+        if (selectedId.HasValue)
+        {
+            SelectMonitorRow(selectedId.Value);
+        }
+        else if (_monitors.Count > 0)
+        {
+            _monitorsGrid.ClearSelection();
+            _monitorsGrid.Rows[0].Selected = true;
+            _monitorsGrid.CurrentCell = _monitorsGrid.Rows[0].Cells[0];
+            SelectCurrentMonitor();
+        }
+        else
+        {
+            _selectedMonitor = null;
+            _autoReplyBox.Text = string.Empty;
+            _enabledCheck.Checked = false;
+            _editorLabel.Text = "No saved monitors yet. Select an open ChatGPT tab and choose Add Monitor.";
+        }
+
+        UpdateDashboardSummary();
+        UpdateActionStates();
     }
 
     private void SelectMonitorRow(long id)
@@ -288,30 +759,94 @@ public sealed class MainForm : Form
         foreach (DataGridViewRow row in _monitorsGrid.Rows)
         {
             if (row.DataBoundItem is not SavedMonitor monitor || monitor.Id != id) continue;
-            _monitorsGrid.ClearSelection(); row.Selected = true; _monitorsGrid.CurrentCell = row.Cells[0]; _selectedMonitor = monitor; SelectCurrentMonitor(); break;
+            _monitorsGrid.ClearSelection();
+            row.Selected = true;
+            _monitorsGrid.CurrentCell = row.Cells[0];
+            _selectedMonitor = monitor;
+            SelectCurrentMonitor();
+            return;
         }
     }
 
     private async Task RefreshHistoryAsync()
     {
-        try { _historyGrid.DataSource = null; _historyGrid.DataSource = await _database.GetRecentLogsAsync(); }
+        try
+        {
+            _historyGrid.DataSource = null;
+            _historyGrid.DataSource = await _database.GetRecentLogsAsync();
+        }
         catch (Exception ex) { AppendActivity($"History error: {ex.Message}"); }
     }
 
     private async Task DeleteSelectedLogAsync()
     {
-        if (_historyGrid.CurrentRow?.DataBoundItem is not MessageLog log) return; await _database.DeleteLogAsync(log.Id); await RefreshHistoryAsync();
+        if (_historyGrid.CurrentRow?.DataBoundItem is not MessageLog log) return;
+        await _database.DeleteLogAsync(log.Id);
+        await RefreshHistoryAsync();
     }
 
     private async Task ClearHistoryAsync()
     {
-        if (MessageBox.Show(this, "Delete all stored history?", "Clear History", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; await _database.ClearLogsAsync(); await RefreshHistoryAsync();
+        if (MessageBox.Show(this, "Delete all stored history?", "Clear History", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+        await _database.ClearLogsAsync();
+        await RefreshHistoryAsync();
     }
 
-    private void AppendActivity(string message) { _activityBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}"); _activityBox.SelectionStart = _activityBox.TextLength; _activityBox.ScrollToCaret(); }
-    private void ShowError(string title, string message) { AppendActivity($"{title}: {message}"); MessageBox.Show(this, message, title, MessageBoxButtons.OK, MessageBoxIcon.Error); }
-    private void Ui(Action action) { if (IsDisposed || Disposing) return; if (InvokeRequired) BeginInvoke(action); else action(); }
-    private static string GetAppVersion() { var version = typeof(MainForm).Assembly.GetName().Version; return version is null ? "unknown" : $"{version.Major}.{version.Minor}.{version.Build}"; }
+    private void UpdateDashboardSummary()
+    {
+        var running = _monitors.Count(m => _monitor.IsMonitorRunning(m.Id));
+        _chromeMetricValue.Text = _chromeHidden ? "Hidden" : "Visible";
+        _chromeMetricValue.ForeColor = _chromeHidden ? FluentTheme.Warning : FluentTheme.Success;
+        _tabsMetricValue.Text = _tabs.Count.ToString();
+        _tabsMetricValue.ForeColor = _tabs.Count > 0 ? FluentTheme.Success : FluentTheme.Muted;
+        _monitorsMetricValue.Text = _monitors.Count.ToString();
+        _monitorsMetricValue.ForeColor = _monitors.Count > 0 ? FluentTheme.Accent : FluentTheme.Muted;
+        _runningMetricValue.Text = running.ToString();
+        _runningMetricValue.ForeColor = running > 0 ? FluentTheme.Success : FluentTheme.Muted;
+    }
+
+    private void UpdateActionStates()
+    {
+        var hasTab = _selectedTab is not null;
+        var hasMonitor = _selectedMonitor is not null;
+        var selectedRunning = hasMonitor && _monitor.IsMonitorRunning(_selectedMonitor!.Id);
+
+        _addMonitorButton.Enabled = hasTab;
+        _monitorSettingsButton.Enabled = hasMonitor && !selectedRunning;
+        _quickMonitorSettingsButton.Enabled = hasMonitor && !selectedRunning;
+        _deleteMonitorButton.Enabled = hasMonitor;
+        _startSelectedButton.Enabled = hasMonitor && !selectedRunning;
+        _stopSelectedButton.Enabled = selectedRunning;
+        _startAllButton.Enabled = _monitors.Any(m => m.Enabled && !_monitor.IsMonitorRunning(m.Id));
+        _stopAllButton.Enabled = _monitor.IsRunning;
+        _settingsButton.Enabled = true;
+        UpdateDashboardSummary();
+    }
+
+    private void AppendActivity(string message)
+    {
+        _activityBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+        _activityBox.SelectionStart = _activityBox.TextLength;
+        _activityBox.ScrollToCaret();
+    }
+
+    private void ShowError(string title, string message)
+    {
+        AppendActivity($"{title}: {message}");
+        MessageBox.Show(this, message, title, MessageBoxButtons.OK, MessageBoxIcon.Error);
+    }
+
+    private void Ui(Action action)
+    {
+        if (IsDisposed || Disposing) return;
+        if (InvokeRequired) BeginInvoke(action); else action();
+    }
+
+    private static string GetAppVersion()
+    {
+        var version = typeof(MainForm).Assembly.GetName().Version;
+        return version is null ? "unknown" : $"{version.Major}.{version.Minor}.{version.Build}";
+    }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
@@ -321,6 +856,7 @@ public sealed class MainForm : Form
             _chrome.CloseAllMonitorTabsAsync().GetAwaiter().GetResult();
         }
         catch { }
+        _toolTip.Dispose();
         base.OnFormClosing(e);
     }
 }
