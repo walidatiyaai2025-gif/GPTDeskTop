@@ -16,13 +16,13 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 - **No-response Watchdog:** global `NoResponseRefreshSeconds`, default `180` seconds; only the affected tab is refreshed when no new assistant response arrives within the configured period. A Windows/Chrome integration probe runs two real monitor workers at a 30-second timeout and verifies that only the stale tab reloads while the active tab remains untouched.
 - **Crash Detection:** `LastShutdownClean` is set to `0` for the running process and changed to `1` only after a graceful MainForm close. A subsequent startup seeing `0` increments `CrashCount` and schedules full session recovery. A Windows CI probe launches the real `GPTDeskTop.exe`, force-kills it, relaunches it against the same SQLite database, and verifies the unclean-start state transition.
 - **Crash Session Recovery:** close leftover monitor tabs, reopen all saved monitor URLs, send the configured recovery message (default `كمل`), update saved Tab IDs, then restart enabled monitor workers. Recovery orchestration is routed through `ICrashRecoveryRuntime`; SQLite-backed integration tests verify all-recipient delivery, enabled-only restart, partial-failure persistence, and idempotent retry without resending already verified monitors.
-- **Fatal Auto Restart:** a fatal exception escaping the app attempts one automatic process restart with a 30-second loop guard.
+- **Fatal Auto Restart:** a fatal exception escaping the app attempts one automatic restart with a 30-second loop guard.
 - **Notifications:** Windows tray balloons with configurable duration and sound.
 - **Delivery Timeout Recovery:** save timeout, create a new ChatGPT tab, send recovery message, move the existing Monitor ID to the new tab, continue monitoring, close old timed-out tab.
 - **Conversation Context Rotation:** when ChatGPT reports the conversation/context limit, create a new chat and verify the handoff before moving the Monitor ID. If the new composer is temporarily unavailable, retry with one new-tab-only reload; if delivery is still unverified, close only the unused new tab, preserve the old chat and leave the same limit response eligible for a later rotation retry.
-- **Chrome Lifecycle:** CDP-first minimize/hide/show behavior while workers continue; close monitor tabs on exit. Hidden-window CDP is covered by a real Chrome smoke probe on every push, with a dedicated 610-second endurance gate for the QA-005 acceptance requirement.
+- **Chrome Lifecycle:** CDP-first minimize/hide/show behavior while workers continue; close monitor tabs on exit. Hidden-window CDP is covered by a real Chrome smoke probe on every push plus a completed 610-second acceptance endurance run.
 - **UX:** Fluent/WinUI-inspired WinForms styling, right-click context menus, green/red runtime lamp, Crash Count card and Monitor Count card. Lamp/card values are centralized in `HomeMetricsPresentation` and covered by deterministic runtime tests while `HomeMetricsService` remains responsible for WinForms binding.
-- **Release pipeline:** application -> publish -> standalone setup, all SDK-style Visual Studio projects. Full solution builds suppress Setup/Build packaging side effects so the two orchestration projects cannot concurrently publish the same application payload.
+- **Release pipeline:** application -> publish -> standalone setup, all SDK-style Visual Studio projects. A full `Release | x64` solution build serializes Setup after the application through a solution dependency; `GPTDeskTop.Build` suppresses its packaging side effect during full solution builds, preventing concurrent publish races while preserving **Build Solution -> `Output\Setup\GPTDeskTop-Setup.exe`**.
 
 ## Task Tracking Table
 
@@ -59,19 +59,25 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 | DEV-003 | Await worker shutdown before restart/stop/dispose and support concurrent atomic message-catalog hot reload | Backend / Runtime | High | Done | `DevelopmentTaskEngine.cs`, message reload tests |
 | CI-001 | Run runtime automation tests before application/setup/helper builds | DevOps / QA | High | Done | `.github/workflows/build.yml` |
 | CI-002 | Validate `Release | x64` solution builds without concurrent Setup/Build publish races | DevOps / Release | High | Done | `.github/workflows/qa-release-x64.yml`, Build/Setup projects |
+| CI-003 | Serialize full-solution Setup packaging behind the application dependency and verify Build Solution emits the standalone Setup | DevOps / Release | High | Done | `GPTDeskTop.sln`, `GPTDeskTop.Setup.csproj`, `qa-release-x64.yml` |
 | REL-001 | Synchronize application, publish and setup metadata to `1.8.0` | Release Engineer | High | Done | `GPTDeskTop.csproj`, setup/build projects |
+| REL-002 | Establish validated v1.8.0 release-readiness baseline without creating a tag/release | Release Engineer / QA | High | Done | Main CI, Release x64 CI, QA workflows, documentation |
 | QA-001 | Build `Release | x64` in Visual Studio-compatible solution configuration and verify all three project outputs | QA Engineer | High | Automated | `qa-release-x64.yml`, whole solution |
 | QA-002 | Verify `Promise was collected` transient retry and confirm retry attempts do not create repeated crash diagnostics | QA Engineer | High | Automated | `ChromeTransientFailureRegressionTests.cs`, Chrome integration |
 | QA-003 | Force-kill the real GPTDeskTop process, relaunch against the same SQLite DB, and verify `CrashCount`, pending recovery and recovery identity | QA Engineer | High | Automated | `CrashRecoveryProcessProbe.cs`, `qa-crash-process.yml` |
 | QA-004 | Verify every recreated recovery tab receives the configured recovery message, enabled monitors restart, partial failure stays pending, and retries do not resend verified monitors | QA Engineer | High | Automated | `ICrashRecoveryRuntime.cs`, `CrashRecoveryOrchestrationTests.cs` |
-| QA-005 | Run monitor hidden for 10+ minutes and verify CDP polling continues | QA Engineer | High | In Progress — 610s endurance gate running | `HiddenChromeProcessProbe.cs`, `qa-hidden-chrome.yml` |
+| QA-005 | Run monitor hidden for 10+ minutes and verify CDP polling continues | QA Engineer | High | Automated | `HiddenChromeProcessProbe.cs`, `qa-hidden-chrome.yml` |
 | QA-006 | Set no-response timeout to 30 seconds and verify exactly one affected tab refreshes | QA Engineer | High | Automated | `NoResponseWatchdogProcessProbe.cs`, `qa-no-response-watchdog.yml` |
 | QA-007 | Verify green lamp while monitor runs, red lamp when stopped, and home cards update correctly | QA Engineer | Medium | Automated | `HomeMetricsPresentation.cs`, `HomeMetricsPresentationTests.cs` |
 | QA-008 | Verify development task engine survives restart while Working and Cooling without duplicate MessageReady events | QA Engineer | High | Automated | Runtime automation tests |
 | QA-009 | Lock conversation-limit rotation retry behavior, new-chat-only recovery reload, and deferred recovery send semantics with regression tests | QA / Backend | High | Automated | `ChatGptRotationHandoffRegressionTests.cs` |
 
 ## CI Validation
-Commit `e78594a2` is the current validated functional baseline: the main `Build GPTDeskTop` workflow completed successfully through the full runtime automation suite, lifecycle/delivery/multi-monitor/rebinding/CDP/crash-recovery invariants, application build, setup build, helper build and rotation-safety gate. `QA Release x64`, `QA Crash Process Recovery`, the 30-second hidden-Chrome/CDP smoke, and the real two-monitor no-response watchdog integration are also green on this baseline. The watchdog receipt verified `stale-load-2`, `active-response-load-1`, exactly one stale refresh and zero active refreshes. The dedicated QA-005 run from commit `d87fcacf` is executing the original 610-second hidden Chrome endurance requirement; QA-005 remains open until that run succeeds.
+The release-readiness baseline is fully green. Commit `a8761668` passed the complete main `Build GPTDeskTop` workflow: runtime automation tests, lifecycle/delivery/multi-monitor/rebinding/CDP/crash-recovery invariants, application build, standalone Setup build, helper build and rotation-safety checks. The dedicated `QA Release x64` workflow on the same commit also passed, including the full `Release | x64` solution build, solution dependency validation, and explicit verification of `Output\Setup\GPTDeskTop-Setup.exe` plus its `GPTDeskTop Setup v1.8.0` version receipt.
+
+QA-005 also completed successfully on the dedicated real Windows/Chrome/CDP endurance run from commit `d87fcacf`: **610.6930764 seconds**, **606 successful hidden-window CDP polls**, **0 failed polls**, `HideChanged=True`, `ShowChanged=True`, with every successful poll returning the expected monitored content. The regular push workflow has been restored to a 30-second hidden-Chrome smoke while `workflow_dispatch` retains the 610-second endurance option.
+
+Other validated gates include force-kill/relaunch crash recovery, exact per-tab 30-second no-response isolation, persisted schedule/target identity across restart, home metrics presentation, message hot reload, delivery receipts, and development-task recovery.
 
 ## Acceptance Criteria
 - Transient `Promise was collected` errors are retried automatically and do not flood the exception history.
@@ -83,7 +89,7 @@ Commit `e78594a2` is the current validated functional baseline: the main `Build 
 - Crash recovery persists per-monitor verified delivery so a partial recovery retry never sends the same recovery message twice to an already verified monitor.
 - Crash recovery clears its pending incident only after all saved monitors have a successful recovery outcome.
 - Fatal crashes attempt one automatic restart without entering a restart loop.
-- Hidden Chrome does not stop production CDP polling; every-push smoke coverage remains enabled and QA-005 additionally requires one successful 610-second endurance run.
+- Hidden Chrome does not stop production CDP polling; the completed acceptance receipt is 610.693 seconds with 606 successful polls and zero failures.
 - Saved Monitors map Running to a green bold `● Running` lamp and Stopped to a red bold `● Stopped` lamp.
 - Home displays persistent Crash Count and live/total Monitor Count cards from the shared presentation model.
 - Development task engine never starts a second uncancellable worker from `AdvanceAsync`.
@@ -93,6 +99,6 @@ Commit `e78594a2` is the current validated functional baseline: the main `Build 
 - A conversation-limit rotation closes the old chat only after the handoff is verified in the new chat.
 - A temporary new-chat composer failure never permanently consumes the conversation-limit response; the rotation remains eligible for a later retry.
 - New-chat handoff recovery may reload the newly-created tab once, while ordinary Auto Reply delivery never uses that recovery reload path.
-- `Release | x64` builds all three solution projects without Setup/Build launching concurrent publishes against the same application output.
+- `Release | x64` builds all three solution projects without concurrent publish races and produces `Output\Setup\GPTDeskTop-Setup.exe` from Build Solution.
 - Application, publish helper and standalone Setup metadata report the same release version `1.8.0`.
 - `GPTDeskTop.sln` remains composed of exactly three supported SDK-style projects.
