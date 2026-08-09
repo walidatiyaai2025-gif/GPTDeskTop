@@ -20,35 +20,61 @@ public sealed class RuntimeHealthPresentationTests
         Assert.Equal(2, snapshot.ChatGptTabCount);
         Assert.Equal(3, snapshot.SavedMonitorCount);
         Assert.Equal(2, snapshot.RunningMonitorCount);
+        Assert.False(snapshot.CrashRecoveryPending);
+        Assert.Equal(0, snapshot.InvalidMonitorIdentityCount);
     }
 
     [Fact]
     public void HealthyAllowsEmptyWorkspaceWhenNoMonitorsAreSaved()
     {
-        var snapshot = RuntimeHealthPresentation.Create(
-            true,
-            true,
-            0,
-            0,
-            0,
-            DateTimeOffset.UtcNow);
-
+        var snapshot = RuntimeHealthPresentation.Create(true, true, 0, 0, 0, DateTimeOffset.UtcNow);
         Assert.Equal(RuntimeHealthLevel.Healthy, snapshot.Level);
     }
 
     [Fact]
     public void DegradedWhenSavedMonitorsHaveNoOpenChatGptTab()
     {
+        var snapshot = RuntimeHealthPresentation.Create(true, true, 0, 2, 0, DateTimeOffset.UtcNow);
+        Assert.Equal(RuntimeHealthLevel.Degraded, snapshot.Level);
+        Assert.Contains("no ChatGPT tab", snapshot.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void InvalidMonitorIdentityBlocksRecoveryAndForcesDegradedHealth()
+    {
         var snapshot = RuntimeHealthPresentation.Create(
             true,
             true,
-            0,
+            3,
+            4,
             2,
-            0,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            crashRecoveryPending: true,
+            invalidMonitorIdentityCount: 2);
 
         Assert.Equal(RuntimeHealthLevel.Degraded, snapshot.Level);
-        Assert.Contains("no ChatGPT tab", snapshot.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.True(snapshot.CrashRecoveryPending);
+        Assert.Equal(2, snapshot.InvalidMonitorIdentityCount);
+        Assert.Contains("blocked by 2", snapshot.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("rebind", snapshot.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PendingRecoveryWithoutIdentityBlockerIsStillDegraded()
+    {
+        var snapshot = RuntimeHealthPresentation.Create(
+            true,
+            true,
+            1,
+            1,
+            1,
+            DateTimeOffset.UtcNow,
+            crashRecoveryPending: true);
+
+        Assert.Equal(RuntimeHealthLevel.Degraded, snapshot.Level);
+        Assert.True(snapshot.CrashRecoveryPending);
+        Assert.Equal(0, snapshot.InvalidMonitorIdentityCount);
+        Assert.Contains("pending", snapshot.Summary, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -129,10 +155,12 @@ public sealed class RuntimeHealthPresentationTests
             -1,
             2,
             99,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            invalidMonitorIdentityCount: 99);
 
         Assert.Equal(0, snapshot.ChatGptTabCount);
         Assert.Equal(2, snapshot.SavedMonitorCount);
         Assert.Equal(2, snapshot.RunningMonitorCount);
+        Assert.Equal(2, snapshot.InvalidMonitorIdentityCount);
     }
 }

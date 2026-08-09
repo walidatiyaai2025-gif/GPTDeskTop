@@ -41,7 +41,9 @@ public sealed class RuntimeHealthControl : UserControl
     private readonly Label _databaseValue = CreateMetricValue("Unknown");
     private readonly Label _tabsValue = CreateMetricValue("—");
     private readonly Label _monitorsValue = CreateMetricValue("—");
+    private readonly Label _recoveryValue = CreateMetricValue("Unknown");
     private readonly Button _refreshButton = new() { Text = "Refresh", AutoSize = true };
+    private readonly Button _repairButton = new() { Text = "Repair…", AutoSize = true, Enabled = false };
     private readonly Button _toggleButton = new() { Text = "Details", AutoSize = true };
     private readonly Panel _body = new() { Dock = DockStyle.Fill, BackColor = FluentTheme.Surface };
     private readonly ToolTip _toolTip = new() { AutoPopDelay = 9000, InitialDelay = 400, ReshowDelay = 100 };
@@ -80,7 +82,7 @@ public sealed class RuntimeHealthControl : UserControl
         BackColor = FluentTheme.Background;
         Padding = new Padding(12, 4, 12, 4);
         AccessibleName = "Runtime health and connection center";
-        AccessibleDescription = "Shows Chrome DevTools, SQLite, ChatGPT tab and saved monitor health without changing runtime state.";
+        AccessibleDescription = "Shows Chrome DevTools, SQLite, ChatGPT tab, saved monitor and crash recovery health without changing runtime state.";
 
         BuildUi();
         ConfigureAccessibility();
@@ -116,7 +118,7 @@ public sealed class RuntimeHealthControl : UserControl
         var header = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 6,
+            ColumnCount = 7,
             RowCount = 1,
             BackColor = FluentTheme.Surface,
             Margin = Padding.Empty
@@ -125,6 +127,7 @@ public sealed class RuntimeHealthControl : UserControl
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 125));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
 
@@ -140,22 +143,24 @@ public sealed class RuntimeHealthControl : UserControl
         header.Controls.Add(_summaryLabel, 2, 0);
         header.Controls.Add(_lastCheckedLabel, 3, 0);
         header.Controls.Add(_refreshButton, 4, 0);
-        header.Controls.Add(_toggleButton, 5, 0);
+        header.Controls.Add(_repairButton, 5, 0);
+        header.Controls.Add(_toggleButton, 6, 0);
 
         var metrics = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4,
+            ColumnCount = 5,
             RowCount = 1,
             BackColor = FluentTheme.Surface,
             Padding = new Padding(0, 8, 0, 0)
         };
-        for (var i = 0; i < 4; i++)
-            metrics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        for (var i = 0; i < 5; i++)
+            metrics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
         metrics.Controls.Add(CreateMetricCard("Chrome / CDP", _chromeValue), 0, 0);
         metrics.Controls.Add(CreateMetricCard("SQLite", _databaseValue), 1, 0);
         metrics.Controls.Add(CreateMetricCard("ChatGPT Tabs", _tabsValue), 2, 0);
         metrics.Controls.Add(CreateMetricCard("Saved / Running", _monitorsValue), 3, 0);
+        metrics.Controls.Add(CreateMetricCard("Recovery", _recoveryValue), 4, 0);
         _body.Controls.Add(metrics);
 
         root.Controls.Add(header, 0, 0);
@@ -164,6 +169,7 @@ public sealed class RuntimeHealthControl : UserControl
         Controls.Add(frame);
 
         FluentTheme.StyleButton(_refreshButton, primary: true);
+        FluentTheme.StyleButton(_repairButton);
         FluentTheme.StyleButton(_toggleButton);
     }
 
@@ -217,26 +223,33 @@ public sealed class RuntimeHealthControl : UserControl
         _lastCheckedLabel.AccessibleName = "Last runtime health refresh";
         _refreshButton.AccessibleName = "Refresh runtime health";
         _refreshButton.AccessibleDescription = "Run read-only Chrome DevTools and SQLite health probes.";
+        _repairButton.AccessibleName = "Repair recovery blocker";
+        _repairButton.AccessibleDescription = "Safely rebind an invalid legacy saved monitor to an open stable ChatGPT conversation.";
         _toggleButton.AccessibleName = "Expand or collapse runtime health details";
         _chromeValue.AccessibleName = "Chrome DevTools health";
         _databaseValue.AccessibleName = "SQLite health";
         _tabsValue.AccessibleName = "Open ChatGPT tab count";
         _monitorsValue.AccessibleName = "Saved and running monitor count";
+        _recoveryValue.AccessibleName = "Crash recovery health";
         _refreshButton.TabIndex = 0;
-        _toggleButton.TabIndex = 1;
+        _repairButton.TabIndex = 1;
+        _toggleButton.TabIndex = 2;
     }
 
     private void ConfigureTooltips()
     {
-        _toolTip.SetToolTip(_refreshButton, "Refresh Chrome/CDP, SQLite, tab and monitor health. F5 also refreshes while this panel has focus.");
+        _toolTip.SetToolTip(_refreshButton, "Refresh Chrome/CDP, SQLite, tab, monitor and recovery health. F5 also refreshes while this panel has focus.");
+        _toolTip.SetToolTip(_repairButton, "Repair an invalid saved monitor identity without deleting its Monitor ID, history or settings.");
         _toolTip.SetToolTip(_toggleButton, "Show or hide runtime health details.");
         _toolTip.SetToolTip(_chromeValue, "Read-only Chrome DevTools /json/list reachability probe.");
         _toolTip.SetToolTip(_databaseValue, "Read-only SavedMonitors query against the configured SQLite database.");
+        _toolTip.SetToolTip(_recoveryValue, "Shows whether crash recovery is clear, pending, or blocked by invalid saved conversation identities.");
     }
 
     private void WireEvents()
     {
         _refreshButton.Click += async (_, _) => await RefreshAsync();
+        _repairButton.Click += async (_, _) => await RepairIdentityAsync();
         _toggleButton.Click += (_, _) => IsExpanded = !IsExpanded;
         _monitor.RunningStateChanged += OnRunningStateChanged;
     }
@@ -247,6 +260,7 @@ public sealed class RuntimeHealthControl : UserControl
 
         _loading = true;
         _refreshButton.Enabled = false;
+        _repairButton.Enabled = false;
         _statusLabel.Text = "● CHECKING";
         _statusLabel.ForeColor = FluentTheme.Accent;
         _statusLabel.BackColor = FluentTheme.AccentSubtle;
@@ -262,11 +276,13 @@ public sealed class RuntimeHealthControl : UserControl
 
             var chromeProbe = await chromeTask;
             var databaseProbe = await databaseTask;
-            _savedMonitors = databaseProbe.Value ?? new List<SavedMonitor>();
+            _savedMonitors = databaseProbe.Value?.Monitors ?? new List<SavedMonitor>();
 
             var tabs = chromeProbe.Value ?? new List<ChromeTab>();
             var chatGptTabs = tabs.Count(tab => RuntimeHealthPresentation.IsChatGptTabUrl(tab.Url));
             var runningMonitors = _savedMonitors.Count(monitor => _monitor.IsMonitorRunning(monitor.Id));
+            var invalidMonitorCount = _savedMonitors.Count(monitor => !RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url));
+            var recoveryPending = databaseProbe.Value?.CrashRecoveryPending == true;
             var snapshot = RuntimeHealthPresentation.Create(
                 chromeProbe.Succeeded,
                 databaseProbe.Succeeded,
@@ -275,9 +291,12 @@ public sealed class RuntimeHealthControl : UserControl
                 runningMonitors,
                 DateTimeOffset.Now,
                 chromeProbe.Error,
-                databaseProbe.Error);
+                databaseProbe.Error,
+                crashRecoveryPending: recoveryPending,
+                invalidMonitorIdentityCount: invalidMonitorCount);
 
             Render(snapshot);
+            _repairButton.Enabled = chromeProbe.Succeeded && databaseProbe.Succeeded && invalidMonitorCount > 0;
         }
         catch (Exception ex)
         {
@@ -288,6 +307,8 @@ public sealed class RuntimeHealthControl : UserControl
             _summaryLabel.Text = $"Health refresh failed: {ex.Message}";
             _summaryLabel.ForeColor = FluentTheme.Danger;
             _lastCheckedLabel.Text = $"Failed {DateTime.Now:HH:mm:ss}";
+            _recoveryValue.Text = "Unknown";
+            _recoveryValue.ForeColor = FluentTheme.Muted;
         }
         finally
         {
@@ -313,20 +334,25 @@ public sealed class RuntimeHealthControl : UserControl
         }
     }
 
-    private async Task<ProbeResult<List<SavedMonitor>>> ProbeDatabaseAsync(CancellationToken cancellationToken)
+    private async Task<ProbeResult<DatabaseHealthData>> ProbeDatabaseAsync(CancellationToken cancellationToken)
     {
         try
         {
-            return new ProbeResult<List<SavedMonitor>>(true, await _database.GetSavedMonitorsAsync(cancellationToken), null);
+            var monitors = await _database.GetSavedMonitorsAsync(cancellationToken);
+            var pending = string.Equals(
+                await _database.GetSettingAsync("CrashRecoveryPending", cancellationToken),
+                "1",
+                StringComparison.Ordinal);
+            return new ProbeResult<DatabaseHealthData>(true, new DatabaseHealthData(monitors, pending), null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return new ProbeResult<List<SavedMonitor>>(false, null, "Health probe timed out.");
+            return new ProbeResult<DatabaseHealthData>(false, null, "Health probe timed out.");
         }
         catch (Exception ex)
         {
             ExceptionLogService.Log(ex, "RuntimeHealthControl.DatabaseProbe");
-            return new ProbeResult<List<SavedMonitor>>(false, null, ex.Message);
+            return new ProbeResult<DatabaseHealthData>(false, null, ex.Message);
         }
     }
 
@@ -369,6 +395,29 @@ public sealed class RuntimeHealthControl : UserControl
             snapshot.DatabaseReachable ? $"{snapshot.SavedMonitorCount} / {snapshot.RunningMonitorCount}" : "—",
             snapshot.RunningMonitorCount > 0 ? FluentTheme.Success : FluentTheme.Muted,
             "Saved monitors / currently running monitor workers.");
+
+        var recoveryText = snapshot.InvalidMonitorIdentityCount > 0
+            ? $"Blocked ({snapshot.InvalidMonitorIdentityCount})"
+            : snapshot.CrashRecoveryPending ? "Pending" : "Clear";
+        var recoveryColor = snapshot.InvalidMonitorIdentityCount > 0 || snapshot.CrashRecoveryPending
+            ? FluentTheme.Warning
+            : FluentTheme.Success;
+        SetMetric(
+            _recoveryValue,
+            snapshot.DatabaseReachable ? recoveryText : "—",
+            snapshot.DatabaseReachable ? recoveryColor : FluentTheme.Muted,
+            snapshot.InvalidMonitorIdentityCount > 0
+                ? "One or more saved monitors need a stable ChatGPT conversation rebind before crash recovery can complete."
+                : snapshot.CrashRecoveryPending
+                    ? "Crash recovery still has unresolved work pending."
+                    : "No pending crash recovery blocker is recorded.");
+    }
+
+    private async Task RepairIdentityAsync()
+    {
+        using var form = new MonitorIdentityRepairForm(_chrome, _database);
+        if (form.ShowDialog(FindForm()) != DialogResult.OK) return;
+        await RefreshAsync();
     }
 
     private void SetMetric(Label label, string text, Color color, string? tooltip)
@@ -423,5 +472,6 @@ public sealed class RuntimeHealthControl : UserControl
         base.Dispose(disposing);
     }
 
+    private sealed record DatabaseHealthData(List<SavedMonitor> Monitors, bool CrashRecoveryPending);
     private sealed record ProbeResult<T>(bool Succeeded, T? Value, string? Error) where T : class;
 }
