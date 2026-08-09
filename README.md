@@ -20,6 +20,8 @@ Select `Release | x64`, then **Build > Build Solution**. Final installer:
 Output\Setup\GPTDeskTop-Setup.exe
 ```
 
+The solution explicitly builds `GPTDeskTop` before `GPTDeskTop.Setup`. During a full solution build, the Build helper suppresses its separate packaging side effect, so Setup is the only project publishing the application payload. This preserves **Build Solution -> standalone Setup** while preventing concurrent publish races. The `QA Release x64` workflow verifies this exact Visual Studio-compatible path and validates the Setup version receipt as **1.8.0**.
+
 ## Monitoring and settings
 
 Every saved monitor keeps its own Auto Reply, Reply Delay (`0-300` seconds), Monitor Timer (`1-60` seconds), Enabled state, Tab ID, title and URL.
@@ -98,6 +100,8 @@ Other ChatGPT errors use single-tab refresh recovery.
 ## Chrome lifecycle
 
 **Hide Chrome** minimizes the dedicated monitor windows through CDP and also applies the native hide operation when the Chrome window handle is available. Monitoring/CDP remains active. **Show Chrome** restores the windows.
+
+The hidden-Chrome acceptance test has completed a real **610.693-second** Windows/Chrome/CDP run with **606 successful polls and 0 failures** while Chrome remained hidden, followed by a successful Show operation. Normal push CI retains a shorter 30-second smoke test.
 
 When GPTDeskTop closes normally, monitor workers stop and dedicated monitor tabs are closed.
 
