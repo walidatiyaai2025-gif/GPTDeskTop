@@ -16,7 +16,7 @@ public sealed class DevelopmentDashboardUiRegressionTests
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "DevelopmentTaskDashboardControl.cs");
 
-        Assert.Contains("private const int CollapsedHeight = 56;", source, StringComparison.Ordinal);
+        Assert.Contains("private const int CollapsedHeight = 72;", source, StringComparison.Ordinal);
         Assert.Contains("private const int ExpandedHeight = 178;", source, StringComparison.Ordinal);
         Assert.Contains("private readonly Button _toggle", source, StringComparison.Ordinal);
         Assert.Contains("ToggleExpanded", source, StringComparison.Ordinal);
