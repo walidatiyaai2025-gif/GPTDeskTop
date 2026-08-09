@@ -1,4 +1,5 @@
 name: Apply Issue 77 Patch
+# rerun after correcting documentation anchor
 
 on:
   push:
@@ -24,11 +25,14 @@ jobs:
           dotnet-version: 8.0.x
       - name: Apply focused patch
         shell: pwsh
-        run: python eng/apply-issue-77.py
+        run: |
+          python eng/fix-issue-77-patch-runner.py
+          python eng/apply-issue-77.py
       - name: Remove temporary patch infrastructure
         shell: pwsh
         run: |
           Remove-Item eng/apply-issue-77.py -Force
+          Remove-Item eng/fix-issue-77-patch-runner.py -Force
           Remove-Item .github/workflows/issue-77-apply.yml -Force
       - name: Validate runtime tests
         shell: pwsh
