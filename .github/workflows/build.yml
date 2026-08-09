@@ -35,12 +35,15 @@ jobs:
         run: |
           $engine = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs -Raw
           $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskWorkWindowTests.cs -Raw
+          $cycle = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskCoolingCycleTests.cs -Raw
           if ($engine -notmatch '_messageDeliveredThisWindow') { throw 'Work-window message delivery guard is missing.' }
           if ($engine -notmatch 'Exactly one plan message is allowed in each work window') { throw 'One-message-per-work-window rule is missing.' }
           if ($engine -notmatch 'FromMinutes\(10\)') { throw 'Default 10-minute work window is missing.' }
           if ($engine -notmatch 'FromMinutes\(5\)') { throw 'Default 5-minute cooling window is missing.' }
           if ($tests -notmatch 'SuccessfulMessageDoesNotEmitSecondMessageWithinSameWorkWindow') { throw 'One-message-per-window regression test is missing.' }
           if ($tests -notmatch 'PersistedDeliveredPreviousMessagePreventsDuplicateAfterResume') { throw 'Restart duplicate-prevention test is missing.' }
+          if ($cycle -notmatch 'CoolingCompletesAndNextWorkWindowEmitsExactlyOneNextMessage') { throw 'Work/cooling integration test is missing.' }
+          if ($cycle -notmatch 'CoolingStateCannotAuthorizeDelivery') { throw 'Cooling delivery guard regression test is missing.' }
       - name: Validate development lifecycle integration
         shell: pwsh
         run: |
