@@ -132,7 +132,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
                 ? _binding.Engine.CoolingWindow - (now - state.CoolingStartedAt.Value)
                 : TimeSpan.Zero;
         if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
-        _countdown.Text = $"Time remaining: {remaining:mm\:ss}";
+        _countdown.Text = "Time remaining: " + remaining.ToString(@"mm\:ss");
         _start.Enabled = state.Status is DevelopmentTaskEngineStatus.Stopped or DevelopmentTaskEngineStatus.Paused;
         _pause.Enabled = state.Status == DevelopmentTaskEngineStatus.Working;
         _resume.Enabled = state.Status is DevelopmentTaskEngineStatus.Paused or DevelopmentTaskEngineStatus.Stopped;
