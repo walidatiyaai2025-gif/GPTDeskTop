@@ -10,8 +10,14 @@ namespace GPTDeskTop;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        if (CrashRecoveryProcessProbe.IsProbeCommand(args))
+        {
+            Environment.ExitCode = CrashRecoveryProcessProbe.Run(args);
+            return;
+        }
+
         ApplicationConfiguration.Initialize();
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         LocalDatabase? database = null;
