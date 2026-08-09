@@ -16,10 +16,17 @@
     <OutputPath>$(MSBuildProjectDirectory)\..\..\Output\Setup\Build\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <RunPackagingTargets Condition="'$(RunPackagingTargets)' == '' AND '$(BuildingSolutionFile)' == 'true'">false</RunPackagingTargets>
+    <RunPackagingTargets Condition="'$(RunPackagingTargets)' == ''">true</RunPackagingTargets>
   </PropertyGroup>
 
-  <!-- No ProjectReference to GPTDeskTop or any build helper. Setup creates payload by path. -->
-  <Target Name="PrepareInstallerPayload" BeforeTargets="PrepareResources">
+  <!--
+    No ProjectReference to GPTDeskTop or any build helper. Setup creates payload by path.
+    During a full solution build packaging is intentionally skipped because the helper
+    and setup projects would otherwise publish the same application concurrently.
+    Direct Setup builds still create the embedded payload and standalone setup EXE.
+  -->
+  <Target Name="PrepareInstallerPayload" BeforeTargets="PrepareResources" Condition="'$(RunPackagingTargets)' == 'true'">
     <MakeDir Directories="$(PublishDir)" />
     <Exec Command="dotnet publish &quot;$(AppProject)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o &quot;$(PublishDir)&quot;" />
     <Error Condition="!Exists('$(PublishDir)\GPTDeskTop.exe')" Text="Published GPTDeskTop payload was not created: $(PublishDir)\GPTDeskTop.exe" />
@@ -32,8 +39,8 @@
   </Target>
 
   <Target Name="EnsureSetupOutput" BeforeTargets="Build"><MakeDir Directories="$(SetupOutput)" /></Target>
-  <Target Name="CreateStandaloneSetup" AfterTargets="Build" Condition="'$(SetupPackaging)' != 'true' AND '$(Configuration)' == 'Release'">
-    <Exec Command="dotnet publish &quot;$(MSBuildProjectFullPath)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -p:SetupPackaging=true -o &quot;$(SetupOutput)\Final&quot;" />
+  <Target Name="CreateStandaloneSetup" AfterTargets="Build" Condition="'$(RunPackagingTargets)' == 'true' AND '$(SetupPackaging)' != 'true' AND '$(Configuration)' == 'Release'">
+    <Exec Command="dotnet publish &quot;$(MSBuildProjectFullPath)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -p:SetupPackaging=true -p:RunPackagingTargets=true -o &quot;$(SetupOutput)\Final&quot;" />
     <Copy SourceFiles="$(SetupOutput)\Final\GPTDeskTop-Setup.exe" DestinationFiles="$(SetupOutput)\GPTDeskTop-Setup.exe" />
     <WriteLinesToFile File="$(SetupOutput)\Version.txt" Lines="GPTDeskTop Setup v1.8.0&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
     <Message Text="Final standalone setup: $(SetupOutput)\GPTDeskTop-Setup.exe" Importance="high" />
