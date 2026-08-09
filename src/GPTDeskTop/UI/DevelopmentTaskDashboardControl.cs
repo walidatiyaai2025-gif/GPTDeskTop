@@ -4,7 +4,7 @@ namespace GPTDeskTop.UI;
 
 public sealed class DevelopmentTaskDashboardControl : UserControl
 {
-    private readonly DevelopmentTaskEngine _engine;
+    private readonly DevelopmentTaskRuntimeBinding _binding;
     private readonly Label _status = new() { AutoSize = true, Font = new Font("Segoe UI Variable Text", 10F, FontStyle.Bold) };
     private readonly Label _phase = new() { AutoSize = true };
     private readonly Label _message = new() { AutoSize = true, MaximumSize = new Size(700, 0) };
@@ -17,10 +17,11 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
     private readonly Button _stop = new() { Text = "Stop", AutoSize = true };
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 500 };
 
-    public DevelopmentTaskDashboardControl(DevelopmentTaskEngine engine)
+    public DevelopmentTaskDashboardControl(DevelopmentTaskRuntimeBinding binding)
     {
-        _engine = engine ?? throw new ArgumentNullException(nameof(engine));
-        Dock = DockStyle.Fill;
+        _binding = binding ?? throw new ArgumentNullException(nameof(binding));
+        Dock = DockStyle.Top;
+        Height = 150;
         Padding = new Padding(12);
         BackColor = FluentTheme.Surface;
         BuildUi();
@@ -36,16 +37,16 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
 
         root.Controls.Add(new Label { Text = "Development Plan", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
         root.Controls.Add(_status, 1, 0);
         root.Controls.Add(new Label { Text = "Phase", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 2, 0);
         root.Controls.Add(_phase, 3, 0);
 
-        var details = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
+        var details = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, AutoScroll = true };
         details.Controls.Add(_message);
         details.Controls.Add(_recipients);
         details.Controls.Add(_delivery);
@@ -62,14 +63,14 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
 
     private void WireEvents()
     {
-        _start.Click += async (_, _) => await RunAsync(() => _engine.StartAsync("default-development-plan", "Development Plan"));
-        _pause.Click += async (_, _) => await RunAsync(_engine.PauseAsync);
-        _resume.Click += async (_, _) => await RunAsync(_engine.ResumeAsync);
-        _stop.Click += async (_, _) => await RunAsync(_engine.StopAsync);
-        _engine.StateChanged += (_, _) => Ui(Render);
-        _engine.MessageReady += _ => Ui(Render);
-        _engine.CoolingStarted += (_, _) => Ui(Render);
-        _engine.CoolingCompleted += (_, _) => Ui(Render);
+        _start.Click += async (_, _) => await RunAsync(() => _binding.StartAsync("default-development-plan", "Development Plan"));
+        _pause.Click += async (_, _) => await RunAsync(_binding.PauseAsync);
+        _resume.Click += async (_, _) => await RunAsync(_binding.ResumeAsync);
+        _stop.Click += async (_, _) => await RunAsync(_binding.StopAsync);
+        _binding.Engine.StateChanged += (_, _) => Ui(Render);
+        _binding.Engine.MessageReady += _ => Ui(Render);
+        _binding.Engine.CoolingStarted += (_, _) => Ui(Render);
+        _binding.Engine.CoolingCompleted += (_, _) => Ui(Render);
         _timer.Tick += (_, _) => Render();
     }
 
@@ -83,12 +84,12 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
     private void Render()
     {
         if (IsDisposed) return;
-        var state = _engine.State;
+        var state = _binding.State;
         _status.Text = state.Status.ToString();
-        _phase.Text = state.Status == DevelopmentTaskEngineStatus.Cooling ? "Cooling — no delivery" : state.Status == DevelopmentTaskEngineStatus.Working ? "Working" : state.Status.ToString();
+        _phase.Text = state.Status == DevelopmentTaskEngineStatus.Cooling ? "Cooling — no delivery" : state.Status == DevelopmentTaskEngineStatus.Working ? "Working — delivery enabled" : state.Status.ToString();
         _message.Text = $"Message: {state.CurrentMessageIndex + 1} / {Math.Max(0, state.TotalMessages)}";
-        _recipients.Text = $"Last Chat: {state.LastMonitorId ?? "—"}    Tab: {state.LastTabId ?? "—"}";
-        _delivery.Text = $"Last verified message: {(state.LastDeliveredMessageIndex >= 0 ? (state.LastDeliveredMessageIndex + 1).ToString() : "—")}    Revision: {state.Revision}";
+        _recipients.Text = $"Last Chat: {state.LastMonitorId ?? "—"}  Tab: {state.LastTabId ?? "—"}";
+        _delivery.Text = $"Last verified: {(state.LastDeliveredMessageIndex >= 0 ? (state.LastDeliveredMessageIndex + 1).ToString() : "—")}  Receipts: {state.DeliveryReceipts.Count}  Revision: {state.Revision}";
         var now = DateTimeOffset.UtcNow;
         var remaining = state.Status == DevelopmentTaskEngineStatus.Working && state.WorkWindowStartedAt.HasValue
             ? TimeSpan.FromMinutes(10) - (now - state.WorkWindowStartedAt.Value)
@@ -111,7 +112,11 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _timer.Dispose();
+        if (disposing)
+        {
+            _binding.Engine.StateChanged -= (_, _) => Render();
+            _timer.Dispose();
+        }
         base.Dispose(disposing);
     }
 }
