@@ -37,6 +37,11 @@ public sealed class MainForm : Form
     private readonly Label _runningMetricValue = CreateMetricValue("0");
     private readonly Label _versionLabel = new() { Text = $"GPTDeskTop v{GetAppVersion()}  •  .NET 8  •  Chrome CDP", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold), ForeColor = FluentTheme.Muted };
     private readonly ToolTip _toolTip = new() { AutoPopDelay = 8000, InitialDelay = 450, ReshowDelay = 100 };
+    private readonly SplitContainer _workspaceSplit = new();
+    private readonly SplitContainer _diagnosticsSplit = new();
+    private readonly Label _tabsEmptyState = CreateEmptyState("No ChatGPT tabs are open", "Launch the monitor Chrome window or choose Refresh after opening a conversation.");
+    private readonly Label _monitorsEmptyState = CreateEmptyState("No saved monitors yet", "Select an open ChatGPT tab and choose Add Monitor to start tracking it.");
+    private readonly Label _historyEmptyState = CreateEmptyState("No stored history yet", "Inbound, outbound and recovery receipts will appear here as monitors run.");
 
     private List<ChromeTab> _tabs = new();
     private List<SavedMonitor> _monitors = new();
@@ -52,9 +57,10 @@ public sealed class MainForm : Form
         _monitor = monitor;
         _database = database;
         Text = $"GPTDeskTop v{GetAppVersion()}";
-        StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(1260, 820);
-        Size = new Size(1620, 980);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        StartPosition = FormStartPosition.Manual;
+        MinimumSize = new Size(980, 680);
+        ApplyInitialWindowLayout();
 
         BuildUi();
         BuildContextMenus();
@@ -66,7 +72,12 @@ public sealed class MainForm : Form
         FluentTheme.StyleButton(_deleteMonitorButton, danger: true);
         FluentTheme.StyleButton(_quickMonitorSettingsButton, primary: true);
         UpdateActionStates();
-        Shown += async (_, _) => await LoadStartupStateAsync();
+        Shown += async (_, _) =>
+        {
+            ApplyInitialSplitterRatios();
+            await LoadStartupStateAsync();
+        };
+        SizeChanged += (_, _) => ClampResponsiveSplitters();
     }
 
     private void BuildUi()
@@ -84,7 +95,7 @@ public sealed class MainForm : Form
             BackColor = FluentTheme.Background
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 53));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 47));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
@@ -96,6 +107,7 @@ public sealed class MainForm : Form
         root.Controls.Add(_versionLabel, 0, 4);
         Controls.Add(root);
         UpdateChromeVisibilityButtons();
+        UpdateEmptyStates();
     }
 
     private Control BuildHeader()
@@ -156,6 +168,9 @@ public sealed class MainForm : Form
         var toolbar = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(0, 66),
             WrapContents = true,
             AutoScroll = false,
             BackColor = FluentTheme.Background,
@@ -171,23 +186,21 @@ public sealed class MainForm : Form
 
     private Control BuildWorkspace()
     {
-        var split = new SplitContainer
-        {
-            Dock = DockStyle.Fill,
-            Orientation = Orientation.Vertical,
-            SplitterDistance = 620,
-            Panel1MinSize = 420,
-            Panel2MinSize = 520,
-            BackColor = FluentTheme.Background,
-            Margin = new Padding(0, 0, 0, 8)
-        };
+        var split = _workspaceSplit;
+        split.Dock = DockStyle.Fill;
+        split.Orientation = Orientation.Vertical;
+        split.Panel1MinSize = 320;
+        split.Panel2MinSize = 420;
+        split.SplitterWidth = 6;
+        split.BackColor = FluentTheme.Background;
+        split.Margin = new Padding(0, 0, 0, 8);
         split.Panel1.Padding = new Padding(0, 0, 6, 0);
         split.Panel2.Padding = new Padding(6, 0, 0, 0);
 
         split.Panel1.Controls.Add(CreateSection(
             "Open Chrome Tabs",
             "Select one or more ChatGPT tabs, then add them as monitors.",
-            _tabsGrid));
+            CreateGridHost(_tabsGrid, _tabsEmptyState)));
 
         var monitorPane = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, BackColor = FluentTheme.Background };
         monitorPane.RowStyles.Add(new RowStyle(SizeType.Percent, 68));
@@ -195,7 +208,7 @@ public sealed class MainForm : Form
         monitorPane.Controls.Add(CreateSection(
             "Saved Monitors",
             "Double-click a monitor to edit it. Runtime state is highlighted live.",
-            _monitorsGrid), 0, 0);
+            CreateGridHost(_monitorsGrid, _monitorsEmptyState)), 0, 0);
         monitorPane.Controls.Add(BuildSelectedMonitorCard(), 0, 1);
         split.Panel2.Controls.Add(monitorPane);
         return split;
@@ -246,17 +259,17 @@ public sealed class MainForm : Form
         _activityBox.BorderStyle = BorderStyle.None;
         _activityBox.Font = new Font("Cascadia Mono", 9F);
 
-        var split = new SplitContainer
-        {
-            Dock = DockStyle.Fill,
-            Orientation = Orientation.Vertical,
-            SplitterDistance = 650,
-            BackColor = FluentTheme.Background
-        };
+        var split = _diagnosticsSplit;
+        split.Dock = DockStyle.Fill;
+        split.Orientation = Orientation.Vertical;
+        split.Panel1MinSize = 300;
+        split.Panel2MinSize = 300;
+        split.SplitterWidth = 6;
+        split.BackColor = FluentTheme.Background;
         split.Panel1.Padding = new Padding(0, 0, 6, 0);
         split.Panel2.Padding = new Padding(6, 0, 0, 0);
         split.Panel1.Controls.Add(CreateSection("Live Activity", "Real-time monitor and recovery events.", _activityBox));
-        split.Panel2.Controls.Add(CreateSection("Stored History", "Persisted inbound, outbound and system receipts.", _historyGrid));
+        split.Panel2.Controls.Add(CreateSection("Stored History", "Persisted inbound, outbound and system receipts.", CreateGridHost(_historyGrid, _historyEmptyState)));
         return split;
     }
 
@@ -339,6 +352,82 @@ public sealed class MainForm : Form
             ForeColor = FluentTheme.Text,
             TextAlign = ContentAlignment.TopLeft
         };
+
+    private static Label CreateEmptyState(string title, string detail)
+        => new()
+        {
+            Text = $"{title}{Environment.NewLine}{detail}",
+            Dock = DockStyle.Fill,
+            BackColor = FluentTheme.Surface,
+            ForeColor = FluentTheme.Muted,
+            Font = new Font("Segoe UI Variable Text", 10F, FontStyle.Regular),
+            Padding = new Padding(28),
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+
+    private static Control CreateGridHost(DataGridView grid, Label emptyState)
+    {
+        var host = new Panel { Dock = DockStyle.Fill, BackColor = FluentTheme.Surface };
+        grid.Dock = DockStyle.Fill;
+        emptyState.Dock = DockStyle.Fill;
+        host.Controls.Add(grid);
+        host.Controls.Add(emptyState);
+        emptyState.BringToFront();
+        return host;
+    }
+
+    private void ApplyInitialWindowLayout()
+    {
+        var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
+        var targetWidth = Math.Min(1620, Math.Max(800, workingArea.Width - 24));
+        var targetHeight = Math.Min(980, Math.Max(620, workingArea.Height - 24));
+        MinimumSize = new Size(Math.Min(980, targetWidth), Math.Min(680, targetHeight));
+        Size = new Size(targetWidth, targetHeight);
+        Location = new Point(
+            workingArea.Left + Math.Max(0, (workingArea.Width - Width) / 2),
+            workingArea.Top + Math.Max(0, (workingArea.Height - Height) / 2));
+    }
+
+    private void ApplyInitialSplitterRatios()
+    {
+        SetSplitRatio(_workspaceSplit, 0.42);
+        SetSplitRatio(_diagnosticsSplit, 0.48);
+    }
+
+    private void ClampResponsiveSplitters()
+    {
+        ClampSplitter(_workspaceSplit);
+        ClampSplitter(_diagnosticsSplit);
+    }
+
+    private static void SetSplitRatio(SplitContainer split, double ratio)
+    {
+        if (split.Width <= split.SplitterWidth) return;
+        var maximum = split.Width - split.Panel2MinSize - split.SplitterWidth;
+        if (maximum < split.Panel1MinSize) return;
+        var usable = split.Width - split.SplitterWidth;
+        var target = (int)Math.Round(usable * ratio);
+        split.SplitterDistance = Math.Clamp(target, split.Panel1MinSize, maximum);
+    }
+
+    private static void ClampSplitter(SplitContainer split)
+    {
+        if (split.Width <= split.SplitterWidth) return;
+        var maximum = split.Width - split.Panel2MinSize - split.SplitterWidth;
+        if (maximum < split.Panel1MinSize) return;
+        var clamped = Math.Clamp(split.SplitterDistance, split.Panel1MinSize, maximum);
+        if (clamped != split.SplitterDistance) split.SplitterDistance = clamped;
+    }
+
+    private void UpdateEmptyStates()
+    {
+        _tabsEmptyState.Visible = _tabs.Count == 0;
+        _monitorsEmptyState.Visible = _monitors.Count == 0;
+        _historyEmptyState.Visible = _historyGrid.Rows.Count == 0;
+        if (_tabsEmptyState.Visible) _tabsEmptyState.BringToFront();
+        if (_monitorsEmptyState.Visible) _monitorsEmptyState.BringToFront();
+        if (_historyEmptyState.Visible) _historyEmptyState.BringToFront();
+    }
 
     private void ConfigureTabsGrid()
     {
@@ -561,12 +650,14 @@ public sealed class MainForm : Form
             {
                 _selectedTab = null;
             }
+            UpdateEmptyStates();
             UpdateDashboardSummary();
             UpdateActionStates();
         }
         catch (Exception ex)
         {
             _selectedTab = null;
+            UpdateEmptyStates();
             UpdateDashboardSummary();
             UpdateActionStates();
             AppendActivity($"Cannot read Chrome tabs: {ex.Message}");
@@ -752,6 +843,7 @@ public sealed class MainForm : Form
             _editorLabel.Text = "No saved monitors yet. Select an open ChatGPT tab and choose Add Monitor.";
         }
 
+        UpdateEmptyStates();
         UpdateDashboardSummary();
         UpdateActionStates();
     }
@@ -776,8 +868,13 @@ public sealed class MainForm : Form
         {
             _historyGrid.DataSource = null;
             _historyGrid.DataSource = await _database.GetRecentLogsAsync();
+            UpdateEmptyStates();
         }
-        catch (Exception ex) { AppendActivity($"History error: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            UpdateEmptyStates();
+            AppendActivity($"History error: {ex.Message}");
+        }
     }
 
     private async Task DeleteSelectedLogAsync()
