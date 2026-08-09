@@ -17,7 +17,11 @@ public sealed record RuntimeHealthSnapshot(
     DateTimeOffset CheckedAt,
     string Summary,
     string? ChromeError,
-    string? DatabaseError);
+    string? DatabaseError)
+{
+    public bool CrashRecoveryPending { get; init; }
+    public int InvalidMonitorIdentityCount { get; init; }
+}
 
 public static class RuntimeHealthPresentation
 {
@@ -29,11 +33,14 @@ public static class RuntimeHealthPresentation
         int runningMonitorCount,
         DateTimeOffset checkedAt,
         string? chromeError = null,
-        string? databaseError = null)
+        string? databaseError = null,
+        bool crashRecoveryPending = false,
+        int invalidMonitorIdentityCount = 0)
     {
         chatGptTabCount = Math.Max(0, chatGptTabCount);
         savedMonitorCount = Math.Max(0, savedMonitorCount);
         runningMonitorCount = Math.Clamp(runningMonitorCount, 0, savedMonitorCount);
+        invalidMonitorIdentityCount = Math.Clamp(invalidMonitorIdentityCount, 0, savedMonitorCount);
 
         RuntimeHealthLevel level;
         string summary;
@@ -49,6 +56,18 @@ public static class RuntimeHealthPresentation
             summary = !chromeReachable
                 ? "SQLite is reachable, but Chrome/CDP is unavailable."
                 : "Chrome/CDP is reachable, but SQLite is unavailable.";
+        }
+        else if (invalidMonitorIdentityCount > 0)
+        {
+            level = RuntimeHealthLevel.Degraded;
+            summary = invalidMonitorIdentityCount == 1
+                ? "Crash recovery is blocked by 1 saved monitor that needs a conversation rebind."
+                : $"Crash recovery is blocked by {invalidMonitorIdentityCount} saved monitors that need a conversation rebind.";
+        }
+        else if (crashRecoveryPending)
+        {
+            level = RuntimeHealthLevel.Degraded;
+            summary = "Crash recovery has unresolved work pending.";
         }
         else if (savedMonitorCount > 0 && chatGptTabCount == 0)
         {
@@ -71,7 +90,11 @@ public static class RuntimeHealthPresentation
             checkedAt,
             summary,
             NormalizeError(chromeError),
-            NormalizeError(databaseError));
+            NormalizeError(databaseError))
+        {
+            CrashRecoveryPending = crashRecoveryPending,
+            InvalidMonitorIdentityCount = invalidMonitorIdentityCount
+        };
     }
 
     public static bool IsChatGptTabUrl(string? url)
