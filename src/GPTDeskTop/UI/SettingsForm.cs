@@ -37,7 +37,7 @@ public sealed class SettingsForm : Form
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
         Text = "GPTDeskTop Settings";
-        StartPosition = FormStartParent;
+        StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = false;
         MinimizeBox = false;
