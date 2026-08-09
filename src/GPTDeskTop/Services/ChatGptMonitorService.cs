@@ -93,7 +93,7 @@ public sealed class ChatGptMonitorService
                         && string.IsNullOrWhiteSpace(state.ErrorText)
                         && !IsErrorResponse(text)
                         && !IsConversationContextLimit(text)
-                        && initial.AssistantCount >= rotateAfterMessages;
+                        && state.AssistantCount >= rotateAfterMessages;
                     var rotationSlotAvailable = monitor.MaxConversationRotations <= 0 || monitor.RotationCount < monitor.MaxConversationRotations;
                     var messageCountRotationDue = messageCountThresholdReached && rotationSlotAvailable;
 
