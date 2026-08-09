@@ -35,7 +35,9 @@ public sealed class SupportBundlePrivacyTests
                 Title = "another secret title",
                 Url = "https://chatgpt.com/c/another-secret",
                 AutoReply = "another secret reply",
-                Enabled = false
+                Enabled = false,
+                ConversationRotationEnabled = false,
+                ModelRoutingEnabled = false
             }
         };
         var logs = new[]
