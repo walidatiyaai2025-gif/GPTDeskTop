@@ -83,6 +83,7 @@ public static class CrashRecoveryService
             return;
         }
 
+        var duplicateMonitorIds = MonitorConversationOwnership.FindDuplicateMonitorIds(monitors);
         var recoveryId = await database.GetSettingAsync("CrashRecovery.RecoveryId", cancellationToken);
         if (string.IsNullOrWhiteSpace(recoveryId))
         {
@@ -96,7 +97,8 @@ public static class CrashRecoveryService
         try
         {
             var validMonitors = monitors
-                .Where(saved => RuntimeHealthPresentation.IsChatGptConversationUrl(saved.Url))
+                .Where(saved => RuntimeHealthPresentation.IsChatGptConversationUrl(saved.Url)
+                                && !duplicateMonitorIds.Contains(saved.Id))
                 .ToList();
 
             var availableTabs = new List<ChromeTab>();
@@ -139,6 +141,21 @@ public static class CrashRecoveryService
             foreach (var saved in monitors)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                if (duplicateMonitorIds.Contains(saved.Id))
+                {
+                    outcomes.Add(CrashRecoveryOutcome.DuplicateConversationOwnership);
+                    await database.AddLogAsync(
+                        "System",
+                        "CrashRecovery",
+                        "Saved monitor conversation ownership is ambiguous. Resolve duplicate monitor rows before recovery can act on this conversation.",
+                        "CrashRecoveryDuplicateConversationOwnership",
+                        saved.Id,
+                        saved.TabId,
+                        saved.Title,
+                        cancellationToken);
+                    continue;
+                }
 
                 if (!RuntimeHealthPresentation.IsChatGptConversationUrl(saved.Url))
                 {
@@ -198,9 +215,6 @@ public static class CrashRecoveryService
                 if (!string.IsNullOrWhiteSpace(tab.Id))
                     usedTabIds.Add(tab.Id);
 
-                // A monitor that already recovered successfully during this incident
-                // must never receive the recovery message again on a retry startup.
-                // Clean pending retries reuse an existing exact tab when possible.
                 if (alreadyRecovered)
                 {
                     outcomes.Add(CrashRecoveryOutcome.Success);
@@ -270,7 +284,6 @@ public static class CrashRecoveryService
         {
             ExceptionLogService.Log(ex, "CrashRecoveryService.RecoverIfPendingAsync");
             await database.AddLogAsync("System", "CrashRecovery", ex.ToString(), "CrashRecoveryFailed", cancellationToken: cancellationToken);
-            // Leave CrashRecoveryPending=1 so the next startup can retry.
         }
     }
 
