@@ -98,6 +98,32 @@ internal static class Program
             mainForm.Controls.Add(developmentDashboard);
             mainForm.Controls.SetChildIndex(developmentDashboard, 0);
 
+            var runtimeHealthExpanded = string.Equals(
+                database.GetSettingAsync("Ui.RuntimeHealth.Expanded").GetAwaiter().GetResult(),
+                "1",
+                StringComparison.Ordinal);
+            var runtimeHealth = new RuntimeHealthControl(chrome, monitor, database)
+            {
+                Dock = DockStyle.Top,
+                TabStop = false,
+                IsExpanded = runtimeHealthExpanded
+            };
+            runtimeHealth.ExpandedChanged += async (_, _) =>
+            {
+                try
+                {
+                    await database.SetSettingAsync(
+                        "Ui.RuntimeHealth.Expanded",
+                        runtimeHealth.IsExpanded ? "1" : "0");
+                }
+                catch (Exception ex)
+                {
+                    await ExceptionLogService.LogAsync(ex, "Program.PersistRuntimeHealthState");
+                }
+            };
+            mainForm.Controls.Add(runtimeHealth);
+            mainForm.Controls.SetChildIndex(runtimeHealth, 0);
+
             var historyWorkspaceExpanded = string.Equals(
                 database.GetSettingAsync("Ui.HistoryWorkspace.Expanded").GetAwaiter().GetResult(),
                 "1",
