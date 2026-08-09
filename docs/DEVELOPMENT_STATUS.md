@@ -1,7 +1,7 @@
 # GPTDeskTop Development Status
 
 ## Current Focus
-The v1.8.0 development/QA plan is release-ready. Runtime, persistence, Chrome/CDP resilience, crash recovery, multi-monitor continuity, operator scheduling, UI presentation, Release|x64 and standalone Setup production paths have all passed their planned automated acceptance gates. No tag or GitHub release has been created by this validation work.
+The v1.8.0 release-readiness baseline remains intact. Post-1.8 maintenance is now extending operator UX without changing the validated monitor/recovery/delivery architecture. The searchable Stored History Explorer and the read-only Runtime Health / Connection Center are merged on `main`. No tag or GitHub release has been created by this work.
 
 ## Confirmed Complete
 
@@ -45,6 +45,12 @@ The v1.8.0 development/QA plan is release-ready. Runtime, persistence, Chrome/CD
 - Real Windows/Chrome hidden-window endurance acceptance completed for 610.6930764 seconds with 606 successful CDP polls and zero failures.
 - Full `Release | x64` solution build serializes Setup after the application and produces `Output\Setup\GPTDeskTop-Setup.exe` without concurrent publish races.
 - CI gates for catalog, schedule settings, delivery, work-window lifecycle, CDP reliability, crash recovery, multi-monitor delivery, dynamic runtime binding, saved-chat rebinding, Release|x64, force-kill recovery, no-response isolation, hidden-Chrome CDP and rotation safety.
+- Main-window shutdown is asynchronous and bounded so closing with the window `X` cannot deadlock the WinForms UI thread while monitor/Chrome cleanup runs.
+- Main window, split ratios and Development Plan expansion state persist safely across restart and recover to a visible screen when the previous monitor is unavailable.
+- Settings and Monitor Settings dialogs are DPI-safe, keyboard/accessibility aware, validation-safe, and protected from duplicate async save operations.
+- Message-count conversation rotation can open a new ChatGPT conversation after a configurable assistant-message threshold and send the configured fixed start message while preserving the same Monitor ID.
+- Searchable Stored History Explorer is merged on `main` (`d3f061293937270cfd41975bb12e119455207cfe`): client-side search/filtering, visible/total counts, explicit no-match state, copy, CSV export, persisted expansion and accessibility coverage.
+- Runtime Health / Connection Center is merged on `main` (`c27da0a09afe8f157d50125f7ce5e8a14ce09126`): read-only Chrome/CDP and SQLite probes, ChatGPT tab count, saved/running monitor count, Healthy/Degraded/Unavailable presentation, five-second bounded refresh, duplicate-refresh protection, persisted expansion and accessibility coverage.
 
 ## Release-Readiness Baseline
 
@@ -53,10 +59,11 @@ The v1.8.0 development/QA plan is release-ready. Runtime, persistence, Chrome/CD
 - **Hidden Chrome endurance receipt:** commit `d87fcacf` completed 610.6930764 seconds, 606 successful polls, zero failed polls, `HideChanged=True`, `ShowChanged=True`.
 - **Restart persistence baseline:** commit `05502285` passed explicit process-style persistence tests for schedule settings and recreated Chrome target identity.
 - **No-response isolation:** real two-monitor Chrome/CDP integration verified exactly one stale-tab refresh and zero active-tab refreshes with a 30-second timeout.
+- **Post-1.8 Runtime Health validation:** PR #32 head `ba8965cb9d8fdcf32a95c1ec034a606b31804254` passed Build GPTDeskTop #285, QA Release x64 #73, QA Hidden Chrome CDP #55, QA Crash Process Recovery #63, QA No-Response Watchdog #49, Development Delivery Receipts #163, Development Task Recovery #159 and Development Message Reload #33 before merge.
 
 ## Next Executable Task
 
-The planned v1.8.0 implementation and QA board is complete. The next action is a **release operation** only when explicitly desired: review release notes/artifacts, then create a tag/GitHub release or distribute the validated Setup. Release publication is intentionally separate from this readiness baseline.
+There is no open implementation issue after #30. Continue post-1.8 maintenance by auditing the next concrete operator/runtime gap, creating a tracked issue, implementing it on a branch, and merging only after the full CI gate set is green. Release publication remains a separate explicit operation and should not be performed implicitly.
 
 ## Non-Negotiable Delivery Rules
 
