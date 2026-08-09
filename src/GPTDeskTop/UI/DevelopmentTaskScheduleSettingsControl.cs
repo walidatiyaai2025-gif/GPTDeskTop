@@ -1,20 +1,18 @@
-using GPTDeskTop.Services.DevelopmentTaskEngine;
-
 namespace GPTDeskTop.UI;
 
 public sealed class DevelopmentTaskScheduleSettingsControl : UserControl
 {
-    private readonly DevelopmentTaskScheduleSettingsStore _store;
-    private readonly NumericUpDown _work = new() { Minimum = 1, Maximum = 120, DecimalPlaces = 0 };
-    private readonly NumericUpDown _cooling = new() { Minimum = 1, Maximum = 120, DecimalPlaces = 0 };
+    private readonly NumericUpDown _work = new() { Minimum = 1, Maximum = 1440, Value = 30, Width = 120 };
+    private readonly NumericUpDown _cooling = new() { Minimum = 1, Maximum = 1440, Value = 10, Width = 120 };
     private readonly Button _save = new() { Text = "Save", AutoSize = true };
-    private readonly Label _status = new() { AutoSize = true };
+    private readonly Label _status = new() { AutoSize = true, Text = "" };
+    private readonly DevelopmentTaskScheduleSettings _settings;
 
-    public DevelopmentTaskScheduleSettingsControl(string? settingsPath = null)
+    public DevelopmentTaskScheduleSettingsControl(DevelopmentTaskScheduleSettings settings)
     {
-        _store = new DevelopmentTaskScheduleSettingsStore(settingsPath);
+        _settings = settings;
         Dock = DockStyle.Fill;
-        Padding = new Padding(20);
+        Padding = new Padding(10);
         BuildUi();
         LoadSettings();
         _save.Click += (_, _) => SaveSettings();
@@ -30,7 +28,8 @@ public sealed class DevelopmentTaskScheduleSettingsControl : UserControl
         root.Controls.Add(new Label { Text = "Cooling window (minutes)", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
         root.Controls.Add(_cooling, 1, 1);
         root.Controls.Add(new Label { Text = "Changes apply to the next Work/Cooling cycle.", AutoSize = true, ForeColor = SystemColors.GrayText }, 0, 2);
-        root.SetColumnSpan(root.GetControlFromPosition(0, 2), 2);
+        var note = root.GetControlFromPosition(0, 2);
+        if (note is not null) root.SetColumnSpan(note, 2);
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
         actions.Controls.Add(_save);
         actions.Controls.Add(_status);
@@ -44,10 +43,9 @@ public sealed class DevelopmentTaskScheduleSettingsControl : UserControl
     {
         try
         {
-            var settings = _store.Load();
-            _work.Value = settings.WorkMinutes;
-            _cooling.Value = settings.CoolingMinutes;
-            _status.Text = "Loaded";
+            _work.Value = Math.Clamp(_settings.WorkMinutes, (int)_work.Minimum, (int)_work.Maximum);
+            _cooling.Value = Math.Clamp(_settings.CoolingMinutes, (int)_cooling.Minimum, (int)_cooling.Maximum);
+            _status.Text = "Current settings loaded.";
         }
         catch (Exception ex)
         {
@@ -59,16 +57,14 @@ public sealed class DevelopmentTaskScheduleSettingsControl : UserControl
     {
         try
         {
-            _store.Save(new DevelopmentTaskScheduleSettings
-            {
-                WorkMinutes = (int)_work.Value,
-                CoolingMinutes = (int)_cooling.Value
-            });
-            _status.Text = "Saved — next cycle will use the new values.";
+            _settings.WorkMinutes = (int)_work.Value;
+            _settings.CoolingMinutes = (int)_cooling.Value;
+            _settings.Save();
+            _status.Text = "Saved. Changes apply to the next cycle.";
         }
         catch (Exception ex)
         {
-            MessageBox.Show(FindForm(), ex.Message, "Development Schedule", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _status.Text = ex.Message;
         }
     }
 }
