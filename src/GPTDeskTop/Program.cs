@@ -24,6 +24,12 @@ internal static class Program
             return;
         }
 
+        if (NoResponseWatchdogProcessProbe.IsProbeCommand(args))
+        {
+            Environment.ExitCode = NoResponseWatchdogProcessProbe.Run(args);
+            return;
+        }
+
         ApplicationConfiguration.Initialize();
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         LocalDatabase? database = null;
