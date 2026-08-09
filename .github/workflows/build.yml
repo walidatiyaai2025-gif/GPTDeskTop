@@ -44,22 +44,32 @@ jobs:
           if ($tests -notmatch 'PersistedDeliveredPreviousMessagePreventsDuplicateAfterResume') { throw 'Restart duplicate-prevention test is missing.' }
           if ($cycle -notmatch 'CoolingCompletesAndNextWorkWindowEmitsExactlyOneNextMessage') { throw 'Work/cooling integration test is missing.' }
           if ($cycle -notmatch 'CoolingStateCannotAuthorizeDelivery') { throw 'Cooling delivery guard regression test is missing.' }
-      - name: Validate development lifecycle controls
+      - name: Validate development lifecycle controls and runtime binding
         shell: pwsh
         run: |
           $engine = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs -Raw
           $control = Get-Content src/GPTDeskTop/UI/DevelopmentTaskDashboardControl.cs -Raw
-          $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskPauseTests.cs -Raw
+          $binding = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskRuntimeBinding.cs -Raw
           $program = Get-Content src/GPTDeskTop/Program.cs -Raw
+          $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskPauseTests.cs -Raw
+          $bindingTests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskRuntimeBindingTests.cs -Raw
           if ($engine -notmatch 'Task PauseAsync') { throw 'Development plan pause lifecycle is missing.' }
           if ($engine -notmatch 'DevelopmentTaskEngineStatus.Paused') { throw 'Paused state is missing.' }
+          if ($control -notmatch 'DevelopmentTaskRuntimeBinding') { throw 'Dashboard is not bound to production runtime.' }
           if ($control -notmatch 'Start') { throw 'Development dashboard Start control is missing.' }
           if ($control -notmatch 'Pause') { throw 'Development dashboard Pause control is missing.' }
           if ($control -notmatch 'Resume') { throw 'Development dashboard Resume control is missing.' }
           if ($control -notmatch 'Stop') { throw 'Development dashboard Stop control is missing.' }
           if ($control -notmatch 'Cooling — no delivery') { throw 'Cooling no-delivery status is missing.' }
-          if ($program -notmatch 'DevelopmentTaskDashboardControl') { throw 'Development dashboard is not integrated into the main application.' }
+          if ($binding -notmatch 'PauseAsync') { throw 'Runtime binding pause control is missing.' }
+          if ($binding -notmatch 'ResumeAsync') { throw 'Runtime binding resume control is missing.' }
+          if ($binding -notmatch 'DevelopmentTaskDynamicDeliveryCoordinator') { throw 'Runtime binding is not connected to dynamic delivery.' }
+          if ($program -notmatch 'DevelopmentTaskRuntimeBinding') { throw 'Production runtime binding is not created by Program.' }
+          if ($program -notmatch 'DevelopmentTaskMonitorTargetFactory') { throw 'Production saved-monitor target factory is not wired.' }
+          if ($program -notmatch 'DevelopmentTaskDashboardControl\(developmentRuntime\)') { throw 'Dashboard is not constructed from the production binding.' }
+          if ($program -notmatch 'DisposeDevelopmentRuntime') { throw 'Development runtime disposal is missing.' }
           if ($tests -notmatch 'PauseStopsDeliveryWorkerAndResumeRestartsIt') { throw 'Pause/resume regression test is missing.' }
+          if ($bindingTests -notmatch 'BindingExposesEngineAndFullLifecycleControls') { throw 'Runtime binding lifecycle contract test is missing.' }
       - name: Validate development lifecycle integration
         shell: pwsh
         run: |
