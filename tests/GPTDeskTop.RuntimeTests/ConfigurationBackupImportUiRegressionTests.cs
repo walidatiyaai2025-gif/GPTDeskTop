@@ -37,12 +37,15 @@ public sealed class ConfigurationBackupImportUiRegressionTests
         Assert.True(start >= 0);
         Assert.True(end > start);
         var importSource = source[start..end];
-        Assert.Contains("connection.BeginTransaction()", importSource, StringComparison.Ordinal);
+        Assert.Contains("connection.BeginTransaction(deferred: false)", importSource, StringComparison.Ordinal);
         Assert.Contains("transaction.Commit()", importSource, StringComparison.Ordinal);
         Assert.Contains("transaction.Rollback()", importSource, StringComparison.Ordinal);
-        Assert.Contains("SELECT Id FROM SavedMonitors WHERE Url=$url ORDER BY Id LIMIT 2", importSource, StringComparison.Ordinal);
-        Assert.Contains("more than one local monitor has that exact conversation URL", importSource, StringComparison.Ordinal);
+        Assert.Contains("NormalizeStableConversationUrl", importSource, StringComparison.Ordinal);
+        Assert.Contains("importedConversationIdentities", importSource, StringComparison.Ordinal);
+        Assert.Contains("FindLogicalConversationOwnerIdsAsync", importSource, StringComparison.Ordinal);
+        Assert.Contains("more than one local monitor owns that logical conversation identity", importSource, StringComparison.Ordinal);
         Assert.Contains("VALUES('', $title,$url", importSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("SELECT Id FROM SavedMonitors WHERE Url=$url ORDER BY Id LIMIT 2", importSource, StringComparison.Ordinal);
         Assert.DoesNotContain("DELETE FROM SavedMonitors", importSource, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("TabId=$", importSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RotationCount=$", importSource, StringComparison.Ordinal);
@@ -55,6 +58,7 @@ public sealed class ConfigurationBackupImportUiRegressionTests
         Assert.Contains("JsonUnmappedMemberHandling.Disallow", source, StringComparison.Ordinal);
         Assert.Contains("AllowedSettingKeySet", source, StringComparison.Ordinal);
         Assert.Contains("RuntimeHealthPresentation.IsChatGptConversationUrl", source, StringComparison.Ordinal);
+        Assert.Contains("ChatGptConversationIdentity.Normalize", source, StringComparison.Ordinal);
         Assert.Contains("ApplyConfigurationImportAsync", source, StringComparison.Ordinal);
         Assert.Contains("MaxBackupBytes", source, StringComparison.Ordinal);
         Assert.DoesNotContain("GetRecentLogsAsync", source, StringComparison.Ordinal);
