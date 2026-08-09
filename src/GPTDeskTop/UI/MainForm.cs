@@ -60,6 +60,7 @@ public sealed class MainForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.Manual;
         MinimumSize = new Size(980, 680);
+        KeyPreview = true;
         ApplyInitialWindowLayout();
 
         BuildUi();
@@ -76,6 +77,7 @@ public sealed class MainForm : Form
         {
             ApplyInitialSplitterRatios();
             await LoadStartupStateAsync();
+            FocusOperationalWorkspace();
         };
         SizeChanged += (_, _) => ClampResponsiveSplitters();
     }
@@ -483,47 +485,56 @@ public sealed class MainForm : Form
 
     private void FormatMonitorCell(object? sender, DataGridViewCellFormattingEventArgs e)
     {
-        if (e.RowIndex < 0 || _monitorsGrid.Rows[e.RowIndex].DataBoundItem is not SavedMonitor monitor) return;
+        if (e.RowIndex < 0 || e.ColumnIndex < 0 || e.CellStyle is not { } style) return;
+        if (_monitorsGrid.Rows[e.RowIndex].DataBoundItem is not SavedMonitor monitor) return;
         if (_monitorsGrid.Columns[e.ColumnIndex].DataPropertyName != nameof(SavedMonitor.RuntimeStatus)) return;
         var running = _monitor.IsMonitorRunning(monitor.Id);
-        e.CellStyle.ForeColor = running ? FluentTheme.Success : FluentTheme.Muted;
-        e.CellStyle.Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold);
+        style.ForeColor = running ? FluentTheme.Success : FluentTheme.Muted;
+        style.Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold);
     }
 
     private void FormatHistoryCell(object? sender, DataGridViewCellFormattingEventArgs e)
     {
-        if (e.RowIndex < 0 || _historyGrid.Columns[e.ColumnIndex].DataPropertyName != nameof(MessageLog.Status)) return;
+        if (e.RowIndex < 0 || e.ColumnIndex < 0 || e.CellStyle is not { } style) return;
+        if (_historyGrid.Columns[e.ColumnIndex].DataPropertyName != nameof(MessageLog.Status)) return;
         var status = Convert.ToString(e.Value) ?? string.Empty;
         if (status.Contains("Error", StringComparison.OrdinalIgnoreCase) || status.Contains("Failed", StringComparison.OrdinalIgnoreCase) || status.Contains("Timeout", StringComparison.OrdinalIgnoreCase))
-            e.CellStyle.ForeColor = FluentTheme.Danger;
+            style.ForeColor = FluentTheme.Danger;
         else if (status.Contains("Sent", StringComparison.OrdinalIgnoreCase) || status.Contains("Rotated", StringComparison.OrdinalIgnoreCase) || status.Contains("Recovered", StringComparison.OrdinalIgnoreCase))
-            e.CellStyle.ForeColor = FluentTheme.Success;
+            style.ForeColor = FluentTheme.Success;
         else if (status.Contains("Deferred", StringComparison.OrdinalIgnoreCase) || status.Contains("Limit", StringComparison.OrdinalIgnoreCase))
-            e.CellStyle.ForeColor = FluentTheme.Warning;
+            style.ForeColor = FluentTheme.Warning;
+    }
+
+    private static ToolStripMenuItem CreateMenuItem(string text, string shortcutDisplay, EventHandler handler)
+    {
+        var item = new ToolStripMenuItem(text) { ShortcutKeyDisplayString = shortcutDisplay };
+        item.Click += handler;
+        return item;
     }
 
     private void BuildContextMenus()
     {
         var tabsMenu = FluentTheme.CreateMenu();
-        tabsMenu.Items.Add("Add selected tab(s) to monitors", null, async (_, _) => await AddSelectedTabAsync());
-        tabsMenu.Items.Add("Refresh tabs", null, async (_, _) => await RefreshTabsAsync());
+        tabsMenu.Items.Add(CreateMenuItem("Add selected tab(s) to monitors", "Ctrl+N", async (_, _) => await AddSelectedTabAsync()));
+        tabsMenu.Items.Add(CreateMenuItem("Refresh tabs", "F5", async (_, _) => await RefreshTabsAsync()));
         tabsMenu.Items.Add(new ToolStripSeparator());
-        tabsMenu.Items.Add("Close selected tab", null, async (_, _) => await CloseSelectedTabAsync());
+        tabsMenu.Items.Add(CreateMenuItem("Close selected tab", string.Empty, async (_, _) => await CloseSelectedTabAsync()));
         _tabsGrid.ContextMenuStrip = tabsMenu;
 
         var monitorsMenu = FluentTheme.CreateMenu();
-        monitorsMenu.Items.Add("Start", null, async (_, _) => await StartSelectedMonitorAsync());
-        monitorsMenu.Items.Add("Stop", null, async (_, _) => await StopSelectedMonitorAsync());
-        monitorsMenu.Items.Add("Edit settings", null, async (_, _) => await EditSelectedMonitorSettingsAsync());
+        monitorsMenu.Items.Add(CreateMenuItem("Start", string.Empty, async (_, _) => await StartSelectedMonitorAsync()));
+        monitorsMenu.Items.Add(CreateMenuItem("Stop", string.Empty, async (_, _) => await StopSelectedMonitorAsync()));
+        monitorsMenu.Items.Add(CreateMenuItem("Edit settings", "Ctrl+E", async (_, _) => await EditSelectedMonitorSettingsAsync()));
         monitorsMenu.Items.Add(new ToolStripSeparator());
-        monitorsMenu.Items.Add("Delete monitor", null, async (_, _) => await DeleteSelectedMonitorAsync());
-        monitorsMenu.Items.Add("Add selected open tab", null, async (_, _) => await AddSelectedTabAsync());
+        monitorsMenu.Items.Add(CreateMenuItem("Delete monitor", "Delete", async (_, _) => await DeleteSelectedMonitorAsync()));
+        monitorsMenu.Items.Add(CreateMenuItem("Add selected open tab", "Ctrl+N", async (_, _) => await AddSelectedTabAsync()));
         _monitorsGrid.ContextMenuStrip = monitorsMenu;
 
         var historyMenu = FluentTheme.CreateMenu();
-        historyMenu.Items.Add("Refresh", null, async (_, _) => await RefreshHistoryAsync());
-        historyMenu.Items.Add("Delete selected log", null, async (_, _) => await DeleteSelectedLogAsync());
-        historyMenu.Items.Add("Clear all history", null, async (_, _) => await ClearHistoryAsync());
+        historyMenu.Items.Add(CreateMenuItem("Refresh", string.Empty, async (_, _) => await RefreshHistoryAsync()));
+        historyMenu.Items.Add(CreateMenuItem("Delete selected log", "Delete", async (_, _) => await DeleteSelectedLogAsync()));
+        historyMenu.Items.Add(CreateMenuItem("Clear all history", string.Empty, async (_, _) => await ClearHistoryAsync()));
         _historyGrid.ContextMenuStrip = historyMenu;
     }
 
@@ -548,6 +559,7 @@ public sealed class MainForm : Form
         _monitor.Activity += (id, message) => Ui(() => AppendActivity($"M{id}: {message}"));
         _monitor.HistoryChanged += () => Ui(async () => await RefreshHistoryAsync());
         _monitor.RunningStateChanged += () => Ui(async () => { await RefreshMonitorsAsync(); UpdateActionStates(); });
+        KeyDown += MainForm_KeyDown;
     }
 
     private void ConfigureTooltips()
@@ -555,13 +567,62 @@ public sealed class MainForm : Form
         _toolTip.SetToolTip(_launchChromeButton, "Launch the dedicated Chrome instance used by GPTDeskTop monitoring.");
         _toolTip.SetToolTip(_hideChromeButton, "Hide the monitor Chrome window without stopping CDP monitoring.");
         _toolTip.SetToolTip(_showChromeButton, "Show the monitor Chrome window.");
-        _toolTip.SetToolTip(_refreshTabsButton, "Refresh the list of currently open ChatGPT tabs.");
-        _toolTip.SetToolTip(_addMonitorButton, "Create a saved monitor from the selected open ChatGPT tab(s).");
-        _toolTip.SetToolTip(_monitorSettingsButton, "Edit the selected monitor. Stop a running monitor before changing its settings.");
+        _toolTip.SetToolTip(_refreshTabsButton, "Refresh the list of currently open ChatGPT tabs. Shortcut: F5.");
+        _toolTip.SetToolTip(_addMonitorButton, "Create a saved monitor from the selected open ChatGPT tab(s). Shortcut: Ctrl+N.");
+        _toolTip.SetToolTip(_monitorSettingsButton, "Edit the selected monitor. Stop a running monitor before changing its settings. Shortcut: Ctrl+E.");
         _toolTip.SetToolTip(_startAllButton, "Start every enabled saved monitor whose ChatGPT conversation is open.");
         _toolTip.SetToolTip(_stopAllButton, "Stop all currently running monitors.");
-        _toolTip.SetToolTip(_settingsButton, "Open global monitoring, rotation, recovery and notification settings.");
+        _toolTip.SetToolTip(_settingsButton, "Open global monitoring, rotation, recovery and notification settings. Shortcut: Ctrl+,.");
         _toolTip.SetToolTip(_autoReplyBox, "Read-only summary. Use Edit Selected Monitor to change this value.");
+    }
+
+    private void FocusOperationalWorkspace()
+    {
+        if (_monitors.Count > 0)
+        {
+            _monitorsGrid.Focus();
+            return;
+        }
+
+        if (_tabs.Count > 0)
+        {
+            _tabsGrid.Focus();
+            return;
+        }
+
+        _launchChromeButton.Focus();
+    }
+
+    private async void MainForm_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (_shutdownRequested) return;
+
+        var handled = true;
+        try
+        {
+            if (e.Modifiers == Keys.None && e.KeyCode == Keys.F5)
+                await RefreshTabsAsync();
+            else if (e.Control && !e.Shift && !e.Alt && e.KeyCode == Keys.N)
+                await AddSelectedTabAsync();
+            else if (e.Control && !e.Shift && !e.Alt && e.KeyCode == Keys.E)
+                await EditSelectedMonitorSettingsAsync();
+            else if (e.Control && !e.Shift && !e.Alt && e.KeyCode == Keys.Oemcomma)
+                await OpenSettingsAsync();
+            else if (e.Modifiers == Keys.None && e.KeyCode == Keys.Delete && _monitorsGrid.ContainsFocus)
+                await DeleteSelectedMonitorAsync();
+            else if (e.Modifiers == Keys.None && e.KeyCode == Keys.Delete && _historyGrid.ContainsFocus)
+                await DeleteSelectedLogAsync();
+            else
+                handled = false;
+        }
+        catch (Exception ex)
+        {
+            ShowError("Keyboard Command Error", ex.Message);
+        }
+
+        if (!handled) return;
+        e.Handled = true;
+        e.SuppressKeyPress = true;
     }
 
     private async Task LoadStartupStateAsync()
@@ -747,8 +808,10 @@ public sealed class MainForm : Form
     private async Task DeleteSelectedMonitorAsync()
     {
         if (_selectedMonitor is null) return;
-        if (MessageBox.Show(this, $"Delete monitor #{_selectedMonitor.Id}?", "Delete Monitor", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-        var id = _selectedMonitor.Id;
+        var monitor = _selectedMonitor;
+        var message = $"Delete monitor #{monitor.Id}?{Environment.NewLine}{Environment.NewLine}{monitor.Title}{Environment.NewLine}{Environment.NewLine}The monitor will be stopped if necessary and its saved configuration will be removed. This cannot be undone.";
+        if (MessageBox.Show(this, message, "Delete Monitor", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+        var id = monitor.Id;
         await _monitor.StopMonitorAsync(id);
         await _database.DeleteMonitorAsync(id);
         _selectedMonitor = null;
@@ -811,6 +874,8 @@ public sealed class MainForm : Form
     private async Task CloseSelectedTabAsync()
     {
         if (_tabsGrid.CurrentRow?.DataBoundItem is not ChromeTab tab) return;
+        var message = $"Close this Chrome tab?{Environment.NewLine}{Environment.NewLine}{tab.Title}{Environment.NewLine}{Environment.NewLine}Any unsent text in this tab will be lost.";
+        if (MessageBox.Show(this, message, "Close Chrome Tab", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
         await _chrome.CloseTabAsync(tab);
         AppendActivity($"Closed Chrome tab: {tab.Title}");
         await RefreshTabsAsync();
@@ -880,13 +945,18 @@ public sealed class MainForm : Form
     private async Task DeleteSelectedLogAsync()
     {
         if (_historyGrid.CurrentRow?.DataBoundItem is not MessageLog log) return;
+        var message = $"Delete this stored history entry?{Environment.NewLine}{Environment.NewLine}{log.Timestamp:yyyy-MM-dd HH:mm:ss}  •  {log.TabTitle}{Environment.NewLine}{log.Direction}  •  {log.Status}{Environment.NewLine}{Environment.NewLine}This cannot be undone.";
+        if (MessageBox.Show(this, message, "Delete History Entry", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
         await _database.DeleteLogAsync(log.Id);
         await RefreshHistoryAsync();
     }
 
     private async Task ClearHistoryAsync()
     {
-        if (MessageBox.Show(this, "Delete all stored history?", "Clear History", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+        var count = _historyGrid.Rows.Count;
+        if (count == 0) return;
+        var message = $"Delete all stored history?{Environment.NewLine}{Environment.NewLine}{count} visible entr{(count == 1 ? "y" : "ies")} will be removed. This cannot be undone.";
+        if (MessageBox.Show(this, message, "Clear All History", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
         await _database.ClearLogsAsync();
         await RefreshHistoryAsync();
     }
