@@ -26,12 +26,15 @@ jobs:
 
       - name: Apply focused patch
         shell: pwsh
-        run: python eng/apply-issue-59.py
+        run: |
+          python eng/apply-issue-59.py
+          python eng/fix-issue-59-validation.py
 
       - name: Remove temporary patch infrastructure
         shell: pwsh
         run: |
           Remove-Item eng/apply-issue-59.py -Force
+          Remove-Item eng/fix-issue-59-validation.py -Force
           Remove-Item .github/workflows/issue-59-apply.yml -Force
 
       - name: Validate runtime tests
