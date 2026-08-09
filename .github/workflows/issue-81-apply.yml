@@ -1,5 +1,5 @@
 name: Apply Issue 81 Patch
-# rerun after isolating backup snapshot reads from shared-cache writer locks
+# rerun with private-cache explicitly deferred backup snapshot reads
 
 on:
   push:
