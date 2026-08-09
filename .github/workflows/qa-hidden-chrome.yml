@@ -45,9 +45,7 @@ jobs:
           if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
             $duration = [int]'${{ inputs.duration_seconds }}'
           } else {
-            # Temporary release gate: prove the original QA-005 10+ minute requirement
-            # on a real Windows/Chrome/CDP run before restoring normal push smoke to 30s.
-            $duration = 610
+            $duration = 30
           }
           if ($duration -lt 5) { throw 'duration_seconds must be at least 5.' }
           if ($duration -gt 900) { throw 'duration_seconds cannot exceed 900.' }
