@@ -29,12 +29,23 @@ public sealed class DevelopmentTaskMonitorTargetFactory
         CancellationToken cancellationToken = default)
     {
         var monitors = await _database.GetSavedMonitorsAsync(cancellationToken).ConfigureAwait(false);
+        var duplicateMonitorIds = MonitorConversationOwnership.FindDuplicateMonitorIds(monitors);
         var tabs = await _chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
         var recipients = new List<DevelopmentTaskMonitorRecipient>();
 
         foreach (var monitor in monitors.Where(x => x.Enabled))
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (duplicateMonitorIds.Contains(monitor.Id))
+            {
+                await _database.AddLogAsync(
+                    "System", string.Empty,
+                    "Saved monitor conversation ownership is ambiguous. Resolve the duplicate monitor rows before development delivery can target this conversation.",
+                    "DevelopmentMonitorDuplicateConversationOwnership", monitor.Id,
+                    monitor.TabId, monitor.Title, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
 
             var optedIn = await _database.GetSettingAsync(
                 $"TaskAutomation.Monitor.{monitor.Id}.Enabled",
