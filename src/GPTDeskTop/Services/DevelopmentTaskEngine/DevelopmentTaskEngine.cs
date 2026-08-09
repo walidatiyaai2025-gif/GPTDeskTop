@@ -14,6 +14,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
     private TimeSpan _workWindow;
     private TimeSpan _coolingWindow;
     private CancellationTokenSource? _cts;
+    private Task? _workerTask;
     private DevelopmentTaskState _state = new();
     private int? _lastEmittedMessageIndex;
     private bool _messageDeliveredThisWindow;
@@ -59,7 +60,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
             _messageDeliveredThisWindow = false;
             await SaveStateAsync(cancellationToken).ConfigureAwait(false);
             PublishState();
-            RestartWorker(cancellationToken);
+            await RestartWorkerAsync(cancellationToken).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }
@@ -70,7 +71,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         try
         {
             if (_state.Status is not (DevelopmentTaskEngineStatus.Working or DevelopmentTaskEngineStatus.Cooling)) return;
-            _cts?.Cancel();
+            await StopWorkerAsync().ConfigureAwait(false);
             _state.Status = DevelopmentTaskEngineStatus.Paused;
             _state.LastCheckpointAt = DateTimeOffset.UtcNow;
             _state.Revision++;
@@ -85,7 +86,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _cts?.Cancel();
+            await StopWorkerAsync().ConfigureAwait(false);
             _state.Status = DevelopmentTaskEngineStatus.Stopped;
             _state.WorkWindowStartedAt = null;
             _state.CoolingStartedAt = null;
@@ -128,7 +129,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
             _lastEmittedMessageIndex = null;
             await SaveStateAsync(cancellationToken).ConfigureAwait(false);
             PublishState();
-            RestartWorker(cancellationToken);
+            await RestartWorkerAsync(cancellationToken).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }
@@ -203,12 +204,32 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         if (!_coolingWindowOverridden) _coolingWindow = TimeSpan.FromMinutes(settings.CoolingMinutes);
     }
 
-    private void RestartWorker(CancellationToken cancellationToken)
+    private async Task RestartWorkerAsync(CancellationToken cancellationToken)
     {
-        _cts?.Cancel();
-        _cts?.Dispose();
+        await StopWorkerAsync().ConfigureAwait(false);
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _ = RunLoopAsync(_cts.Token);
+        _workerTask = RunLoopAsync(_cts.Token);
+    }
+
+    private async Task StopWorkerAsync()
+    {
+        var cts = _cts;
+        var worker = _workerTask;
+        _cts = null;
+        _workerTask = null;
+
+        if (cts is null && worker is null) return;
+
+        try { cts?.Cancel(); }
+        catch (ObjectDisposedException) { }
+
+        if (worker is not null)
+        {
+            try { await worker.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+        }
+
+        cts?.Dispose();
     }
 
     private async Task RunLoopAsync(CancellationToken cancellationToken)
@@ -340,17 +361,13 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
 
     private void PublishState() => StateChanged?.Invoke(this, _state);
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposeState, 1) != 0) return ValueTask.CompletedTask;
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0) return;
 
-        var cts = Interlocked.Exchange(ref _cts, null);
-        try { cts?.Cancel(); }
-        catch (ObjectDisposedException) { }
-        cts?.Dispose();
+        await StopWorkerAsync().ConfigureAwait(false);
         _gate.Dispose();
         _stateFileGate.Dispose();
-        return ValueTask.CompletedTask;
     }
 
     private sealed class MessageDocument { public List<string> Messages { get; set; } = []; }
