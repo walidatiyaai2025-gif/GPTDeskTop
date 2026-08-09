@@ -65,7 +65,7 @@ public sealed class TransactionalConversationRebindTests
 
             Assert.True(repairOutcome.Succeeded || registrationOutcome.Succeeded);
             var monitors = await repairDb.GetSavedMonitorsAsync();
-            Assert.Single(monitors.Where(monitor => string.Equals(monitor.Url, targetUrl, StringComparison.OrdinalIgnoreCase)));
+            Assert.Single(monitors, monitor => string.Equals(monitor.Url, targetUrl, StringComparison.OrdinalIgnoreCase));
             Assert.DoesNotContain(monitors.GroupBy(monitor => monitor.Url, StringComparer.OrdinalIgnoreCase), group => group.Count() > 1 && string.Equals(group.Key, targetUrl, StringComparison.OrdinalIgnoreCase));
         }
         finally
@@ -115,13 +115,13 @@ public sealed class TransactionalConversationRebindTests
             start.SetResult();
             var outcomes = await Task.WhenAll(firstTask, secondTask);
 
-            Assert.Single(outcomes.Where(outcome => outcome.Succeeded));
-            Assert.Single(outcomes.Where(outcome => !outcome.Succeeded));
+            Assert.Single(outcomes, outcome => outcome.Succeeded);
+            Assert.Single(outcomes, outcome => !outcome.Succeeded);
             Assert.Contains(outcomes, outcome => outcome.Error is InvalidOperationException);
 
             var monitors = await firstDb.GetSavedMonitorsAsync();
-            Assert.Single(monitors.Where(monitor => string.Equals(monitor.Url, targetUrl, StringComparison.OrdinalIgnoreCase)));
-            Assert.Single(monitors.Where(monitor => string.Equals(monitor.Url, duplicateUrl, StringComparison.OrdinalIgnoreCase)));
+            Assert.Single(monitors, monitor => string.Equals(monitor.Url, targetUrl, StringComparison.OrdinalIgnoreCase));
+            Assert.Single(monitors, monitor => string.Equals(monitor.Url, duplicateUrl, StringComparison.OrdinalIgnoreCase));
             Assert.Equal(0, MonitorConversationOwnership.CountDuplicateMonitors(monitors));
         }
         finally
@@ -161,7 +161,7 @@ public sealed class TransactionalConversationRebindTests
                     diagnosticStatus: "ShouldNotExist"));
 
             Assert.Contains("changed before repair", error.Message, StringComparison.OrdinalIgnoreCase);
-            var saved = Assert.Single((await database.GetSavedMonitorsAsync()).Where(item => item.Id == monitorId));
+            var saved = Assert.Single(await database.GetSavedMonitorsAsync(), item => item.Id == monitorId);
             Assert.Equal("https://chatgpt.com/share/current-source", saved.Url);
             var history = await database.GetRecentLogsForMonitorAsync(monitorId, 20);
             Assert.DoesNotContain(history, log => log.Status == "ShouldNotExist");
