@@ -8,22 +8,27 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
     private readonly SemaphoreSlim _stateFileGate = new(1, 1);
     private readonly string _statePath;
     private readonly string _messagesPath;
-    private readonly TimeSpan _workWindow;
-    private readonly TimeSpan _coolingWindow;
+    private readonly DevelopmentTaskScheduleSettingsStore _scheduleStore;
+    private TimeSpan _workWindow;
+    private TimeSpan _coolingWindow;
     private CancellationTokenSource? _cts;
     private DevelopmentTaskState _state = new();
     private int? _lastEmittedMessageIndex;
     private bool _messageDeliveredThisWindow;
 
-    public DevelopmentTaskEngine(TimeSpan? workWindow = null, TimeSpan? coolingWindow = null, string? statePath = null, string? messagesPath = null)
+    public DevelopmentTaskEngine(TimeSpan? workWindow = null, TimeSpan? coolingWindow = null, string? statePath = null, string? messagesPath = null, string? scheduleSettingsPath = null)
     {
-        _workWindow = workWindow ?? TimeSpan.FromMinutes(10);
-        _coolingWindow = coolingWindow ?? TimeSpan.FromMinutes(5);
         _statePath = statePath ?? Path.Combine(AppContext.BaseDirectory, "data", "development-task-state.json");
         _messagesPath = messagesPath ?? Path.Combine(AppContext.BaseDirectory, "data", "development-task-messages.json");
+        _scheduleStore = new DevelopmentTaskScheduleSettingsStore(scheduleSettingsPath);
+        var configured = _scheduleStore.Load();
+        _workWindow = workWindow ?? TimeSpan.FromMinutes(configured.WorkMinutes);
+        _coolingWindow = coolingWindow ?? TimeSpan.FromMinutes(configured.CoolingMinutes);
     }
 
     public DevelopmentTaskState State => _state;
+    public TimeSpan WorkWindow => _workWindow;
+    public TimeSpan CoolingWindow => _coolingWindow;
     public event EventHandler<DevelopmentTaskState>? StateChanged;
     public event Action<string>? MessageReady;
     public event EventHandler? CoolingStarted;
@@ -34,6 +39,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ReloadScheduleSettings();
             await LoadStateAsync(cancellationToken).ConfigureAwait(false);
             var messages = await LoadMessagesAsync(cancellationToken).ConfigureAwait(false);
             if (messages.Count == 0) throw new InvalidOperationException("No development task messages are configured.");
@@ -91,6 +97,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ReloadScheduleSettings();
             await LoadStateAsync(cancellationToken).ConfigureAwait(false);
             if (_state.Status == DevelopmentTaskEngineStatus.Completed) return;
             var messages = await LoadMessagesAsync(cancellationToken).ConfigureAwait(false);
@@ -185,6 +192,13 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
+    private void ReloadScheduleSettings()
+    {
+        var settings = _scheduleStore.Load();
+        _workWindow = TimeSpan.FromMinutes(settings.WorkMinutes);
+        _coolingWindow = TimeSpan.FromMinutes(settings.CoolingMinutes);
+    }
+
     private void RestartWorker(CancellationToken cancellationToken)
     {
         _cts?.Cancel();
@@ -263,6 +277,7 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         PublishState();
         var remaining = _coolingWindow - (DateTimeOffset.UtcNow - started);
         if (remaining > TimeSpan.Zero) await Task.Delay(remaining, cancellationToken).ConfigureAwait(false);
+        ReloadScheduleSettings();
         _state.Status = DevelopmentTaskEngineStatus.Working;
         _state.WorkWindowStartedAt = DateTimeOffset.UtcNow;
         _state.CoolingStartedAt = null;
