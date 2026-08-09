@@ -17,7 +17,7 @@ public sealed class SettingsForm : Form
     private readonly ComboBox _soundType = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
     private readonly Button _saveButton = new() { Text = "Save Settings", AutoSize = true };
     private readonly Button _cancelButton = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
-    private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
+    private readonly TabControl _tabs = new TabControl { Dock = DockStyle.Fill };
     private readonly Label _statusLabel = new()
     {
         Text = "Ready",
@@ -286,14 +286,15 @@ public sealed class SettingsForm : Form
     {
         if (_busy) return;
 
-        var rotationStartMessage = string.IsNullOrWhiteSpace(_messageCountRotationStartMessage.Text) ? "كمل" : _messageCountRotationStartMessage.Text.Trim();
-        if (_rotateAfterMessages.Value > 0 && string.IsNullOrWhiteSpace(rotationStartMessage))
+        var rawRotationStartMessage = _messageCountRotationStartMessage.Text.Trim();
+        if (_rotateAfterMessages.Value > 0 && string.IsNullOrWhiteSpace(rawRotationStartMessage))
         {
             _tabs.SelectedIndex = 1;
             _messageCountRotationStartMessage.Focus();
             MessageBox.Show(this, "New Chat start message cannot be empty when message-count rotation is enabled.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
+        var rotationStartMessage = string.IsNullOrWhiteSpace(rawRotationStartMessage) ? "كمل" : rawRotationStartMessage;
 
         SetBusy(true, "Saving settings…");
         try
