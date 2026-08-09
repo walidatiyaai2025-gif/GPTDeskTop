@@ -74,7 +74,6 @@ internal static class Program
             developmentRuntime = new DevelopmentTaskRuntimeBinding(developmentEngine, targetFactory);
             var developmentDashboard = new DevelopmentTaskDashboardControl(developmentRuntime)
             {
-                Height = 190,
                 Dock = DockStyle.Top,
                 TabStop = false
             };
@@ -104,7 +103,7 @@ internal static class Program
             if (database is not null) ExceptionLogService.Log(ex, "Program.Main.Fatal");
             else
             {
-                try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "startup-error.log"), $"[{DateTime.Now:O}] {ex}{Environment.NewLine}"); }
+                try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "startup-error.log"), $"[{DateTime.Now:O}] {ex}{Environment.NewLine}");
                 catch { }
             }
 
