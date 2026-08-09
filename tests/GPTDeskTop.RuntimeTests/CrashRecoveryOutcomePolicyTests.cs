@@ -11,6 +11,12 @@ public sealed class CrashRecoveryOutcomePolicyTests
     }
 
     [Fact]
+    public void InvalidIdentityDoesNotStartEnabledMonitor()
+    {
+        Assert.False(CrashRecoveryOutcomePolicy.ShouldStartMonitor(CrashRecoveryOutcome.InvalidConversationIdentity, enabled: true));
+    }
+
+    [Fact]
     public void SuccessfulRecoveryStartsEnabledMonitor()
     {
         Assert.True(CrashRecoveryOutcomePolicy.ShouldStartMonitor(CrashRecoveryOutcome.Success, enabled: true));
@@ -28,6 +34,15 @@ public sealed class CrashRecoveryOutcomePolicyTests
         Assert.False(CrashRecoveryOutcomePolicy.ShouldClearPending([
             CrashRecoveryOutcome.Success,
             CrashRecoveryOutcome.SendFailed
+        ]));
+    }
+
+    [Fact]
+    public void PendingRemainsWhenAnyMonitorIdentityIsInvalid()
+    {
+        Assert.False(CrashRecoveryOutcomePolicy.ShouldClearPending([
+            CrashRecoveryOutcome.Success,
+            CrashRecoveryOutcome.InvalidConversationIdentity
         ]));
     }
 
