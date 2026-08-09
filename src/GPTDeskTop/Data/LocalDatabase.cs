@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 namespace GPTDeskTop.Data;
 
 public sealed record ConfigurationImportDatabaseResult(int SettingsApplied, int MonitorsUpdated, int MonitorsInserted);
+public sealed record ConfigurationBackupDatabaseSnapshot(IReadOnlyDictionary<string, string?> Settings, IReadOnlyList<SavedMonitor> Monitors);
 public sealed record MonitorRegistrationResult(long MonitorId, bool Created);
 public sealed record MonitorConversationRebindDatabaseResult(long MonitorId, string PreviousUrl, string NewUrl);
 public sealed record MonitorConversationHandoffDatabaseResult(long MonitorId, string PreviousUrl, string NewUrl, int RotationCount, string Title);
@@ -615,6 +616,83 @@ public sealed class LocalDatabase
         command.Parameters.AddWithValue("$modelRouting", monitor.ModelRoutingEnabled ? 1 : 0); command.Parameters.AddWithValue("$preferredModel", monitor.PreferredModel ?? "Auto"); command.Parameters.AddWithValue("$fallbackModel", monitor.FallbackModel ?? "Auto");
         if (includeCreatedAt) command.Parameters.AddWithValue("$createdAt", now.ToString("O"));
         command.Parameters.AddWithValue("$updatedAt", now.ToString("O"));
+    }
+
+    public async Task<ConfigurationBackupDatabaseSnapshot> ReadConfigurationBackupSnapshotAsync(
+        IReadOnlyList<string> settingKeys,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(settingKeys);
+        var keys = settingKeys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        var settings = keys.ToDictionary(key => key, _ => (string?)null, StringComparer.Ordinal);
+        var monitors = new List<SavedMonitor>();
+
+        var snapshotConnectionString = new SqliteConnectionStringBuilder(_connectionString)
+            { Cache = SqliteCacheMode.Private }
+            .ToString();
+        await using var connection = new SqliteConnection(snapshotConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction(deferred: true);
+        try
+        {
+            if (keys.Length > 0)
+            {
+                await using var settingsCommand = connection.CreateCommand();
+                settingsCommand.Transaction = transaction;
+                var parameterNames = new string[keys.Length];
+                for (var index = 0; index < keys.Length; index++)
+                {
+                    parameterNames[index] = $"$key{index}";
+                    settingsCommand.Parameters.AddWithValue(parameterNames[index], keys[index]);
+                }
+                settingsCommand.CommandText = $"SELECT Key, Value FROM AppSettings WHERE Key IN ({string.Join(',', parameterNames)});";
+                await using var settingsReader = await settingsCommand.ExecuteReaderAsync(cancellationToken);
+                while (await settingsReader.ReadAsync(cancellationToken))
+                    settings[settingsReader.GetString(0)] = settingsReader.GetString(1);
+            }
+
+            await using var monitorsCommand = connection.CreateCommand();
+            monitorsCommand.Transaction = transaction;
+            monitorsCommand.CommandText = "SELECT Id,TabId,Title,Url,AutoReply,ReplyDelaySeconds,TimerSeconds,Enabled,ConversationRotationEnabled,NewChatStartMessage,NewChatDelaySeconds,RotationCooldownSeconds,MaxConversationRotations,RotationCount,ModelRoutingEnabled,PreferredModel,FallbackModel,CreatedAt,UpdatedAt FROM SavedMonitors ORDER BY Id;";
+            await using var monitorReader = await monitorsCommand.ExecuteReaderAsync(cancellationToken);
+            while (await monitorReader.ReadAsync(cancellationToken))
+            {
+                monitors.Add(new SavedMonitor
+                {
+                    Id = monitorReader.GetInt64(0),
+                    TabId = monitorReader.GetString(1),
+                    Title = monitorReader.GetString(2),
+                    Url = monitorReader.GetString(3),
+                    AutoReply = monitorReader.GetString(4),
+                    ReplyDelaySeconds = Math.Clamp(monitorReader.GetInt32(5), 0, 300),
+                    TimerSeconds = Math.Clamp(monitorReader.GetInt32(6), 1, 60),
+                    Enabled = monitorReader.GetInt64(7) != 0,
+                    ConversationRotationEnabled = monitorReader.GetInt64(8) != 0,
+                    NewChatStartMessage = monitorReader.GetString(9),
+                    NewChatDelaySeconds = Math.Clamp(monitorReader.GetInt32(10), 0, 600),
+                    RotationCooldownSeconds = Math.Clamp(monitorReader.GetInt32(11), 0, 3600),
+                    MaxConversationRotations = Math.Clamp(monitorReader.GetInt32(12), 0, 1000),
+                    RotationCount = Math.Max(0, monitorReader.GetInt32(13)),
+                    ModelRoutingEnabled = monitorReader.GetInt64(14) != 0,
+                    PreferredModel = monitorReader.GetString(15),
+                    FallbackModel = monitorReader.GetString(16),
+                    CreatedAt = ParseLocal(monitorReader.GetString(17)),
+                    UpdatedAt = ParseLocal(monitorReader.GetString(18))
+                });
+            }
+
+            transaction.Commit();
+            return new ConfigurationBackupDatabaseSnapshot(settings, monitors);
+        }
+        catch
+        {
+            try { transaction.Rollback(); } catch { }
+            throw;
+        }
     }
 
     public async Task<List<SavedMonitor>> GetSavedMonitorsAsync(CancellationToken cancellationToken = default)
