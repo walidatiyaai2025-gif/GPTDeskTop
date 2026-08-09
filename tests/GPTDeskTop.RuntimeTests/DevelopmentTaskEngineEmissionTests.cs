@@ -22,7 +22,7 @@ public sealed class DevelopmentTaskEngineEmissionTests
                 messagesPath: messagesPath);
 
             var emitted = new List<string>();
-            engine.MessageReady += (_, message) => emitted.Add(message);
+            engine.MessageReady += message => emitted.Add(message);
 
             await engine.StartAsync("plan", "Development Plan");
             await Task.Delay(700);
