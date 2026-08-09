@@ -37,18 +37,22 @@ public sealed class SupportBundleUiRegressionTests
     }
 
     [Fact]
-    public void BundleImplementationDoesNotCopySensitiveSourceFiles()
+    public void BundleImplementationCollectsOnlySanitizedRecoveryStateAndDoesNotCopySensitiveSourceFiles()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "SupportBundleService.cs");
 
         Assert.Contains("CollectionTimeout = TimeSpan.FromSeconds(5)", source, StringComparison.Ordinal);
         Assert.Contains("GetSavedMonitorsAsync", source, StringComparison.Ordinal);
         Assert.Contains("GetRecentLogsAsync(500", source, StringComparison.Ordinal);
+        Assert.Contains("GetSettingAsync(\"CrashRecoveryPending\"", source, StringComparison.Ordinal);
+        Assert.Contains("InvalidMonitorIdentityCount", source, StringComparison.Ordinal);
+        Assert.Contains("crashRecoveryPending: database.CrashRecoveryPending", source, StringComparison.Ordinal);
+        Assert.Contains("invalidMonitorIdentityCount: database.InvalidMonitorIdentityCount", source, StringComparison.Ordinal);
         Assert.Contains("GetTodayLogPath", source, StringComparison.Ordinal);
         Assert.Contains("File.Move(tempPath, outputPath, overwrite: true)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SetSettingAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("File.ReadAllText", source, StringComparison.Ordinal);
         Assert.DoesNotContain("File.ReadAllBytes", source, StringComparison.Ordinal);
         Assert.DoesNotContain("File.Copy", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("GetSettingAsync(", source, StringComparison.Ordinal);
     }
 }

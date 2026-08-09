@@ -39,7 +39,11 @@ public sealed record SupportBundleDatabaseSnapshot(
     DateTimeOffset? LatestHistoryAt,
     IReadOnlyList<SupportBundleCount> DirectionCounts,
     IReadOnlyList<SupportBundleCount> StatusCounts,
-    string? FailureType);
+    string? FailureType)
+{
+    public bool CrashRecoveryPending { get; init; }
+    public int InvalidMonitorIdentityCount { get; init; }
+}
 
 public sealed record SupportBundleExceptionMetadata(
     bool Exists,
@@ -162,7 +166,9 @@ public sealed class SupportBundleService
             database.RunningMonitorCount,
             DateTimeOffset.UtcNow,
             chrome.FailureType,
-            database.FailureType);
+            database.FailureType,
+            crashRecoveryPending: database.CrashRecoveryPending,
+            invalidMonitorIdentityCount: database.InvalidMonitorIdentityCount);
 
         return new SupportBundleSnapshot(
             "1.0",
@@ -208,7 +214,15 @@ public sealed class SupportBundleService
         {
             var monitors = await _database.GetSavedMonitorsAsync(cancellationToken).ConfigureAwait(false);
             var logs = await _database.GetRecentLogsAsync(500, cancellationToken).ConfigureAwait(false);
-            return CreateDatabaseSnapshot(monitors, logs, id => _monitor.IsMonitorRunning(id));
+            var recoveryPending = string.Equals(
+                await _database.GetSettingAsync("CrashRecoveryPending", cancellationToken).ConfigureAwait(false),
+                "1",
+                StringComparison.Ordinal);
+            return CreateDatabaseSnapshot(
+                monitors,
+                logs,
+                id => _monitor.IsMonitorRunning(id),
+                recoveryPending);
         }
         catch (OperationCanceledException)
         {
@@ -254,7 +268,8 @@ public sealed class SupportBundleService
     public static SupportBundleDatabaseSnapshot CreateDatabaseSnapshot(
         IEnumerable<SavedMonitor> monitors,
         IEnumerable<MessageLog> logs,
-        Func<long, bool>? isRunning = null)
+        Func<long, bool>? isRunning = null,
+        bool crashRecoveryPending = false)
     {
         var monitorList = monitors?.ToList() ?? new List<SavedMonitor>();
         var logList = logs?.ToList() ?? new List<MessageLog>();
@@ -272,7 +287,12 @@ public sealed class SupportBundleService
             logList.Count == 0 ? null : new DateTimeOffset(logList.Max(log => log.Timestamp)),
             Aggregate(logList.Select(log => log.Direction)),
             Aggregate(logList.Select(log => log.Status)),
-            null);
+            null)
+        {
+            CrashRecoveryPending = crashRecoveryPending,
+            InvalidMonitorIdentityCount = monitorList.Count(monitor =>
+                !RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url))
+        };
     }
 
     public static string SerializeSnapshot(SupportBundleSnapshot snapshot)
@@ -293,7 +313,7 @@ public sealed class SupportBundleService
         builder.AppendLine($"Runtime health: {snapshot.RuntimeHealth} - {snapshot.RuntimeHealthSummary}");
         builder.AppendLine();
         builder.AppendLine("Contents:");
-        builder.AppendLine("- diagnostics.json: environment, sanitized configuration, health/counts, history aggregates and exception-file metadata.");
+        builder.AppendLine("- diagnostics.json: environment, sanitized configuration, runtime/recovery health counts, history aggregates and exception-file metadata.");
         builder.AppendLine("- README.txt: this privacy and contents notice.");
         builder.AppendLine();
         builder.AppendLine("Intentionally excluded:");
