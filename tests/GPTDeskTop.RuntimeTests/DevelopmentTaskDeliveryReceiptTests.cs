@@ -5,7 +5,7 @@ namespace GPTDeskTop.RuntimeTests;
 public sealed class DevelopmentTaskDeliveryReceiptTests
 {
     private static string RepositoryPath(params string[] segments)
-        => Path.GetFullPath(Path.Combine("..", "..", "src", "GPTDeskTop", Path.Combine(segments)));
+        => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "src", "GPTDeskTop", Path.Combine(segments)));
 
     [Fact]
     public void DeliveryExtensionStoresMonitorTabMessageAndFingerprint()
