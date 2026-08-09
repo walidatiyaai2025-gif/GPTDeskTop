@@ -227,7 +227,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         _status.Text = $"● {state.Status}";
         ApplyStatusStyle(state.Status);
         _phase.Text = state.Status == DevelopmentTaskEngineStatus.Cooling
-            ? "Cooling — delivery paused"
+            ? "Cooling — no delivery"
             : state.Status == DevelopmentTaskEngineStatus.Working
                 ? "Working — delivery enabled"
                 : state.Status == DevelopmentTaskEngineStatus.Paused
