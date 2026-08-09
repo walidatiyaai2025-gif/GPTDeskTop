@@ -22,6 +22,7 @@ public sealed class RuntimeHealthUiRegressionTests
         Assert.Contains("AccessibleName = \"Runtime health and connection center\"", source, StringComparison.Ordinal);
         Assert.Contains("AccessibleName = \"Refresh runtime health\"", source, StringComparison.Ordinal);
         Assert.Contains("AccessibleName = \"Repair recovery blocker\"", source, StringComparison.Ordinal);
+        Assert.Contains("AccessibleName = \"Retry pending crash recovery\"", source, StringComparison.Ordinal);
         Assert.Contains("Height = _expanded ? ExpandedHeight : CollapsedHeight", source, StringComparison.Ordinal);
         Assert.Contains("keyData == Keys.F5", source, StringComparison.Ordinal);
     }
@@ -56,6 +57,22 @@ public sealed class RuntimeHealthUiRegressionTests
         Assert.Contains("new MonitorIdentityRepairForm(_chrome, _database)", source, StringComparison.Ordinal);
         Assert.Contains("if (form.ShowDialog(FindForm()) != DialogResult.OK) return;", source, StringComparison.Ordinal);
         Assert.Contains("await RefreshAsync();", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RuntimeHealthAllowsOnlySafeExplicitPendingRecoveryRetry()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "RuntimeHealthControl.cs");
+
+        Assert.Contains("_retryRecoveryButton.Enabled = !_recoveryRetrying", source, StringComparison.Ordinal);
+        Assert.Contains("&& recoveryPending", source, StringComparison.Ordinal);
+        Assert.Contains("&& invalidMonitorCount == 0", source, StringComparison.Ordinal);
+        Assert.Contains("RetryPendingRecoveryAsync", source, StringComparison.Ordinal);
+        Assert.Contains("monitors.Any(saved => !RuntimeHealthPresentation.IsChatGptConversationUrl(saved.Url))", source, StringComparison.Ordinal);
+        Assert.Contains("Retry Crash Recovery", source, StringComparison.Ordinal);
+        Assert.Contains("CrashRecoveryMode.PendingRetry", source, StringComparison.Ordinal);
+        Assert.Contains("monitors with persisted success receipts are not sent again", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CrashRecoveryMode.FreshCrashReset", source, StringComparison.Ordinal);
     }
 
     [Fact]
