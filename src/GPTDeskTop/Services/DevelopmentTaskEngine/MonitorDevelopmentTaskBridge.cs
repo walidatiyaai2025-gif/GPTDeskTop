@@ -31,7 +31,7 @@ public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
     }
 
     public string MonitorId => _monitor.Id.ToString();
-    public int TabId => _tab.Id;
+    public string TabId => _tab.Id;
 
     public void Attach()
     {
@@ -52,7 +52,7 @@ public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
     {
         return _engine.CheckpointDeliveredAsync(
             MonitorId,
-            TabId.ToString(),
+            TabId,
             DevelopmentTaskDeliveryCoordinator.Fingerprint(message),
             cancellationToken);
     }
