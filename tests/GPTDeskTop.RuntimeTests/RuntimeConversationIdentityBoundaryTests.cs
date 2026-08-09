@@ -9,7 +9,7 @@ namespace GPTDeskTop.RuntimeTests;
 public sealed class RuntimeConversationIdentityBoundaryTests
 {
     [Fact]
-    public void DirectMonitorStartRejectsInvalidSavedIdentityBeforeWorkerCreation()
+    public async Task DirectMonitorStartRejectsInvalidSavedIdentityBeforeWorkerCreation()
     {
         var service = CreateMonitorService();
         var monitor = new SavedMonitor
@@ -21,14 +21,14 @@ public sealed class RuntimeConversationIdentityBoundaryTests
         };
         var tab = Tab("tab-home", "https://chatgpt.com/");
 
-        var exception = Assert.Throws<InvalidOperationException>(() => service.StartMonitorAsync(monitor, tab));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => service.StartMonitorAsync(monitor, tab));
 
         Assert.Contains("saved monitor URL", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.False(service.IsMonitorRunning(monitor.Id));
     }
 
     [Fact]
-    public void DirectMonitorStartRejectsInvalidLiveTabBeforeWorkerCreation()
+    public async Task DirectMonitorStartRejectsInvalidLiveTabBeforeWorkerCreation()
     {
         var service = CreateMonitorService();
         var monitor = new SavedMonitor
@@ -40,7 +40,7 @@ public sealed class RuntimeConversationIdentityBoundaryTests
         };
         var tab = Tab("tab-home", "https://chatgpt.com/");
 
-        var exception = Assert.Throws<InvalidOperationException>(() => service.StartMonitorAsync(monitor, tab));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => service.StartMonitorAsync(monitor, tab));
 
         Assert.Contains("selected Chrome tab", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.False(service.IsMonitorRunning(monitor.Id));
