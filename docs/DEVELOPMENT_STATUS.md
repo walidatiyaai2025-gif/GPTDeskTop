@@ -37,17 +37,20 @@ Development-plan automation, verified ChatGPT delivery, restart recovery, multi-
 - Engine reloads the persisted schedule at Start/Resume and at the beginning of the next Work window after Cooling, so changing settings does not mutate an already-running window.
 - CI gates for catalog, schedule settings, delivery, work-window lifecycle, CDP reliability, crash recovery, multi-monitor delivery, dynamic runtime binding, and saved-chat rebinding.
 
-## Current Gate
+## Current Validation Branch
 
-The latest source changes are committed to `main`. The schedule defaults remain 10 minutes Working and 5 minutes Cooling, while the operator can change both values from the Dashboard. The latest commits have not yet produced an observed GitHub Actions run in this session. Do not mark the build green until an actual workflow run completes successfully.
+`agent/schedule-restart-validation` implements the first previously-pending schedule validation task. It adds restart/next-cycle regression coverage and fixes a runtime-testability defect where explicit `workWindow` / `coolingWindow` constructor overrides were being replaced by persisted schedule values during `StartAsync` and `ResumeAsync`.
+
+The production path still uses persisted operator settings. Explicit runtime overrides are now preserved only for the specific window values supplied by the caller, which keeps short deterministic runtime tests valid without changing normal application scheduling.
+
+The branch still requires an observed GitHub Actions run before it can be considered green or merged.
 
 ## Next Executable Tasks
 
-1. Verify persisted schedule changes survive process restart and that the next Work window uses the saved values.
-2. Verify persisted target-ID updates survive process restart and are used as the exact target on the next resolution.
-3. Run the complete CI/build pipeline and fix any real compile/test failures before adding new architecture.
-4. Add operator-facing recipient health/details and per-monitor delivery diagnostics to the Dashboard.
-5. Add release-readiness packaging only after CI is green.
+1. Verify persisted target-ID updates survive process restart and are used as the exact target on the next resolution.
+2. Run the complete CI/build pipeline and fix any real compile/test failures before adding new architecture.
+3. Add operator-facing recipient health/details and per-monitor delivery diagnostics to the Dashboard.
+4. Add release-readiness packaging only after CI is green.
 
 ## Non-Negotiable Delivery Rules
 
