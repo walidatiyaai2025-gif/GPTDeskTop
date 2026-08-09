@@ -1,0 +1,65 @@
+name: QA No-Response Watchdog
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  watchdog:
+    name: Refresh only stale monitor tab
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore application
+        run: dotnet restore src/GPTDeskTop/GPTDeskTop.csproj
+
+      - name: Build application
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release --no-restore
+
+      - name: Verify 30-second per-tab watchdog
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'src/GPTDeskTop/bin/Release/net8.0-windows/GPTDeskTop.exe').Path
+          $workingDirectory = Split-Path $exe -Parent
+          $root = Join-Path $env:RUNNER_TEMP "gptdesktop-no-response-$env:GITHUB_RUN_ID"
+          $resultPath = Join-Path $root 'result.json'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+
+          $probe = Start-Process -FilePath $exe -WorkingDirectory $workingDirectory -ArgumentList @('--qa-no-response-probe', $resultPath) -PassThru
+          $deadline = (Get-Date).AddSeconds(150)
+          while (-not $probe.HasExited) {
+            if ((Get-Date) -ge $deadline) {
+              Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue
+              throw 'No-response watchdog probe exceeded its 150-second workflow deadline.'
+            }
+            Start-Sleep -Seconds 1
+            $probe.Refresh()
+          }
+
+          if ($probe.ExitCode -ne 0) {
+            $errorPath = "$resultPath.error.txt"
+            if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
+            throw "No-response watchdog probe failed. ExitCode=$($probe.ExitCode)"
+          }
+          if (-not (Test-Path $resultPath)) { throw 'No-response watchdog probe did not create result.json.' }
+
+          $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+          if ($result.StaleText -ne 'stale-load-2') { throw "Expected stale tab to reload exactly once, final text='$($result.StaleText)'." }
+          if ($result.ActiveText -ne 'active-response-load-1') { throw "Active tab was unexpectedly reloaded or failed to update, final text='$($result.ActiveText)'." }
+          if ([int]$result.StaleReloadActivityCount -ne 1) { throw "Expected exactly one stale-tab watchdog refresh activity, got $($result.StaleReloadActivityCount)." }
+          if ([int]$result.ActiveReloadActivityCount -ne 0) { throw "Expected zero active-tab watchdog refreshes, got $($result.ActiveReloadActivityCount)." }
+          if ($result.StaleStillRunning -ne $true -or $result.ActiveStillRunning -ne $true) { throw 'One or both monitor workers stopped before verification.' }
+
+          Write-Host "Verified no-response isolation: stale=$($result.StaleText), active=$($result.ActiveText), staleRefreshes=$($result.StaleReloadActivityCount), activeRefreshes=$($result.ActiveReloadActivityCount)."
