@@ -16,15 +16,16 @@
     <OutputPath>$(MSBuildProjectDirectory)\..\..\Output\Setup\Build\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
-    <RunPackagingTargets Condition="'$(RunPackagingTargets)' == '' AND '$(BuildingSolutionFile)' == 'true'">false</RunPackagingTargets>
     <RunPackagingTargets Condition="'$(RunPackagingTargets)' == ''">true</RunPackagingTargets>
   </PropertyGroup>
 
   <!--
     No ProjectReference to GPTDeskTop or any build helper. Setup creates payload by path.
-    During a full solution build packaging is intentionally skipped because the helper
-    and setup projects would otherwise publish the same application concurrently.
-    Direct Setup builds still create the embedded payload and standalone setup EXE.
+    The solution declares GPTDeskTop as an explicit dependency of this project, so a
+    full solution build completes the application build before Setup starts publishing.
+    GPTDeskTop.Build suppresses its own packaging side effect during solution builds,
+    preventing the historical concurrent-publish race while preserving Build Solution
+    -> standalone Setup behavior.
   -->
   <Target Name="PrepareInstallerPayload" BeforeTargets="PrepareResources" Condition="'$(RunPackagingTargets)' == 'true'">
     <MakeDir Directories="$(PublishDir)" />
