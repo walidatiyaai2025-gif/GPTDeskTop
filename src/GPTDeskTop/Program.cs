@@ -108,8 +108,16 @@ internal static class Program
                 TabStop = false,
                 IsExpanded = runtimeHealthExpanded
             };
+            var supportBundleService = new SupportBundleService(chrome, monitor, database, config);
+            var supportDiagnostics = new SupportDiagnosticsControl(supportBundleService)
+            {
+                Dock = DockStyle.Top,
+                TabStop = false,
+                Visible = runtimeHealthExpanded
+            };
             runtimeHealth.ExpandedChanged += async (_, _) =>
             {
+                supportDiagnostics.Visible = runtimeHealth.IsExpanded;
                 try
                 {
                     await database.SetSettingAsync(
@@ -121,6 +129,8 @@ internal static class Program
                     await ExceptionLogService.LogAsync(ex, "Program.PersistRuntimeHealthState");
                 }
             };
+            mainForm.Controls.Add(supportDiagnostics);
+            mainForm.Controls.SetChildIndex(supportDiagnostics, 0);
             mainForm.Controls.Add(runtimeHealth);
             mainForm.Controls.SetChildIndex(runtimeHealth, 0);
 
