@@ -638,9 +638,22 @@ public sealed class LocalDatabase
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(monitors);
 
+        // Defend the persistence boundary even when a caller bypasses CreatePlan.
+        // This validation intentionally happens before opening a transaction or writing settings.
+        var canonicalImportUrls = new string[monitors.Count];
+        var importedConversationIdentities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < monitors.Count; index++)
+        {
+            var monitor = monitors[index] ?? throw new InvalidOperationException("The configuration import contains a null monitor entry.");
+            var canonicalUrl = NormalizeStableConversationUrl(monitor.Url ?? string.Empty);
+            if (!importedConversationIdentities.Add(canonicalUrl))
+                throw new InvalidOperationException($"Configuration import contains the same logical ChatGPT conversation more than once: '{canonicalUrl}'.");
+            canonicalImportUrls[index] = canonicalUrl;
+        }
+
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
-        using var transaction = connection.BeginTransaction();
+        using var transaction = connection.BeginTransaction(deferred: false);
 
         var settingsApplied = 0;
         var monitorsUpdated = 0;
@@ -661,22 +674,20 @@ public sealed class LocalDatabase
                 settingsApplied++;
             }
 
-            foreach (var monitor in monitors)
+            for (var index = 0; index < monitors.Count; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-
-                var matchingIds = new List<long>(2);
-                await using (var findCommand = connection.CreateCommand())
-                {
-                    findCommand.Transaction = transaction;
-                    findCommand.CommandText = "SELECT Id FROM SavedMonitors WHERE Url=$url ORDER BY Id LIMIT 2;";
-                    findCommand.Parameters.AddWithValue("$url", monitor.Url ?? string.Empty);
-                    await using var reader = await findCommand.ExecuteReaderAsync(cancellationToken);
-                    while (await reader.ReadAsync(cancellationToken)) matchingIds.Add(reader.GetInt64(0));
-                }
+                var monitor = monitors[index];
+                var canonicalUrl = canonicalImportUrls[index];
+                var matchingIds = await FindLogicalConversationOwnerIdsAsync(
+                    connection,
+                    transaction,
+                    canonicalUrl,
+                    maxCount: 2,
+                    cancellationToken);
 
                 if (matchingIds.Count > 1)
-                    throw new InvalidOperationException($"Cannot import monitor '{monitor.Url}' because more than one local monitor has that exact conversation URL.");
+                    throw new InvalidOperationException($"Cannot import monitor '{monitor.Url}' because more than one local monitor owns that logical conversation identity.");
 
                 await using var monitorCommand = connection.CreateCommand();
                 monitorCommand.Transaction = transaction;
@@ -703,7 +714,7 @@ public sealed class LocalDatabase
                             ModelRoutingEnabled,PreferredModel,FallbackModel,CreatedAt,UpdatedAt)
                         VALUES('', $title,$url,$autoReply,$replyDelay,$timer,$enabled,$rotationEnabled,$message,$newChatDelay,$cooldown,$maxRotations,0,$modelRouting,$preferredModel,$fallbackModel,$createdAt,$updatedAt);
                         """;
-                    monitorCommand.Parameters.AddWithValue("$url", monitor.Url ?? string.Empty);
+                    monitorCommand.Parameters.AddWithValue("$url", canonicalUrl);
                     monitorCommand.Parameters.AddWithValue("$createdAt", now);
                     monitorsInserted++;
                 }
@@ -733,6 +744,29 @@ public sealed class LocalDatabase
             try { transaction.Rollback(); } catch { }
             throw;
         }
+    }
+
+    private static async Task<List<long>> FindLogicalConversationOwnerIdsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string targetUrl,
+        int maxCount,
+        CancellationToken cancellationToken)
+    {
+        var ids = new List<long>(Math.Max(1, Math.Min(maxCount, 8)));
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT Id, Url FROM SavedMonitors ORDER BY Id;";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (!ChatGptConversationIdentity.IsSame(reader.GetString(1), targetUrl))
+                continue;
+            ids.Add(reader.GetInt64(0));
+            if (ids.Count >= maxCount)
+                break;
+        }
+        return ids;
     }
 
     public async Task DeleteMonitorAsync(long monitorId, CancellationToken cancellationToken = default)
