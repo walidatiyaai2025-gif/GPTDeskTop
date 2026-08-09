@@ -21,6 +21,7 @@ public sealed class RuntimeHealthUiRegressionTests
         Assert.Contains("AutoScaleMode = AutoScaleMode.Dpi", source, StringComparison.Ordinal);
         Assert.Contains("AccessibleName = \"Runtime health and connection center\"", source, StringComparison.Ordinal);
         Assert.Contains("AccessibleName = \"Refresh runtime health\"", source, StringComparison.Ordinal);
+        Assert.Contains("AccessibleName = \"Repair recovery blocker\"", source, StringComparison.Ordinal);
         Assert.Contains("Height = _expanded ? ExpandedHeight : CollapsedHeight", source, StringComparison.Ordinal);
         Assert.Contains("keyData == Keys.F5", source, StringComparison.Ordinal);
     }
@@ -36,11 +37,25 @@ public sealed class RuntimeHealthUiRegressionTests
         Assert.Contains("ProbeDatabaseAsync", source, StringComparison.Ordinal);
         Assert.Contains("_chrome.GetTabsAsync", source, StringComparison.Ordinal);
         Assert.Contains("_database.GetSavedMonitorsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("_database.GetSettingAsync(\"CrashRecoveryPending\"", source, StringComparison.Ordinal);
         Assert.Contains("RuntimeHealthPresentation.Create", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SetSettingAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SaveMonitorAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("StartMonitorAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("StopMonitorAsync(", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RuntimeHealthSurfacesRecoveryBlockersAndDelegatesMutationToRepairDialog()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "RuntimeHealthControl.cs");
+
+        Assert.Contains("CreateMetricCard(\"Recovery\", _recoveryValue)", source, StringComparison.Ordinal);
+        Assert.Contains("Blocked ({snapshot.InvalidMonitorIdentityCount})", source, StringComparison.Ordinal);
+        Assert.Contains("snapshot.CrashRecoveryPending ? \"Pending\" : \"Clear\"", source, StringComparison.Ordinal);
+        Assert.Contains("new MonitorIdentityRepairForm(_chrome, _database)", source, StringComparison.Ordinal);
+        Assert.Contains("if (form.ShowDialog(FindForm()) != DialogResult.OK) return;", source, StringComparison.Ordinal);
+        Assert.Contains("await RefreshAsync();", source, StringComparison.Ordinal);
     }
 
     [Fact]
