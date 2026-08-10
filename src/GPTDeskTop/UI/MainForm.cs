@@ -38,6 +38,7 @@ public sealed class MainForm : Form
     private readonly Label _monitorsMetricValue = CreateMetricValue("0");
     private readonly Label _runningMetricValue = CreateMetricValue("0");
     private readonly Label _versionLabel = new() { Text = $"GPTDeskTop v{GetAppVersion()}  •  .NET 8  •  Chrome CDP", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold), ForeColor = FluentTheme.Muted };
+    private readonly Font _monitorStatusFont = new("Segoe UI Variable Text", 9F, FontStyle.Bold);
     private readonly ToolTip _toolTip = new() { AutoPopDelay = 8000, InitialDelay = 450, ReshowDelay = 100 };
     private readonly SplitContainer _workspaceSplit = new();
     private readonly SplitContainer _diagnosticsSplit = new();
@@ -423,6 +424,7 @@ public sealed class MainForm : Form
         SetSplitRatio(_workspaceSplit, 0.42);
         SetSplitRatio(_diagnosticsSplit, 0.48);
     }
+
     private async Task RestoreOperatorLayoutAsync()
     {
         try
@@ -601,7 +603,7 @@ public sealed class MainForm : Form
         if (_monitorsGrid.Columns[e.ColumnIndex].DataPropertyName != nameof(SavedMonitor.RuntimeStatus)) return;
         var running = _monitor.IsMonitorRunning(monitor.Id);
         style.ForeColor = running ? FluentTheme.Success : FluentTheme.Muted;
-        style.Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold);
+        style.Font = _monitorStatusFont;
     }
 
     private void FormatHistoryCell(object? sender, DataGridViewCellFormattingEventArgs e)
@@ -1181,6 +1183,7 @@ public sealed class MainForm : Form
     {
         if (_shutdownCompleted)
         {
+            _monitorStatusFont.Dispose();
             _toolTip.Dispose();
             base.OnFormClosing(e);
             return;
