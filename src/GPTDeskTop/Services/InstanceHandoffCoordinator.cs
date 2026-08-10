@@ -131,7 +131,7 @@ public sealed class InstanceHandoffCoordinator : IDisposable
             CancellationToken.None);
     }
 
-    public static async Task<int> ResumeRunningMonitorsAsync(
+    public static async Task<InstanceHandoffResumeReconciliation> ResumeRunningMonitorsAsync(
         InstanceHandoffOffer offer,
         ChromeDevToolsService chrome,
         ChatGptMonitorService monitorService,
@@ -146,8 +146,43 @@ public sealed class InstanceHandoffCoordinator : IDisposable
         var requestedIds = offer.RunningMonitorIds
             .Where(id => id > 0)
             .Distinct()
-            .ToHashSet();
-        if (requestedIds.Count == 0) return 0;
+            .OrderBy(id => id)
+            .ToArray();
+        if (requestedIds.Length == 0)
+            return new InstanceHandoffResumeReconciliation(Array.Empty<InstanceHandoffResumeOutcome>());
+
+        var savedById = (await database.GetSavedMonitorsAsync(cancellationToken).ConfigureAwait(false))
+            .ToDictionary(saved => saved.Id);
+        var outcomes = new List<InstanceHandoffResumeOutcome>(requestedIds.Length);
+        var pendingIds = new List<long>(requestedIds.Length);
+
+        foreach (var monitorId in requestedIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!savedById.TryGetValue(monitorId, out var savedMonitor))
+            {
+                outcomes.Add(new InstanceHandoffResumeOutcome(monitorId, "Incomplete", "MissingSavedMonitor"));
+                continue;
+            }
+
+            if (!savedMonitor.Enabled)
+            {
+                outcomes.Add(new InstanceHandoffResumeOutcome(monitorId, "Incomplete", "Disabled"));
+                continue;
+            }
+
+            if (!RuntimeHealthPresentation.IsChatGptConversationUrl(savedMonitor.Url))
+            {
+                outcomes.Add(new InstanceHandoffResumeOutcome(monitorId, "Incomplete", "InvalidConversationIdentity"));
+                continue;
+            }
+
+            pendingIds.Add(monitorId);
+        }
+
+        if (pendingIds.Count == 0)
+            return new InstanceHandoffResumeReconciliation(outcomes.OrderBy(outcome => outcome.MonitorId).ToArray());
 
         List<ChromeTab>? tabs = null;
         Exception? lastChromeError = null;
@@ -168,33 +203,42 @@ public sealed class InstanceHandoffCoordinator : IDisposable
         }
 
         if (tabs is null)
-            throw new InvalidOperationException("Monitor Chrome did not become reachable during instance handoff resume.", lastChromeError);
+        {
+            if (lastChromeError is not null)
+                ExceptionLogService.Log(lastChromeError, "InstanceHandoff.ResumeChromeUnavailable");
 
-        var savedMonitors = await database.GetSavedMonitorsAsync(cancellationToken).ConfigureAwait(false);
-        var resumed = 0;
+            outcomes.AddRange(pendingIds.Select(monitorId =>
+                new InstanceHandoffResumeOutcome(monitorId, "Incomplete", "ChromeUnavailable")));
+            return new InstanceHandoffResumeReconciliation(outcomes.OrderBy(outcome => outcome.MonitorId).ToArray());
+        }
 
-        foreach (var savedMonitor in savedMonitors.Where(saved => requestedIds.Contains(saved.Id)).OrderBy(saved => saved.Id))
+        foreach (var monitorId in pendingIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!savedMonitor.Enabled) continue;
-            if (!RuntimeHealthPresentation.IsChatGptConversationUrl(savedMonitor.Url)) continue;
-
+            var savedMonitor = savedById[monitorId];
             var resolution = SavedMonitorTabResolver.Resolve(savedMonitor, tabs);
             var tab = resolution.Tab;
-            if (tab is null) continue;
+            if (tab is null)
+            {
+                outcomes.Add(new InstanceHandoffResumeOutcome(monitorId, "Incomplete", "LiveTabUnresolved"));
+                continue;
+            }
 
             try
             {
                 await monitorService.StartMonitorAsync(savedMonitor, tab).ConfigureAwait(false);
-                if (monitorService.IsMonitorRunning(savedMonitor.Id)) resumed++;
+                outcomes.Add(monitorService.IsMonitorRunning(monitorId)
+                    ? new InstanceHandoffResumeOutcome(monitorId, "Resumed", "Monitor worker is running after takeover.")
+                    : new InstanceHandoffResumeOutcome(monitorId, "Incomplete", "NotRunningAfterStart"));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 ExceptionLogService.Log(ex, "InstanceHandoff.ResumeMonitor", savedMonitor.Id, savedMonitor.TabId, savedMonitor.Title);
+                outcomes.Add(new InstanceHandoffResumeOutcome(monitorId, "Incomplete", "StartFailed"));
             }
         }
 
-        return resumed;
+        return new InstanceHandoffResumeReconciliation(outcomes.OrderBy(outcome => outcome.MonitorId).ToArray());
     }
 
     private async Task RunServerAsync(
