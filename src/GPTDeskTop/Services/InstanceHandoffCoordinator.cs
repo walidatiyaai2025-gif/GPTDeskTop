@@ -3,6 +3,7 @@ using System.Text.Json;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
+using GPTDeskTop.Services.DevelopmentTaskEngine;
 
 namespace GPTDeskTop.Services;
 
