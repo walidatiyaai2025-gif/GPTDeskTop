@@ -1,5 +1,9 @@
 # Development Runtime UI Status
 
+## Current Task
+
+- **UI-006 / Issue #105 — Home status font resource lifecycle:** implementation is complete on `agent/ui-006-status-font-cache`; the Saved Monitor Running/Stopped formatter now reuses owned cached fonts instead of allocating a new GDI-backed `Font` on every formatting pass, and the cache is disposed with `HomeMetricsService`. Merge remains blocked on the complete repository CI gate set.
+
 ## Completed
 
 - Production `DevelopmentTaskRuntimeBinding` owns the development engine and dynamic saved-monitor delivery coordinator.
@@ -29,6 +33,6 @@
 
 ## QA Status
 
-The runtime/UI QA board is complete. The dedicated QA-005 real Windows/Chrome/CDP hidden-window endurance run completed successfully for **610.6930764 seconds** with **606 successful polls and zero failures**, while every-push CI retains the shorter 30-second smoke test.
+The v1.8.0 runtime/UI baseline remains release-ready. The dedicated QA-005 real Windows/Chrome/CDP hidden-window endurance run completed successfully for **610.6930764 seconds** with **606 successful polls and zero failures**, while every-push CI retains the shorter 30-second smoke test.
 
-The v1.8.0 runtime/UI work is therefore release-ready. Further changes should be driven by a new feature/fix task or an explicit release operation, not by repeating the completed runtime UI gates.
+UI-006 is a post-baseline maintenance fix and is not considered complete until its exact PR head passes the full established CI gate set. Further changes should continue to be driven by tracked feature/fix tasks or an explicit release operation, not by repeating completed runtime UI gates.
