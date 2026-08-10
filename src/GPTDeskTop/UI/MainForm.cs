@@ -952,12 +952,16 @@ public sealed class MainForm : Form
         }
         if (!MonitorSettingsForm.Edit(this, _selectedMonitor)) return;
         var id = _selectedMonitor.Id;
-        var updated = await _database.UpdateMonitorConfigurationAsync(_selectedMonitor);
+        var updated = await _monitor.UpdateMonitorConfigurationAsync(_selectedMonitor);
         if (!updated)
         {
-            AppendActivity($"Monitor #{id}: settings were not saved because the monitor no longer exists.");
+            var startedBeforeSave = _monitor.IsMonitorRunning(id);
             _selectedMonitor = null;
             await RefreshMonitorsAsync();
+            if (_monitors.Any(monitor => monitor.Id == id)) SelectMonitorRow(id);
+            AppendActivity(startedBeforeSave
+                ? $"Monitor #{id}: settings were not saved because the monitor started before the save could acquire its lifecycle gate. Stop it and retry the edit."
+                : $"Monitor #{id}: settings were not saved because the monitor no longer exists.");
             return;
         }
         await RefreshMonitorsAsync();
