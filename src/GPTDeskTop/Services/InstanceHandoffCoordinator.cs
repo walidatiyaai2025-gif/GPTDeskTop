@@ -33,6 +33,7 @@ public sealed class InstanceHandoffCoordinator : IDisposable
     private const string MutexName = @"Local\GPTDeskTop.SingleInstance.v1";
     private const string PipeName = "GPTDeskTop.InstanceHandoff.v1";
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan OrphanedOwnerTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan OwnershipTimeout = TimeSpan.FromSeconds(25);
 
     private readonly Mutex _ownershipMutex;
@@ -68,6 +69,20 @@ public sealed class InstanceHandoffCoordinator : IDisposable
             var offer = RequestTakeover();
             if (offer is null)
             {
+                // Preserve the existing fatal-restart path: the outgoing process can disappear
+                // between mutex discovery and pipe negotiation. In that case only, wait briefly
+                // for the abandoned/released mutex and become primary. If the prior process is
+                // still alive, fail closed instead of ever creating two active monitor runtimes.
+                var orphanedOwnerMutex = new Mutex(initiallyOwned: false, MutexName);
+                if (WaitForMutex(orphanedOwnerMutex, OrphanedOwnerTimeout))
+                {
+                    return new InstanceHandoffStartupResult(
+                        new InstanceHandoffCoordinator(orphanedOwnerMutex, ownsMutex: true),
+                        null,
+                        null);
+                }
+
+                orphanedOwnerMutex.Dispose();
                 return new InstanceHandoffStartupResult(
                     null,
                     null,
@@ -101,7 +116,7 @@ public sealed class InstanceHandoffCoordinator : IDisposable
         Func<CancellationToken, Task<InstanceHandoffState>> stateFactory,
         Func<Task> committedTakeoverShutdown)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_disposed) throw new ObjectDisposedException(nameof(InstanceHandoffCoordinator));
         ArgumentNullException.ThrowIfNull(stateFactory);
         ArgumentNullException.ThrowIfNull(committedTakeoverShutdown);
         if (_serverTask is not null) throw new InvalidOperationException("The instance handoff server has already been started.");
@@ -278,7 +293,6 @@ public sealed class InstanceHandoffCoordinator : IDisposable
     private static InstanceHandoffOffer? RequestTakeover()
     {
         var deadline = DateTimeOffset.UtcNow + ConnectTimeout;
-        Exception? lastError = null;
 
         while (DateTimeOffset.UtcNow < deadline)
         {
@@ -308,15 +322,12 @@ public sealed class InstanceHandoffCoordinator : IDisposable
                 writer.WriteLine(JsonSerializer.Serialize(new InstanceHandoffAck(request.RequestId)));
                 return offer;
             }
-            catch (Exception ex)
+            catch
             {
-                lastError = ex;
                 Thread.Sleep(200);
             }
         }
 
-        if (lastError is not null)
-            ExceptionLogService.Log(lastError, "InstanceHandoff.ClientConnect");
         return null;
     }
 
