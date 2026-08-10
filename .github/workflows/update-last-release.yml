@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: update-last-release-main
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   publish-stable-exe:

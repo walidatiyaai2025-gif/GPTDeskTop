@@ -28,6 +28,8 @@ public sealed class LastReleasePublisherRegressionTests
         Assert.Contains("'Development Message Reload'", workflow, StringComparison.Ordinal);
         Assert.Contains("head_sha=$env:TARGET_SHA", workflow, StringComparison.Ordinal);
         Assert.Contains("$run.conclusion -ne 'success'", workflow, StringComparison.Ordinal);
+        Assert.Contains("group: update-last-release-main", workflow, StringComparison.Ordinal);
+        Assert.Contains("cancel-in-progress: true", workflow, StringComparison.Ordinal);
     }
 
     [Fact]
