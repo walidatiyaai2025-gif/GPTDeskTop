@@ -64,7 +64,7 @@ internal static class Program
             using var notifications = new TrayNotificationService(monitor, database);
             notifications.InitializeAsync().GetAwaiter().GetResult();
 
-            var mainForm = new MainForm(chrome, monitor, database);
+            var mainForm = new MainForm(chrome, monitor, database, notifications.ReloadSettingsAsync);
 
             // Production development-plan runtime: the dashboard and lifecycle controls
             // are bound to dynamic saved-monitor resolution before the UI is shown.
