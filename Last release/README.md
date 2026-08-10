@@ -1,6 +1,6 @@
 # Last release
 
-`GPTDeskTop.exe` is the latest Windows x64 application build that passed the complete stable CI gate set on `main`.
+`GPTDeskTop.exe` is the latest verified Windows x64 Release application that passed all eight required stable CI workflows for the same `main` source commit.
 
 This folder is automation-managed. Do not manually replace the executable.
 
