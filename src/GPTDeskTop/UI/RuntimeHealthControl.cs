@@ -52,6 +52,7 @@ public sealed class RuntimeHealthControl : UserControl
     private List<SavedMonitor> _savedMonitors = new();
     private bool _expanded;
     private bool _loading;
+    private bool _refreshRequested;
     private bool _recoveryRetrying;
 
     public event EventHandler? ExpandedChanged;
@@ -264,6 +265,18 @@ public sealed class RuntimeHealthControl : UserControl
         _monitor.RunningStateChanged += OnRunningStateChanged;
     }
 
+    private void RequestRefresh()
+    {
+        if (IsDisposed || Disposing) return;
+        if (_loading)
+        {
+            _refreshRequested = true;
+            return;
+        }
+
+        _ = RefreshAsync();
+    }
+
     private async Task RefreshAsync()
     {
         if (_loading || IsDisposed || Disposing) return;
@@ -335,6 +348,11 @@ public sealed class RuntimeHealthControl : UserControl
         {
             _loading = false;
             _refreshButton.Enabled = true;
+            if (_refreshRequested)
+            {
+                _refreshRequested = false;
+                RequestRefresh();
+            }
         }
     }
 
@@ -506,7 +524,11 @@ public sealed class RuntimeHealthControl : UserControl
         if (!string.IsNullOrWhiteSpace(tooltip)) _toolTip.SetToolTip(label, tooltip);
     }
 
-    private void OnRunningStateChanged() => Ui(UpdateRunningMonitorMetric);
+    private void OnRunningStateChanged() => Ui(() =>
+    {
+        UpdateRunningMonitorMetric();
+        RequestRefresh();
+    });
 
     private void UpdateRunningMonitorMetric()
     {
