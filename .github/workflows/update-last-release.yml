@@ -130,7 +130,21 @@ jobs:
         shell: pwsh
         run: |
           $publishDir = Join-Path $env:RUNNER_TEMP 'gptdesktop-stable-publish'
-          dotnet publish src/GPTDeskTop/GPTDeskTop.csproj `
+          $projectPath = 'src/GPTDeskTop/GPTDeskTop.csproj'
+          [xml]$project = Get-Content $projectPath
+          $productVersion = [string]($project.Project.PropertyGroup.Version | Select-Object -First 1)
+          if ([string]::IsNullOrWhiteSpace($productVersion)) {
+            throw 'GPTDeskTop.csproj does not define a product Version.'
+          }
+
+          $source = '${{ steps.source.outputs.target_sha }}'
+          if ($source.Length -lt 8) {
+            throw "Stable source SHA is too short to create a build identity: $source"
+          }
+          $buildId = $source.Substring(0, 8).ToLowerInvariant()
+          $informationalVersion = "$productVersion+stable.$buildId"
+
+          dotnet publish $projectPath `
             --configuration Release `
             --runtime win-x64 `
             --self-contained true `
@@ -139,11 +153,18 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:DebugType=None `
             -p:DebugSymbols=false `
+            "-p:InformationalVersion=$informationalVersion" `
             --output $publishDir
 
           $exe = Join-Path $publishDir 'GPTDeskTop.exe'
           if (-not (Test-Path $exe)) {
             throw "Stable publish did not produce $exe"
+          }
+
+          $embeddedProductVersion = (Get-Item $exe).VersionInfo.ProductVersion
+          if ([string]::IsNullOrWhiteSpace($embeddedProductVersion) -or
+              $embeddedProductVersion -notmatch [regex]::Escape("stable.$buildId")) {
+            throw "Stable publish did not embed build identity stable.$buildId. ProductVersion='$embeddedProductVersion'"
           }
 
           $size = (Get-Item $exe).Length
@@ -160,13 +181,14 @@ jobs:
           $hash = (Get-FileHash 'Last release/GPTDeskTop.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           $version = (Get-Item 'Last release/GPTDeskTop.exe').VersionInfo.FileVersion
           $generated = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
-          $source = '${{ steps.source.outputs.target_sha }}'
 
           @(
             'GPTDeskTop — Latest Stable Application',
             '',
             'File: GPTDeskTop.exe',
             "Version: $version",
+            "Stable build ID: $buildId",
+            "Informational version: $embeddedProductVersion",
             'Platform: Windows x64',
             'Configuration: Release / self-contained / single-file / compressed',
             "Source commit: $source",
@@ -180,12 +202,15 @@ jobs:
             '',
             '`GPTDeskTop.exe` is the latest verified Windows x64 Release application that passed all eight required stable CI workflows for the same `main` source commit.',
             '',
+            'The stable build ID shown in the running window title matches the source identity recorded in `RELEASE.txt`.',
+            '',
             'This folder is automation-managed. Do not manually replace the executable.',
             '',
-            'See `RELEASE.txt` for the source commit, version, generation time and SHA-256 checksum.'
+            'See `RELEASE.txt` for the source commit, build ID, version, generation time and SHA-256 checksum.'
           ) | Set-Content 'Last release/README.md' -Encoding utf8
 
           Write-Host "Prepared Last release/GPTDeskTop.exe ($size bytes)"
+          Write-Host "Stable build ID: $buildId"
           Write-Host "SHA-256: $hash"
 
       - name: Commit latest stable executable to main
