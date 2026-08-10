@@ -337,7 +337,11 @@ internal static class NoResponseWatchdogProcessProbe
 
     private sealed class ConversationIdentityChromeListHandler : DelegatingHandler
     {
-        private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+        private static readonly JsonSerializerOptions JsonOptions = new()
+        {
+            PropertyNameCaseInsensitive = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
         private readonly object _sync = new();
         private readonly Dictionary<string, string> _conversationUrls = new(StringComparer.Ordinal);
 
@@ -374,7 +378,7 @@ internal static class NoResponseWatchdogProcessProbe
             }
 
             response.Content.Dispose();
-            response.Content = new StringContent(JsonSerializer.Serialize(tabs), Encoding.UTF8, "application/json");
+            response.Content = new StringContent(JsonSerializer.Serialize(tabs, JsonOptions), Encoding.UTF8, "application/json");
             return response;
         }
     }
