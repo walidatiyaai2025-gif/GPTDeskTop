@@ -33,13 +33,14 @@ public sealed class LastReleasePublisherRegressionTests
     }
 
     [Fact]
-    public void PublisherProducesSingleFileWindowsX64ExeAndGuardsMainFromStaleOverwrite()
+    public void PublisherProducesCompressedSingleFileWindowsX64ExeAndGuardsMainFromStaleOverwrite()
     {
         var workflow = ReadSource(".github", "workflows", "update-last-release.yml");
 
         Assert.Contains("--runtime win-x64", workflow, StringComparison.Ordinal);
         Assert.Contains("--self-contained true", workflow, StringComparison.Ordinal);
         Assert.Contains("-p:PublishSingleFile=true", workflow, StringComparison.Ordinal);
+        Assert.Contains("-p:EnableCompressionInSingleFile=true", workflow, StringComparison.Ordinal);
         Assert.Contains("Last release/GPTDeskTop.exe", workflow, StringComparison.Ordinal);
         Assert.Contains("Last release/RELEASE.txt", workflow, StringComparison.Ordinal);
         Assert.Contains("Get-FileHash 'Last release/GPTDeskTop.exe' -Algorithm SHA256", workflow, StringComparison.Ordinal);
