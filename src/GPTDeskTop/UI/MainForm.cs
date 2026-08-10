@@ -10,6 +10,7 @@ public sealed class MainForm : Form
     private readonly ChromeDevToolsService _chrome;
     private readonly ChatGptMonitorService _monitor;
     private readonly LocalDatabase _database;
+    private readonly Func<Task>? _reloadNotificationSettings;
 
     private readonly Button _launchChromeButton = new() { Text = "Launch Chrome", AutoSize = true };
     private readonly Button _hideChromeButton = new() { Text = "Hide Chrome", AutoSize = true };
@@ -52,11 +53,12 @@ public sealed class MainForm : Form
     private bool _shutdownRequested;
     private bool _shutdownCompleted;
 
-    public MainForm(ChromeDevToolsService chrome, ChatGptMonitorService monitor, LocalDatabase database)
+    public MainForm(ChromeDevToolsService chrome, ChatGptMonitorService monitor, LocalDatabase database, Func<Task>? reloadNotificationSettings = null)
     {
         _chrome = chrome;
         _monitor = monitor;
         _database = database;
+        _reloadNotificationSettings = reloadNotificationSettings;
         Text = $"GPTDeskTop v{GetAppVersion()}";
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.Manual;
@@ -751,6 +753,18 @@ public sealed class MainForm : Form
     {
         using var form = new SettingsForm(_database, () => _monitor.IsRunning);
         if (form.ShowDialog(this) != DialogResult.OK) return;
+        if (_reloadNotificationSettings is not null)
+        {
+            try
+            {
+                await _reloadNotificationSettings();
+            }
+            catch (Exception ex)
+            {
+                ExceptionLogService.Log(ex, "MainForm.ReloadNotificationSettings");
+                AppendActivity($"Notification settings reload warning: {ex.Message}");
+            }
+        }
         await RefreshMonitorsAsync();
         if (_selectedMonitor is null)
             _autoReplyBox.Text = await _database.GetSettingAsync("DefaultAutoReply") ?? "كمل";
