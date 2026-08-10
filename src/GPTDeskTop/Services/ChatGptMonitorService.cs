@@ -13,7 +13,7 @@ public sealed class ChatGptMonitorService
     private readonly ModelRoutingService _modelRouting = new();
     private readonly object _sync = new();
     private readonly Dictionary<long, MonitorRuntime> _running = new();
-    private readonly Dictionary<long, SemaphoreSlim> _lifecycleGates = new();
+    private readonly Dictionary<long, LifecycleGateEntry> _lifecycleGates = new();
 
     public event Action<long, string>? Activity;
     public event Action? HistoryChanged;
@@ -40,81 +40,57 @@ public sealed class ChatGptMonitorService
         if (!ChatGptConversationIdentity.IsSame(monitor.Url, tab.Url))
             throw new InvalidOperationException("The selected Chrome target no longer represents the saved ChatGPT conversation identity.");
 
-        var lifecycleGate = GetLifecycleGate(monitor.Id);
-        await lifecycleGate.WaitAsync();
-        try
+        using var lifecycleLease = await AcquireLifecycleGateAsync(monitor.Id);
+        var savedMonitors = await _database.GetSavedMonitorsAsync();
+        var persistedMonitor = savedMonitors.FirstOrDefault(candidate => candidate.Id == monitor.Id);
+        if (persistedMonitor is null)
         {
-            var savedMonitors = await _database.GetSavedMonitorsAsync();
-            var persistedMonitor = savedMonitors.FirstOrDefault(candidate => candidate.Id == monitor.Id);
-            if (persistedMonitor is null)
-            {
-                Activity?.Invoke(monitor.Id, $"Monitor #{monitor.Id} no longer exists in SQLite. Stale Start was ignored.");
-                return;
-            }
-            if (!ChatGptConversationIdentity.IsSame(persistedMonitor.Url, monitor.Url))
-            {
-                Activity?.Invoke(monitor.Id, $"Monitor #{monitor.Id} conversation identity changed before Start. Refresh the saved monitor before retrying.");
-                return;
-            }
-            if (MonitorConversationOwnership.IsDuplicateOwner(monitor.Id, savedMonitors))
-            {
-                const string message = "Saved monitor conversation ownership is ambiguous. Resolve duplicate monitor rows before starting this monitor.";
-                await _database.AddLogAsync(
-                    "System",
-                    string.Empty,
-                    message,
-                    "MonitorStartDuplicateConversationOwnership",
-                    monitor.Id,
-                    monitor.TabId,
-                    monitor.Title);
-                HistoryChanged?.Invoke();
-                Activity?.Invoke(monitor.Id, message);
-                return;
-            }
+            Activity?.Invoke(monitor.Id, $"Monitor #{monitor.Id} no longer exists in SQLite. Stale Start was ignored.");
+            return;
+        }
+        if (!ChatGptConversationIdentity.IsSame(persistedMonitor.Url, monitor.Url))
+        {
+            Activity?.Invoke(monitor.Id, $"Monitor #{monitor.Id} conversation identity changed before Start. Refresh the saved monitor before retrying.");
+            return;
+        }
+        if (MonitorConversationOwnership.IsDuplicateOwner(monitor.Id, savedMonitors))
+        {
+            const string message = "Saved monitor conversation ownership is ambiguous. Resolve duplicate monitor rows before starting this monitor.";
+            await _database.AddLogAsync(
+                "System",
+                string.Empty,
+                message,
+                "MonitorStartDuplicateConversationOwnership",
+                monitor.Id,
+                monitor.TabId,
+                monitor.Title);
+            HistoryChanged?.Invoke();
+            Activity?.Invoke(monitor.Id, message);
+            return;
+        }
 
-            lock (_sync)
-            {
-                if (_running.ContainsKey(monitor.Id)) return;
-                var cts = new CancellationTokenSource();
-                var worker = Task.Run(() => MonitorLoopAsync(monitor, tab, cts.Token));
-                _running.Add(monitor.Id, new MonitorRuntime(cts, worker));
-            }
-            Activity?.Invoke(monitor.Id, $"Started: {monitor.Title}");
-            RunningStateChanged?.Invoke();
-        }
-        finally
+        lock (_sync)
         {
-            lifecycleGate.Release();
+            if (_running.ContainsKey(monitor.Id)) return;
+            var cts = new CancellationTokenSource();
+            var worker = Task.Run(() => MonitorLoopAsync(monitor, tab, cts.Token));
+            _running.Add(monitor.Id, new MonitorRuntime(cts, worker));
         }
+        Activity?.Invoke(monitor.Id, $"Started: {monitor.Title}");
+        RunningStateChanged?.Invoke();
     }
 
     public async Task StopMonitorAsync(long monitorId)
     {
-        var lifecycleGate = GetLifecycleGate(monitorId);
-        await lifecycleGate.WaitAsync();
-        try
-        {
-            await StopMonitorCoreAsync(monitorId);
-        }
-        finally
-        {
-            lifecycleGate.Release();
-        }
+        using var lifecycleLease = await AcquireLifecycleGateAsync(monitorId);
+        await StopMonitorCoreAsync(monitorId);
     }
 
     public async Task DeleteMonitorAsync(long monitorId)
     {
-        var lifecycleGate = GetLifecycleGate(monitorId);
-        await lifecycleGate.WaitAsync();
-        try
-        {
-            await StopMonitorCoreAsync(monitorId);
-            await _database.DeleteMonitorAsync(monitorId);
-        }
-        finally
-        {
-            lifecycleGate.Release();
-        }
+        using var lifecycleLease = await AcquireLifecycleGateAsync(monitorId);
+        await StopMonitorCoreAsync(monitorId);
+        await _database.DeleteMonitorAsync(monitorId);
     }
 
     private async Task StopMonitorCoreAsync(long monitorId)
@@ -153,15 +129,56 @@ public sealed class ChatGptMonitorService
 
     public async Task StopAllAsync() { long[] ids; lock (_sync) ids = _running.Keys.ToArray(); await Task.WhenAll(ids.Select(StopMonitorAsync)); }
 
-    private SemaphoreSlim GetLifecycleGate(long monitorId)
+    private async Task<LifecycleGateLease> AcquireLifecycleGateAsync(long monitorId)
     {
+        LifecycleGateEntry entry;
         lock (_sync)
         {
-            if (_lifecycleGates.TryGetValue(monitorId, out var existing)) return existing;
-            var created = new SemaphoreSlim(1, 1);
-            _lifecycleGates.Add(monitorId, created);
-            return created;
+            if (!_lifecycleGates.TryGetValue(monitorId, out entry!))
+            {
+                entry = new LifecycleGateEntry();
+                _lifecycleGates.Add(monitorId, entry);
+            }
+            entry.ReferenceCount++;
         }
+
+        try
+        {
+            await entry.Gate.WaitAsync();
+            return new LifecycleGateLease(this, monitorId, entry);
+        }
+        catch
+        {
+            ReleaseLifecycleGateReference(monitorId, entry);
+            throw;
+        }
+    }
+
+    private void ReleaseLifecycleGate(long monitorId, LifecycleGateEntry entry)
+    {
+        entry.Gate.Release();
+        ReleaseLifecycleGateReference(monitorId, entry);
+    }
+
+    private void ReleaseLifecycleGateReference(long monitorId, LifecycleGateEntry entry)
+    {
+        SemaphoreSlim? gateToDispose = null;
+        lock (_sync)
+        {
+            if (entry.ReferenceCount <= 0)
+                throw new InvalidOperationException("Lifecycle gate reference count underflow.");
+
+            entry.ReferenceCount--;
+            if (entry.ReferenceCount == 0
+                && _lifecycleGates.TryGetValue(monitorId, out var current)
+                && ReferenceEquals(current, entry))
+            {
+                _lifecycleGates.Remove(monitorId);
+                gateToDispose = entry.Gate;
+            }
+        }
+
+        gateToDispose?.Dispose();
     }
 
     private async Task MonitorLoopAsync(SavedMonitor monitor, ChromeTab tab, CancellationToken cancellationToken)
@@ -547,6 +564,33 @@ public sealed class ChatGptMonitorService
     private static string GetEffectiveResponse(ChatPageState state) => !string.IsNullOrWhiteSpace(state.ErrorText) ? state.ErrorText.Trim() : state.LastAssistantText.Trim();
     private static bool IsDeliveryTimeout(string text) => text.Contains("message delivery timed out", StringComparison.OrdinalIgnoreCase);
     private static bool IsConversationContextLimit(string text) { if (string.IsNullOrWhiteSpace(text)) return false; string[] markers = { "conversation is too long", "conversation is too large", "context length", "context window", "maximum context", "conversation limit", "start a new chat", "this conversation has reached", "reached the maximum length", "المحادثة طويلة جدًا", "طول المحادثة", "حد المحادثة", "ابدأ محادثة جديدة" }; return markers.Any(marker => text.Contains(marker, StringComparison.OrdinalIgnoreCase)); }
+
+    private sealed class LifecycleGateEntry
+    {
+        public SemaphoreSlim Gate { get; } = new(1, 1);
+        public int ReferenceCount { get; set; }
+    }
+
+    private sealed class LifecycleGateLease : IDisposable
+    {
+        private readonly ChatGptMonitorService _owner;
+        private readonly long _monitorId;
+        private readonly LifecycleGateEntry _entry;
+        private int _disposed;
+
+        public LifecycleGateLease(ChatGptMonitorService owner, long monitorId, LifecycleGateEntry entry)
+        {
+            _owner = owner;
+            _monitorId = monitorId;
+            _entry = entry;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            _owner.ReleaseLifecycleGate(_monitorId, _entry);
+        }
+    }
 
     private sealed class MonitorRuntime
     {

@@ -60,19 +60,19 @@ public sealed class MonitorDeletionLifecycleTests
         var delete = Slice(serviceSource, "public async Task DeleteMonitorAsync", "private async Task StopMonitorCoreAsync");
         var stopCore = Slice(serviceSource, "private async Task StopMonitorCoreAsync", "public async Task StopAllAsync");
 
-        Assert.Contains("GetLifecycleGate(monitor.Id)", start, StringComparison.Ordinal);
+        Assert.Contains("AcquireLifecycleGateAsync(monitor.Id)", start, StringComparison.Ordinal);
         Assert.Contains("GetSavedMonitorsAsync", start, StringComparison.Ordinal);
         Assert.Contains("candidate.Id == monitor.Id", start, StringComparison.Ordinal);
         Assert.Contains("ChatGptConversationIdentity.IsSame(persistedMonitor.Url, monitor.Url)", start, StringComparison.Ordinal);
         Assert.True(start.IndexOf("persistedMonitor is null", StringComparison.Ordinal) < start.IndexOf("_running.Add", StringComparison.Ordinal));
 
-        Assert.Contains("GetLifecycleGate(monitorId)", stop, StringComparison.Ordinal);
+        Assert.Contains("AcquireLifecycleGateAsync(monitorId)", stop, StringComparison.Ordinal);
         Assert.Contains("await StopMonitorCoreAsync(monitorId);", stop, StringComparison.Ordinal);
-        Assert.Contains("GetLifecycleGate(monitorId)", delete, StringComparison.Ordinal);
+        Assert.Contains("AcquireLifecycleGateAsync(monitorId)", delete, StringComparison.Ordinal);
+        var leaseIndex = delete.IndexOf("using var lifecycleLease = await AcquireLifecycleGateAsync(monitorId);", StringComparison.Ordinal);
         var deleteStopIndex = delete.IndexOf("await StopMonitorCoreAsync(monitorId);", StringComparison.Ordinal);
         var persistedDeleteIndex = delete.IndexOf("await _database.DeleteMonitorAsync(monitorId);", StringComparison.Ordinal);
-        var releaseIndex = delete.IndexOf("lifecycleGate.Release();", StringComparison.Ordinal);
-        Assert.True(deleteStopIndex >= 0 && persistedDeleteIndex > deleteStopIndex && releaseIndex > persistedDeleteIndex);
+        Assert.True(leaseIndex >= 0 && deleteStopIndex > leaseIndex && persistedDeleteIndex > deleteStopIndex);
 
         Assert.Contains("runtime.StopOwnsCleanup = true;", stopCore, StringComparison.Ordinal);
         Assert.Contains("ReferenceEquals(current, runtime)", stopCore, StringComparison.Ordinal);
