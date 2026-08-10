@@ -2,11 +2,11 @@ GPTDeskTop — Latest Stable Application
 
 File: GPTDeskTop.exe
 Version: 1.8.0.0
-Stable build ID: 8a0ebe2e
-Informational version: 1.8.0+stable.8a0ebe2e.8a0ebe2e357a29c47fac91001e934803742cfb13
+Stable build ID: 71ffef28
+Informational version: 1.8.0+stable.71ffef28.71ffef282e1ec8be664886d1d60d7d2af238c506
 Platform: Windows x64
 Configuration: Release / self-contained / single-file / compressed
-Source commit: 8a0ebe2e357a29c47fac91001e934803742cfb13
-Generated UTC: 2026-08-10T08:37:29Z
+Source commit: 71ffef282e1ec8be664886d1d60d7d2af238c506
+Generated UTC: 2026-08-10T08:48:48Z
 Validation: 8/8 required GitHub Actions workflows passed for the same source commit
-SHA-256: a9ca7d0bd07b7cd7b3fd83ef84b93c652512f6ee4536146b9c1b5b39afe32d62
+SHA-256: 0080f04d3573e96411f3d734de772abc4c48635d1be2f7fcc892e7330cbdf3cc
