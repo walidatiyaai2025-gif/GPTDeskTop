@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Data;
@@ -74,7 +75,8 @@ internal static class NoResponseWatchdogProcessProbe
             DelayAfterSendMilliseconds = 250
         };
 
-        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        var identityHandler = new ConversationIdentityChromeListHandler();
+        using var httpClient = new HttpClient(identityHandler) { Timeout = TimeSpan.FromSeconds(5) };
         var chrome = new ChromeDevToolsService(httpClient, chromeConfig);
         var database = new LocalDatabase(Path.Combine(probeRoot, "passive-wait.db"));
         await database.InitializeAsync().ConfigureAwait(false);
@@ -97,8 +99,13 @@ internal static class NoResponseWatchdogProcessProbe
             var slowPhysicalTab = await WaitForTabAsync(chrome, chromeProcess, slowUrl).ConfigureAwait(false);
             var errorPhysicalTab = await chrome.CreateTabAsync(errorUrl).ConfigureAwait(false);
 
-            var slowTab = WithConversationIdentity(slowPhysicalTab, "https://chatgpt.com/c/qa-passive-wait-slow");
-            var errorTab = WithConversationIdentity(errorPhysicalTab, "https://chatgpt.com/c/qa-passive-wait-error");
+            const string slowConversationUrl = "https://chatgpt.com/c/qa-passive-wait-slow";
+            const string errorConversationUrl = "https://chatgpt.com/c/qa-passive-wait-error";
+            identityHandler.Map(slowPhysicalTab.Id, slowConversationUrl);
+            identityHandler.Map(errorPhysicalTab.Id, errorConversationUrl);
+
+            var slowTab = WithConversationIdentity(slowPhysicalTab, slowConversationUrl);
+            var errorTab = WithConversationIdentity(errorPhysicalTab, errorConversationUrl);
 
             var slowMonitor = await SaveMonitorAsync(database, "QA slow thinking tab", slowTab).ConfigureAwait(false);
             var errorMonitor = await SaveMonitorAsync(database, "QA explicit error tab", errorTab).ConfigureAwait(false);
@@ -321,6 +328,50 @@ internal static class NoResponseWatchdogProcessProbe
         var temporary = path + ".tmp";
         await File.WriteAllTextAsync(temporary, json).ConfigureAwait(false);
         File.Move(temporary, path, true);
+    }
+
+    private sealed class ConversationIdentityChromeListHandler : DelegatingHandler
+    {
+        private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+        private readonly object _sync = new();
+        private readonly Dictionary<string, string> _conversationUrls = new(StringComparer.Ordinal);
+
+        public ConversationIdentityChromeListHandler()
+            : base(new HttpClientHandler())
+        {
+        }
+
+        public void Map(string targetId, string conversationUrl)
+        {
+            lock (_sync)
+                _conversationUrls[targetId] = conversationUrl;
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode ||
+                !string.Equals(request.RequestUri?.AbsolutePath, "/json/list", StringComparison.OrdinalIgnoreCase))
+                return response;
+
+            var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var tabs = JsonSerializer.Deserialize<List<ChromeTab>>(json, JsonOptions);
+            if (tabs is null || tabs.Count == 0) return response;
+
+            Dictionary<string, string> mappings;
+            lock (_sync)
+                mappings = new Dictionary<string, string>(_conversationUrls, StringComparer.Ordinal);
+
+            foreach (var tab in tabs)
+            {
+                if (mappings.TryGetValue(tab.Id, out var conversationUrl))
+                    tab.Url = conversationUrl;
+            }
+
+            response.Content.Dispose();
+            response.Content = new StringContent(JsonSerializer.Serialize(tabs), Encoding.UTF8, "application/json");
+            return response;
+        }
     }
 
     private sealed class PassiveWaitProbeResult
