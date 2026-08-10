@@ -53,6 +53,7 @@ public sealed class MainForm : Form
     private bool _chromeHidden;
     private bool _shutdownRequested;
     private bool _shutdownCompleted;
+    private bool _ownedResourcesDisposed;
 
     public MainForm(ChromeDevToolsService chrome, ChatGptMonitorService monitor, LocalDatabase database, Func<Task>? reloadNotificationSettings = null)
     {
@@ -669,11 +670,24 @@ public sealed class MainForm : Form
         _tabsGrid.SelectionChanged += (_, _) => SelectCurrentTab();
         _monitorsGrid.SelectionChanged += (_, _) => SelectCurrentMonitor();
         _monitorsGrid.CellDoubleClick += async (_, _) => await EditSelectedMonitorSettingsAsync();
-        _monitor.Activity += (id, message) => Ui(() => AppendActivity($"M{id}: {message}"));
-        _monitor.HistoryChanged += () => Ui(async () => await RefreshHistoryAsync());
-        _monitor.RunningStateChanged += () => Ui(async () => { await RefreshMonitorsAsync(); UpdateActionStates(); });
+        _monitor.Activity += OnMonitorActivity;
+        _monitor.HistoryChanged += OnMonitorHistoryChanged;
+        _monitor.RunningStateChanged += OnMonitorRunningStateChanged;
         KeyDown += MainForm_KeyDown;
     }
+
+    private void OnMonitorActivity(long id, string message)
+        => Ui(() => AppendActivity($"M{id}: {message}"));
+
+    private void OnMonitorHistoryChanged()
+        => Ui(async () => await RefreshHistoryAsync());
+
+    private void OnMonitorRunningStateChanged()
+        => Ui(async () =>
+        {
+            await RefreshMonitorsAsync();
+            UpdateActionStates();
+        });
 
     private void ConfigureTooltips()
     {
@@ -1178,12 +1192,24 @@ public sealed class MainForm : Form
         return version is null ? "unknown" : $"{version.Major}.{version.Minor}.{version.Build}";
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !_ownedResourcesDisposed)
+        {
+            _ownedResourcesDisposed = true;
+            _monitor.Activity -= OnMonitorActivity;
+            _monitor.HistoryChanged -= OnMonitorHistoryChanged;
+            _monitor.RunningStateChanged -= OnMonitorRunningStateChanged;
+            _monitorStatusFont.Dispose();
+            _toolTip.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         if (_shutdownCompleted)
         {
-            _monitorStatusFont.Dispose();
-            _toolTip.Dispose();
             base.OnFormClosing(e);
             return;
         }
