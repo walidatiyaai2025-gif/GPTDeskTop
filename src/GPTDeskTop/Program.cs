@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Data;
 using GPTDeskTop.Services;
@@ -32,13 +33,33 @@ internal static class Program
 
         ApplicationConfiguration.Initialize();
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+
+        var instanceStartup = InstanceHandoffCoordinator.AcquireOrTakeOver();
+        if (!instanceStartup.IsPrimary)
+        {
+            MessageBox.Show(
+                instanceStartup.Error ?? "Another GPTDeskTop instance is already active and a safe takeover could not be completed.",
+                "GPTDeskTop Instance Handoff",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        using var instanceHandoff = instanceStartup.Coordinator!;
+        var takeover = instanceStartup.Takeover;
         LocalDatabase? database = null;
         DevelopmentTaskRuntimeBinding? developmentRuntime = null;
 
         try
         {
-            var config = AppConfig.Load();
-            database = new LocalDatabase(config.Database.FileName);
+            var config = takeover?.Config ?? AppConfig.Load();
+            var requestedDatabasePath = !string.IsNullOrWhiteSpace(takeover?.DatabasePath)
+                ? takeover.DatabasePath
+                : config.Database.FileName;
+            var databasePath = ResolveDatabasePath(requestedDatabasePath!);
+            config.Database.FileName = databasePath;
+
+            database = new LocalDatabase(databasePath);
             database.InitializeAsync().GetAwaiter().GetResult();
 
             if (database.GetSettingAsync("NoResponseRefreshSeconds").GetAwaiter().GetResult() is null)
@@ -164,6 +185,27 @@ internal static class Program
 
             using var metrics = new HomeMetricsService(mainForm, database, monitor);
 
+            instanceHandoff.StartTakeoverServer(
+                async cancellationToken =>
+                {
+                    if (mainForm.IsDisposed || mainForm.Disposing)
+                        throw new InvalidOperationException("The current GPTDeskTop instance is already shutting down.");
+
+                    // Persist the live window/splitter layout before the offer is ACKed so the
+                    // replacement process restores the latest operator workspace, not only the
+                    // last layout captured by a normal application exit.
+                    await PersistOperatorLayoutForInstanceHandoffAsync(mainForm, cancellationToken);
+
+                    var savedMonitors = await database.GetSavedMonitorsAsync(cancellationToken);
+                    var runningMonitorIds = savedMonitors
+                        .Where(saved => monitor.IsMonitorRunning(saved.Id))
+                        .Select(saved => saved.Id)
+                        .OrderBy(id => id)
+                        .ToArray();
+                    return new InstanceHandoffState(databasePath, config, runningMonitorIds);
+                },
+                () => CompleteCommittedInstanceHandoffAsync(database, monitor, developmentRuntime));
+
             mainForm.Shown += async (_, _) =>
             {
                 try
@@ -176,10 +218,23 @@ internal static class Program
                         monitor,
                         database,
                         recoveryMode);
+
+                    if (takeover is not null)
+                    {
+                        var resumed = await InstanceHandoffCoordinator.ResumeRunningMonitorsAsync(
+                            takeover,
+                            chrome,
+                            monitor,
+                            database);
+                        await database.SetSettingAsync("LastInstanceHandoffUtc", DateTimeOffset.UtcNow.ToString("O"));
+                        await database.SetSettingAsync("LastInstanceHandoffResumedCount", resumed.ToString());
+                    }
                 }
                 catch (Exception ex)
                 {
-                    await ExceptionLogService.LogAsync(ex, "Program.BackgroundCrashRecovery");
+                    await ExceptionLogService.LogAsync(ex, takeover is null
+                        ? "Program.BackgroundCrashRecovery"
+                        : "Program.InstanceHandoffResume");
                 }
             };
 
@@ -209,6 +264,100 @@ internal static class Program
                     MessageBoxIcon.Error);
             }
         }
+    }
+
+    private static string ResolveDatabasePath(string fileName)
+    {
+        var path = Path.IsPathRooted(fileName)
+            ? fileName
+            : Path.Combine(AppContext.BaseDirectory, fileName);
+        return Path.GetFullPath(path);
+    }
+
+    private static async Task PersistOperatorLayoutForInstanceHandoffAsync(
+        MainForm mainForm,
+        CancellationToken cancellationToken)
+    {
+        var method = typeof(MainForm).GetMethod(
+            "PersistOperatorLayoutAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(typeof(MainForm).FullName, "PersistOperatorLayoutAsync");
+
+        async Task PersistOnUiThreadAsync()
+        {
+            var result = method.Invoke(mainForm, new object[] { cancellationToken });
+            if (result is not Task task)
+                throw new InvalidOperationException("MainForm layout persistence did not return a Task.");
+            await task;
+        }
+
+        if (!mainForm.InvokeRequired)
+        {
+            await PersistOnUiThreadAsync();
+            return;
+        }
+
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        mainForm.BeginInvoke(new Action(async () =>
+        {
+            try
+            {
+                await PersistOnUiThreadAsync();
+                completion.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        }));
+
+        await completion.Task.WaitAsync(cancellationToken);
+    }
+
+    private static async Task CompleteCommittedInstanceHandoffAsync(
+        LocalDatabase database,
+        ChatGptMonitorService monitor,
+        DevelopmentTaskRuntimeBinding? developmentRuntime)
+    {
+        try
+        {
+            if (monitor.IsRunning)
+                await monitor.StopAllAsync().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ExceptionLogService.Log(ex, "InstanceHandoff.StopMonitorWorkers");
+        }
+
+        try
+        {
+            await CrashRecoveryStateService.MarkCleanShutdownAsync(database)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ExceptionLogService.Log(ex, "InstanceHandoff.MarkCleanShutdown");
+        }
+
+        if (developmentRuntime is not null)
+        {
+            try
+            {
+                await developmentRuntime.DisposeAsync().AsTask()
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                ExceptionLogService.Log(ex, "InstanceHandoff.DisposeDevelopmentRuntime");
+            }
+        }
+
+        // Deliberately bypass MainForm's normal close path here. Normal close tears down
+        // monitor Chrome tabs; a committed instance takeover must leave those tabs and any
+        // in-progress ChatGPT generation alive for the new process to reattach safely.
+        Environment.Exit(0);
     }
 
     private static async Task FinalizeGracefulShutdownAsync(LocalDatabase database, DevelopmentTaskRuntimeBinding? developmentRuntime)
