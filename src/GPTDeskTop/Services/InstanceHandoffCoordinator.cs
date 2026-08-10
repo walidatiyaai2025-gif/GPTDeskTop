@@ -48,8 +48,7 @@ public sealed class InstanceHandoffCoordinator : IDisposable
         _ownsMutex = ownsMutex;
     }
 
-    public static async Task<InstanceHandoffStartupResult> AcquireOrTakeOverAsync(
-        CancellationToken cancellationToken = default)
+    public static InstanceHandoffStartupResult AcquireOrTakeOver()
     {
         Mutex? probeMutex = null;
         try
@@ -66,7 +65,7 @@ public sealed class InstanceHandoffCoordinator : IDisposable
             probeMutex.Dispose();
             probeMutex = null;
 
-            var offer = await RequestTakeoverAsync(cancellationToken).ConfigureAwait(false);
+            var offer = RequestTakeover();
             if (offer is null)
             {
                 return new InstanceHandoffStartupResult(
@@ -76,19 +75,7 @@ public sealed class InstanceHandoffCoordinator : IDisposable
             }
 
             var takeoverMutex = new Mutex(initiallyOwned: false, MutexName);
-            var acquired = false;
-            try
-            {
-                acquired = await Task.Run(
-                    () => WaitForMutex(takeoverMutex, OwnershipTimeout),
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                takeoverMutex.Dispose();
-                throw;
-            }
-
+            var acquired = WaitForMutex(takeoverMutex, OwnershipTimeout);
             if (!acquired)
             {
                 takeoverMutex.Dispose();
@@ -102,11 +89,6 @@ public sealed class InstanceHandoffCoordinator : IDisposable
                 new InstanceHandoffCoordinator(takeoverMutex, ownsMutex: true),
                 offer,
                 null);
-        }
-        catch (OperationCanceledException)
-        {
-            probeMutex?.Dispose();
-            throw;
         }
         catch (Exception ex)
         {
@@ -183,7 +165,7 @@ public sealed class InstanceHandoffCoordinator : IDisposable
 
             try
             {
-                await monitorService.StartMonitorAsync(savedMonitor, tab, cancellationToken).ConfigureAwait(false);
+                await monitorService.StartMonitorAsync(savedMonitor, tab).ConfigureAwait(false);
                 if (monitorService.IsMonitorRunning(savedMonitor.Id)) resumed++;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -293,45 +275,43 @@ public sealed class InstanceHandoffCoordinator : IDisposable
         }
     }
 
-    private static async Task<InstanceHandoffOffer?> RequestTakeoverAsync(CancellationToken cancellationToken)
+    private static InstanceHandoffOffer? RequestTakeover()
     {
         var deadline = DateTimeOffset.UtcNow + ConnectTimeout;
         Exception? lastError = null;
 
         while (DateTimeOffset.UtcNow < deadline)
         {
-            cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                await using var pipe = new NamedPipeClientStream(
+                using var pipe = new NamedPipeClientStream(
                     ".",
                     PipeName,
                     PipeDirection.InOut,
-                    PipeOptions.Asynchronous);
+                    PipeOptions.None);
 
                 var remaining = deadline - DateTimeOffset.UtcNow;
                 var connectMilliseconds = (int)Math.Clamp(remaining.TotalMilliseconds, 100, 1000);
-                await pipe.ConnectAsync(connectMilliseconds, cancellationToken).ConfigureAwait(false);
+                pipe.Connect(connectMilliseconds);
 
                 using var reader = new StreamReader(pipe, leaveOpen: true);
                 using var writer = new StreamWriter(pipe, leaveOpen: true) { AutoFlush = true };
                 var request = new InstanceHandoffRequest(Guid.NewGuid().ToString("N"), Environment.ProcessId);
-                await writer.WriteLineAsync(JsonSerializer.Serialize(request)).ConfigureAwait(false);
+                writer.WriteLine(JsonSerializer.Serialize(request));
 
-                using var exchangeTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                exchangeTimeout.CancelAfter(TimeSpan.FromSeconds(10));
-                var offerLine = await reader.ReadLineAsync(exchangeTimeout.Token).ConfigureAwait(false);
-                var offer = Deserialize<InstanceHandoffOffer>(offerLine);
+                var offerReadTask = reader.ReadLineAsync();
+                if (!offerReadTask.Wait(TimeSpan.FromSeconds(10))) return null;
+                var offer = Deserialize<InstanceHandoffOffer>(offerReadTask.Result);
                 if (offer is null || !offer.Accepted || !string.Equals(offer.RequestId, request.RequestId, StringComparison.Ordinal))
                     return null;
 
-                await writer.WriteLineAsync(JsonSerializer.Serialize(new InstanceHandoffAck(request.RequestId))).ConfigureAwait(false);
+                writer.WriteLine(JsonSerializer.Serialize(new InstanceHandoffAck(request.RequestId)));
                 return offer;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex)
             {
                 lastError = ex;
-                await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+                Thread.Sleep(200);
             }
         }
 
