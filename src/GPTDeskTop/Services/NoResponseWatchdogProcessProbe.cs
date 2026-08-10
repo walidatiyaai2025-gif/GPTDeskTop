@@ -258,24 +258,29 @@ internal static class NoResponseWatchdogProcessProbe
         var chromePath = FindChromePath();
         var profilePath = Path.Combine(probeRoot, "ChromeProfile");
         Directory.CreateDirectory(profilePath);
-        var arguments = string.Join(' ',
-            "--remote-debugging-address=127.0.0.1",
-            $"--remote-debugging-port={port}",
-            $"--user-data-dir=\"{profilePath}\"",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-background-networking",
-            "--disable-component-update",
-            "--disable-sync",
-            "--disable-gpu",
-            $"--new-window \"{url}\"");
-        return Process.Start(new ProcessStartInfo
+
+        var startInfo = new ProcessStartInfo
         {
             FileName = chromePath,
-            Arguments = arguments,
-            UseShellExecute = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
             WorkingDirectory = probeRoot
-        }) ?? throw new InvalidOperationException("Chrome passive-wait QA process could not be started.");
+        };
+        startInfo.ArgumentList.Add("--headless=new");
+        startInfo.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
+        startInfo.ArgumentList.Add($"--remote-debugging-port={port}");
+        startInfo.ArgumentList.Add($"--user-data-dir={profilePath}");
+        startInfo.ArgumentList.Add("--no-first-run");
+        startInfo.ArgumentList.Add("--no-default-browser-check");
+        startInfo.ArgumentList.Add("--disable-background-networking");
+        startInfo.ArgumentList.Add("--disable-component-update");
+        startInfo.ArgumentList.Add("--disable-sync");
+        startInfo.ArgumentList.Add("--disable-extensions");
+        startInfo.ArgumentList.Add("--disable-gpu");
+        startInfo.ArgumentList.Add(url);
+
+        return Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Chrome passive-wait QA process could not be started.");
     }
 
     private static async Task<ChromeTab> WaitForTabAsync(ChromeDevToolsService chrome, Process process, string expectedUrl)
