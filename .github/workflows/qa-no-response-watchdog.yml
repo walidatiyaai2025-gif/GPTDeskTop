@@ -57,12 +57,12 @@ jobs:
 
           $result = Get-Content $resultPath -Raw | ConvertFrom-Json
           $failed = $false
-          if ($result.SlowText -ne 'slow-complete-load-1') { Write-Error "Slow/generating tab was unexpectedly reloaded or did not complete, final text='$($result.SlowText)'."; $failed = $true }
-          if ($result.ErrorText -ne 'error-recovered-load-2') { Write-Error "Explicit-error tab was not refreshed exactly once, final text='$($result.ErrorText)'."; $failed = $true }
-          if ([int]$result.SlowErrorRefreshActivityCount -ne 0) { Write-Error "Historical error text caused a false refresh; count=$($result.SlowErrorRefreshActivityCount)."; $failed = $true }
-          if ([int]$result.ErrorRefreshActivityCount -ne 1) { Write-Error "Expected exactly one explicit-error refresh, got $($result.ErrorRefreshActivityCount)."; $failed = $true }
-          if ([int]$result.ElapsedTimeRefreshActivityCount -ne 0) { Write-Error "Elapsed time still triggered refresh behavior; count=$($result.ElapsedTimeRefreshActivityCount)."; $failed = $true }
-          if ($result.SlowStillRunning -ne $true -or $result.ErrorStillRunning -ne $true) { Write-Error "One or both monitor workers stopped before verification. SlowStillRunning=$($result.SlowStillRunning) ErrorStillRunning=$($result.ErrorStillRunning)"; $failed = $true }
+          if ($result.SlowText -ne 'slow-complete-load-1') { Write-Host "ASSERTION: Slow/generating tab was unexpectedly reloaded or did not complete, final text='$($result.SlowText)'."; $failed = $true }
+          if ($result.ErrorText -ne 'error-recovered-load-2') { Write-Host "ASSERTION: Explicit-error tab was not refreshed exactly once, final text='$($result.ErrorText)'."; $failed = $true }
+          if ([int]$result.SlowErrorRefreshActivityCount -ne 0) { Write-Host "ASSERTION: Historical error text caused a false refresh; count=$($result.SlowErrorRefreshActivityCount)."; $failed = $true }
+          if ([int]$result.ErrorRefreshActivityCount -ne 1) { Write-Host "ASSERTION: Expected exactly one explicit-error refresh, got $($result.ErrorRefreshActivityCount)."; $failed = $true }
+          if ([int]$result.ElapsedTimeRefreshActivityCount -ne 0) { Write-Host "ASSERTION: Elapsed time still triggered refresh behavior; count=$($result.ElapsedTimeRefreshActivityCount)."; $failed = $true }
+          if ($result.SlowStillRunning -ne $true -or $result.ErrorStillRunning -ne $true) { Write-Host "ASSERTION: One or both monitor workers stopped before verification. SlowStillRunning=$($result.SlowStillRunning) ErrorStillRunning=$($result.ErrorStillRunning)"; $failed = $true }
 
           if ($failed) {
             Write-Host '--- Passive probe activity trace ---'
