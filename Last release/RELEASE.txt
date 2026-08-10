@@ -4,7 +4,7 @@ File: GPTDeskTop.exe
 Version: 1.8.0.0
 Platform: Windows x64
 Configuration: Release / self-contained / single-file / compressed
-Source commit: 7467a148f0e107a017941f87cc029464db1a3ccb
-Generated UTC: 2026-08-10T07:44:12Z
+Source commit: daae49b5f834ceb8b92d3406d0f6442325a0590b
+Generated UTC: 2026-08-10T08:12:23Z
 Validation: 8/8 required GitHub Actions workflows passed for the same source commit
-SHA-256: 293565c6e3b66152620c233649174b7e83d81d92ebc86f0e611dc5ad27e9cf1e
+SHA-256: b74948a53d1f53b67bcc6c830f776df46a697731eabc3059521ebfc54553ce86
