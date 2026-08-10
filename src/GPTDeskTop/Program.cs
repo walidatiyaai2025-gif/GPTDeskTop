@@ -65,6 +65,8 @@ internal static class Program
             notifications.InitializeAsync().GetAwaiter().GetResult();
 
             var mainForm = new MainForm(chrome, monitor, database, notifications.ReloadSettingsAsync);
+            if (ApplicationBuildIdentity.StableBuildId is not null)
+                mainForm.Text = $"GPTDeskTop {ApplicationBuildIdentity.DisplayVersion}";
 
             // Production development-plan runtime: the dashboard and lifecycle controls
             // are bound to dynamic saved-monitor resolution before the UI is shown.
