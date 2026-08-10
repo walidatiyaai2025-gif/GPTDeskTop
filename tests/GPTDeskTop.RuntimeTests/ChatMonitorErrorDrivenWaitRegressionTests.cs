@@ -22,14 +22,16 @@ public sealed class ChatMonitorErrorDrivenWaitRegressionTests
     }
 
     [Fact]
-    public void ExplicitErrorsStillDriveRecovery()
+    public void OnlyCurrentStructuredErrorsDriveGenericRecovery()
     {
         var source = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
 
+        Assert.Contains("var isError = !string.IsNullOrWhiteSpace(state.ErrorText)", source, StringComparison.Ordinal);
         Assert.Contains("isError && IsDeliveryTimeout(text)", source, StringComparison.Ordinal);
         Assert.Contains("Error saved. Refreshing only this tab", source, StringComparison.Ordinal);
         Assert.Contains("IsConversationContextLimit(text)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsErrorResponse", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -40,9 +42,11 @@ public sealed class ChatMonitorErrorDrivenWaitRegressionTests
 
         Assert.Contains("const visible = element =>", source, StringComparison.Ordinal);
         Assert.Contains("[role=\"alert\"]", source, StringComparison.Ordinal);
+        Assert.Contains("[aria-live=\"assertive\"]", source, StringComparison.Ordinal);
         Assert.Contains("[data-testid*=\"error\"]", source, StringComparison.Ordinal);
         Assert.Contains("if (!visible(element)) continue;", source, StringComparison.Ordinal);
         Assert.Contains("streamingSignal", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("[class*=\"error\"]", source, StringComparison.Ordinal);
         Assert.DoesNotContain("document.body?.innerText", source, StringComparison.Ordinal);
         Assert.DoesNotContain("visibleText.match", source, StringComparison.Ordinal);
     }
