@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text.Json;
 using GPTDeskTop.Configuration;
@@ -53,62 +54,65 @@ public sealed class InstanceHandoffCoordinator : IDisposable
     public static InstanceHandoffStartupResult AcquireOrTakeOver()
     {
         Mutex? probeMutex = null;
+        Mutex? takeoverMutex = null;
         try
         {
             probeMutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
             if (createdNew)
             {
-                return new InstanceHandoffStartupResult(
-                    new InstanceHandoffCoordinator(probeMutex, ownsMutex: true),
-                    null,
-                    null);
+                var coordinator = new InstanceHandoffCoordinator(probeMutex, ownsMutex: true);
+                probeMutex = null;
+                return new InstanceHandoffStartupResult(coordinator, null, null);
             }
 
             probeMutex.Dispose();
             probeMutex = null;
 
-            var offer = RequestTakeover();
+            // Open the exact ownership primitive before declaring this replacement ready.
+            // Once Ready is sent, no subsequent local handle/config preflight is allowed to
+            // become a reason for the outgoing runtime to have exited unnecessarily.
+            takeoverMutex = new Mutex(initiallyOwned: false, MutexName);
+            var offer = RequestTakeover(takeoverMutex);
             if (offer is null)
             {
-                // Preserve the existing fatal-restart path: the outgoing process can disappear
-                // between mutex discovery and pipe negotiation. In that case only, wait briefly
-                // for the abandoned/released mutex and become primary. If the prior process is
-                // still alive, fail closed instead of ever creating two active monitor runtimes.
-                var orphanedOwnerMutex = new Mutex(initiallyOwned: false, MutexName);
-                if (WaitForMutex(orphanedOwnerMutex, OrphanedOwnerTimeout))
+                // Preserve the fatal-restart path only when no commit-ready message was sent.
+                // If the prior process disappeared before negotiation, a released/abandoned
+                // mutex can safely be claimed. An uncertain post-Ready outcome throws instead
+                // and never reaches this fallback.
+                if (WaitForMutex(takeoverMutex, OrphanedOwnerTimeout))
                 {
-                    return new InstanceHandoffStartupResult(
-                        new InstanceHandoffCoordinator(orphanedOwnerMutex, ownsMutex: true),
-                        null,
-                        null);
+                    var coordinator = new InstanceHandoffCoordinator(takeoverMutex, ownsMutex: true);
+                    takeoverMutex = null;
+                    return new InstanceHandoffStartupResult(coordinator, null, null);
                 }
 
-                orphanedOwnerMutex.Dispose();
+                takeoverMutex.Dispose();
+                takeoverMutex = null;
                 return new InstanceHandoffStartupResult(
                     null,
                     null,
                     "Another GPTDeskTop instance is already running but did not accept a safe handoff request. The second runtime was not started.");
             }
 
-            var takeoverMutex = new Mutex(initiallyOwned: false, MutexName);
             var acquired = WaitForMutex(takeoverMutex, OwnershipTimeout);
             if (!acquired)
             {
                 takeoverMutex.Dispose();
+                takeoverMutex = null;
                 return new InstanceHandoffStartupResult(
                     null,
                     offer,
-                    "The previous GPTDeskTop instance accepted takeover but did not release runtime ownership before the safety timeout. The second runtime was not started.");
+                    "The previous GPTDeskTop instance committed takeover but did not release runtime ownership before the safety timeout. The second runtime was not started.");
             }
 
-            return new InstanceHandoffStartupResult(
-                new InstanceHandoffCoordinator(takeoverMutex, ownsMutex: true),
-                offer,
-                null);
+            var takeoverCoordinator = new InstanceHandoffCoordinator(takeoverMutex, ownsMutex: true);
+            takeoverMutex = null;
+            return new InstanceHandoffStartupResult(takeoverCoordinator, offer, null);
         }
         catch (Exception ex)
         {
             probeMutex?.Dispose();
+            takeoverMutex?.Dispose();
             return new InstanceHandoffStartupResult(null, null, ex.Message);
         }
     }
@@ -218,7 +222,7 @@ public sealed class InstanceHandoffCoordinator : IDisposable
 
                 var requestLine = await reader.ReadLineAsync(exchangeTimeout.Token).ConfigureAwait(false);
                 var request = Deserialize<InstanceHandoffRequest>(requestLine);
-                if (request is null || string.IsNullOrWhiteSpace(request.RequestId))
+                if (request is null || string.IsNullOrWhiteSpace(request.RequestId) || request.ProcessId <= 0)
                 {
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new InstanceHandoffOffer(
                         false,
@@ -255,13 +259,50 @@ public sealed class InstanceHandoffCoordinator : IDisposable
 
                 await writer.WriteLineAsync(JsonSerializer.Serialize(offer)).ConfigureAwait(false);
 
-                var ackLine = await reader.ReadLineAsync(exchangeTimeout.Token).ConfigureAwait(false);
-                var ack = Deserialize<InstanceHandoffAck>(ackLine);
-                if (ack is null || !string.Equals(ack.RequestId, request.RequestId, StringComparison.Ordinal))
+                var readyLine = await reader.ReadLineAsync(exchangeTimeout.Token).ConfigureAwait(false);
+                var ready = Deserialize<InstanceHandoffReady>(readyLine);
+                if (ready is null ||
+                    !string.Equals(ready.RequestId, request.RequestId, StringComparison.Ordinal) ||
+                    ready.ProcessId != request.ProcessId)
+                {
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new InstanceHandoffCommit(
+                        request.RequestId,
+                        false,
+                        "Replacement readiness did not match the takeover request."))).ConfigureAwait(false);
                     continue;
+                }
+
+                if (!IsProcessAlive(request.ProcessId))
+                {
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new InstanceHandoffCommit(
+                        request.RequestId,
+                        false,
+                        "Replacement process exited before takeover commit."))).ConfigureAwait(false);
+                    continue;
+                }
 
                 if (Interlocked.CompareExchange(ref _takeoverCommitted, 1, 0) != 0)
+                {
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new InstanceHandoffCommit(
+                        request.RequestId,
+                        false,
+                        "A takeover is already in progress."))).ConfigureAwait(false);
                     continue;
+                }
+
+                try
+                {
+                    // Commit acceptance is written before shutdown starts. If the write itself
+                    // fails, reset the commit marker and keep this runtime active.
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new InstanceHandoffCommit(
+                        request.RequestId,
+                        true))).ConfigureAwait(false);
+                }
+                catch
+                {
+                    Interlocked.Exchange(ref _takeoverCommitted, 0);
+                    throw;
+                }
 
                 _ = Task.Run(async () =>
                 {
@@ -291,12 +332,13 @@ public sealed class InstanceHandoffCoordinator : IDisposable
         }
     }
 
-    private static InstanceHandoffOffer? RequestTakeover()
+    private static InstanceHandoffOffer? RequestTakeover(Mutex takeoverMutex)
     {
         var deadline = DateTimeOffset.UtcNow + ConnectTimeout;
 
         while (DateTimeOffset.UtcNow < deadline)
         {
+            var readySent = false;
             try
             {
                 using var pipe = new NamedPipeClientStream(
@@ -320,16 +362,72 @@ public sealed class InstanceHandoffCoordinator : IDisposable
                 if (offer is null || !offer.Accepted || !string.Equals(offer.RequestId, request.RequestId, StringComparison.Ordinal))
                     return null;
 
-                writer.WriteLine(JsonSerializer.Serialize(new InstanceHandoffAck(request.RequestId)));
+                var preflightError = ValidateOfferForCommit(offer, takeoverMutex);
+                if (preflightError is not null)
+                    return null;
+
+                writer.WriteLine(JsonSerializer.Serialize(new InstanceHandoffReady(request.RequestId, Environment.ProcessId)));
+                readySent = true;
+
+                var commitReadTask = reader.ReadLineAsync();
+                if (!commitReadTask.Wait(TimeSpan.FromSeconds(10)))
+                    throw new InvalidOperationException("Takeover readiness was sent but commit acceptance was not received before timeout.");
+
+                var commit = Deserialize<InstanceHandoffCommit>(commitReadTask.Result);
+                if (commit is null || !string.Equals(commit.RequestId, request.RequestId, StringComparison.Ordinal))
+                    throw new InvalidOperationException("Takeover readiness was sent but the commit response was invalid or uncorrelated.");
+                if (!commit.Accepted)
+                    return null;
+
                 return offer;
             }
-            catch
+            catch (Exception ex)
             {
+                if (readySent)
+                    throw new InvalidOperationException(
+                        "The replacement declared takeover readiness but could not confirm whether the previous runtime committed shutdown. The second runtime was not started.",
+                        ex);
                 Thread.Sleep(200);
             }
         }
 
         return null;
+    }
+
+    private static string? ValidateOfferForCommit(InstanceHandoffOffer offer, Mutex takeoverMutex)
+    {
+        if (takeoverMutex.SafeWaitHandle.IsClosed || takeoverMutex.SafeWaitHandle.IsInvalid)
+            return "The replacement could not open the shared runtime ownership mutex.";
+        if (offer.Config is null)
+            return "The takeover offer did not contain effective application configuration.";
+        if (string.IsNullOrWhiteSpace(offer.DatabasePath) || !Path.IsPathFullyQualified(offer.DatabasePath))
+            return "The takeover offer did not contain an absolute database path.";
+        if (!File.Exists(offer.DatabasePath))
+            return "The takeover database does not exist at the offered absolute path.";
+        if (!Uri.TryCreate(offer.Config.Chrome.DebuggingBaseUrl, UriKind.Absolute, out var debuggingUri) ||
+            (debuggingUri.Scheme != Uri.UriSchemeHttp && debuggingUri.Scheme != Uri.UriSchemeHttps))
+            return "The takeover offer contains an invalid Chrome debugging base URL.";
+        if (offer.Config.Chrome.DebuggingPort is <= 0 or > 65535)
+            return "The takeover offer contains an invalid Chrome debugging port.";
+        if (offer.Config.Monitoring.PollIntervalMilliseconds <= 0 || offer.Config.Monitoring.StableResponseMilliseconds <= 0)
+            return "The takeover offer contains invalid monitoring timing configuration.";
+        if (!IsProcessAlive(offer.PreviousProcessId))
+            return "The previous runtime exited before the replacement completed takeover preflight.";
+        return null;
+    }
+
+    private static bool IsProcessAlive(int processId)
+    {
+        if (processId <= 0) return false;
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return !process.HasExited;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool WaitForMutex(Mutex mutex, TimeSpan timeout)
@@ -369,5 +467,6 @@ public sealed class InstanceHandoffCoordinator : IDisposable
     }
 
     private sealed record InstanceHandoffRequest(string RequestId, int ProcessId);
-    private sealed record InstanceHandoffAck(string RequestId);
+    private sealed record InstanceHandoffReady(string RequestId, int ProcessId);
+    private sealed record InstanceHandoffCommit(string RequestId, bool Accepted, string? Error = null);
 }
