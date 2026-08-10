@@ -1,0 +1,213 @@
+name: Update Last release
+
+on:
+  workflow_run:
+    workflows: ["Build GPTDeskTop"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: update-last-release-main
+  cancel-in-progress: false
+
+jobs:
+  publish-stable-exe:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Resolve stable source commit
+        id: source
+        shell: pwsh
+        run: |
+          $currentMain = (git rev-parse HEAD).Trim()
+          if ('${{ github.event_name }}' -eq 'workflow_run') {
+            $target = '${{ github.event.workflow_run.head_sha }}'
+          }
+          else {
+            $target = $currentMain
+          }
+
+          if ($currentMain -ne $target) {
+            Write-Host "main advanced from $target to $currentMain; refusing to publish an older stable executable."
+            "publish=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "target_sha=$target" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+
+          "publish=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "target_sha=$target" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Candidate stable source: $target"
+
+      - name: Require all eight stable gates for the same commit
+        if: steps.source.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.source.outputs.target_sha }}
+        run: |
+          $required = @(
+            'Build GPTDeskTop',
+            'QA Release x64',
+            'QA Hidden Chrome CDP',
+            'QA Crash Process Recovery',
+            'QA Passive Chat Wait',
+            'Development Delivery Receipts',
+            'Development Task Recovery',
+            'Development Message Reload'
+          )
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $uri = "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=$env:TARGET_SHA&per_page=100"
+          $deadline = (Get-Date).AddMinutes(30)
+
+          while ($true) {
+            $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+            $runs = @($response.workflow_runs | Where-Object {
+              $_.head_sha -eq $env:TARGET_SHA -and $_.event -eq 'push'
+            })
+
+            $pending = @()
+            foreach ($name in $required) {
+              $run = $runs |
+                Where-Object { $_.name -eq $name } |
+                Sort-Object run_number -Descending |
+                Select-Object -First 1
+
+              if ($null -eq $run) {
+                $pending += "$name (missing)"
+                continue
+              }
+
+              if ($run.status -ne 'completed') {
+                $pending += "$name ($($run.status))"
+                continue
+              }
+
+              if ($run.conclusion -ne 'success') {
+                throw "Stable gate failed for $env:TARGET_SHA: $name concluded $($run.conclusion). Last release will not be changed."
+              }
+            }
+
+            if ($pending.Count -eq 0) {
+              Write-Host "All eight required stable gates are green for $env:TARGET_SHA."
+              break
+            }
+
+            if ((Get-Date) -ge $deadline) {
+              throw "Timed out waiting for the complete stable gate set: $($pending -join ', ')"
+            }
+
+            Write-Host "Waiting for stable gates: $($pending -join ', ')"
+            Start-Sleep -Seconds 10
+          }
+
+      - name: Publish self-contained stable application
+        if: steps.source.outputs.publish == 'true'
+        shell: pwsh
+        run: |
+          $publishDir = Join-Path $env:RUNNER_TEMP 'gptdesktop-stable-publish'
+          dotnet publish src/GPTDeskTop/GPTDeskTop.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            --output $publishDir
+
+          $exe = Join-Path $publishDir 'GPTDeskTop.exe'
+          if (-not (Test-Path $exe)) {
+            throw "Stable publish did not produce $exe"
+          }
+
+          $size = (Get-Item $exe).Length
+          if ($size -ge 95MB) {
+            throw "GPTDeskTop.exe is $size bytes; refusing to commit a file too close to GitHub's 100 MB file limit."
+          }
+
+          if (Test-Path 'Last release') {
+            Remove-Item 'Last release' -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path 'Last release' | Out-Null
+          Copy-Item $exe 'Last release/GPTDeskTop.exe'
+
+          $hash = (Get-FileHash 'Last release/GPTDeskTop.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $version = (Get-Item 'Last release/GPTDeskTop.exe').VersionInfo.FileVersion
+          $generated = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+          $source = '${{ steps.source.outputs.target_sha }}'
+
+          @(
+            'GPTDeskTop — Latest Stable Application',
+            '',
+            'File: GPTDeskTop.exe',
+            "Version: $version",
+            'Platform: Windows x64',
+            'Configuration: Release / self-contained / single-file',
+            "Source commit: $source",
+            "Generated UTC: $generated",
+            'Validation: 8/8 required GitHub Actions workflows passed for the same source commit',
+            "SHA-256: $hash"
+          ) | Set-Content 'Last release/RELEASE.txt' -Encoding utf8
+
+          @(
+            '# Last release',
+            '',
+            '`GPTDeskTop.exe` is the latest Windows x64 application build that passed the complete stable CI gate set on `main`.',
+            '',
+            'This folder is automation-managed. Do not manually replace the executable.',
+            '',
+            'See `RELEASE.txt` for the source commit, version, generation time and SHA-256 checksum.'
+          ) | Set-Content 'Last release/README.md' -Encoding utf8
+
+          Write-Host "Prepared Last release/GPTDeskTop.exe ($size bytes)"
+          Write-Host "SHA-256: $hash"
+
+      - name: Commit latest stable executable to main
+        if: steps.source.outputs.publish == 'true'
+        shell: pwsh
+        run: |
+          $target = '${{ steps.source.outputs.target_sha }}'
+          git fetch origin main
+          $remoteMain = (git rev-parse origin/main).Trim()
+          if ($remoteMain -ne $target) {
+            Write-Host "main advanced to $remoteMain while publishing; stable executable for $target will not overwrite it."
+            exit 0
+          }
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- 'Last release'
+
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'Last release already matches the verified stable executable.'
+            exit 0
+          }
+
+          git commit -m 'chore(release): update Last release [skip ci]'
+          git push origin HEAD:main
