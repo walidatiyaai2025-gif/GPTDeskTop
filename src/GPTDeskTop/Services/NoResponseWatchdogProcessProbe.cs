@@ -9,9 +9,10 @@ using GPTDeskTop.Models;
 namespace GPTDeskTop.Services;
 
 /// <summary>
-/// Runs two real ChatGptMonitorService workers against deterministic local pages.
-/// One tab remains stale and must be reloaded by the 30-second watchdog; the other
-/// produces activity before the timeout and must not be reloaded.
+/// Legacy probe command retained for CI compatibility. The probe now verifies that
+/// elapsed time never refreshes a healthy/generating ChatGPT tab, even beyond the
+/// former 30-second watchdog threshold, while an explicit current error still causes
+/// exactly one error-driven refresh of only the affected tab.
 /// </summary>
 internal static class NoResponseWatchdogProcessProbe
 {
@@ -32,7 +33,7 @@ internal static class NoResponseWatchdogProcessProbe
         {
             try
             {
-                var outputPath = args.Length >= 2 ? Path.GetFullPath(args[1]) : Path.Combine(Path.GetTempPath(), "GPTDeskTop-no-response-probe.json");
+                var outputPath = args.Length >= 2 ? Path.GetFullPath(args[1]) : Path.Combine(Path.GetTempPath(), "GPTDeskTop-passive-wait-probe.json");
                 File.WriteAllText(outputPath + ".error.txt", ex.ToString());
             }
             catch
@@ -45,26 +46,26 @@ internal static class NoResponseWatchdogProcessProbe
     private static async Task<int> RunAsync(string[] args)
     {
         if (args.Length < 2)
-            throw new ArgumentException("No-response probe requires an output path.");
+            throw new ArgumentException("Passive-wait probe requires an output path.");
 
         var outputPath = Path.GetFullPath(args[1]);
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? AppContext.BaseDirectory);
 
-        var probeRoot = Path.Combine(Path.GetTempPath(), "GPTDeskTop.NoResponseProbe", Guid.NewGuid().ToString("N"));
+        var probeRoot = Path.Combine(Path.GetTempPath(), "GPTDeskTop.PassiveWaitProbe", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(probeRoot);
-        var stalePath = Path.Combine(probeRoot, "stale.html");
-        var activePath = Path.Combine(probeRoot, "active.html");
-        await File.WriteAllTextAsync(stalePath, StalePage()).ConfigureAwait(false);
-        await File.WriteAllTextAsync(activePath, ActivePage()).ConfigureAwait(false);
+        var slowPath = Path.Combine(probeRoot, "slow.html");
+        var errorPath = Path.Combine(probeRoot, "error.html");
+        await File.WriteAllTextAsync(slowPath, SlowPage()).ConfigureAwait(false);
+        await File.WriteAllTextAsync(errorPath, ErrorPage()).ConfigureAwait(false);
 
-        var staleUrl = new Uri(stalePath).AbsoluteUri;
-        var activeUrl = new Uri(activePath).AbsoluteUri;
+        var slowUrl = new Uri(slowPath).AbsoluteUri;
+        var errorUrl = new Uri(errorPath).AbsoluteUri;
         var port = ReserveLoopbackPort();
         var chromeConfig = new ChromeConfig
         {
             DebuggingPort = port,
             DebuggingBaseUrl = $"http://127.0.0.1:{port}",
-            StartUrl = staleUrl
+            StartUrl = slowUrl
         };
         var monitoringConfig = new MonitoringConfig
         {
@@ -75,8 +76,11 @@ internal static class NoResponseWatchdogProcessProbe
 
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         var chrome = new ChromeDevToolsService(httpClient, chromeConfig);
-        var database = new LocalDatabase(Path.Combine(probeRoot, "watchdog.db"));
+        var database = new LocalDatabase(Path.Combine(probeRoot, "passive-wait.db"));
         await database.InitializeAsync().ConfigureAwait(false);
+
+        // Preserve the old 30-second value deliberately. The production monitor must
+        // ignore it as an intervention trigger so this probe catches any regression.
         await database.SetSettingAsync("NoResponseRefreshSeconds", "30").ConfigureAwait(false);
 
         Process? chromeProcess = null;
@@ -89,54 +93,54 @@ internal static class NoResponseWatchdogProcessProbe
 
         try
         {
-            chromeProcess = LaunchIsolatedChrome(probeRoot, staleUrl, port);
-            var stalePhysicalTab = await WaitForTabAsync(chrome, chromeProcess, staleUrl).ConfigureAwait(false);
-            var activePhysicalTab = await chrome.CreateTabAsync(activeUrl).ConfigureAwait(false);
+            chromeProcess = LaunchIsolatedChrome(probeRoot, slowUrl, port);
+            var slowPhysicalTab = await WaitForTabAsync(chrome, chromeProcess, slowUrl).ConfigureAwait(false);
+            var errorPhysicalTab = await chrome.CreateTabAsync(errorUrl).ConfigureAwait(false);
 
-            // Keep the real local pages/WebSocket targets for deterministic browser behavior,
-            // but exercise ChatGptMonitorService through the same stable conversation-identity
-            // contract required in production.
-            var staleTab = WithConversationIdentity(stalePhysicalTab, "https://chatgpt.com/c/qa-no-response-stale");
-            var activeTab = WithConversationIdentity(activePhysicalTab, "https://chatgpt.com/c/qa-no-response-active");
+            var slowTab = WithConversationIdentity(slowPhysicalTab, "https://chatgpt.com/c/qa-passive-wait-slow");
+            var errorTab = WithConversationIdentity(errorPhysicalTab, "https://chatgpt.com/c/qa-passive-wait-error");
 
-            var staleMonitor = await SaveMonitorAsync(database, "QA stale tab", staleTab, enabled: true).ConfigureAwait(false);
-            var activeMonitor = await SaveMonitorAsync(database, "QA active tab", activeTab, enabled: true).ConfigureAwait(false);
+            var slowMonitor = await SaveMonitorAsync(database, "QA slow thinking tab", slowTab).ConfigureAwait(false);
+            var errorMonitor = await SaveMonitorAsync(database, "QA explicit error tab", errorTab).ConfigureAwait(false);
 
-            await monitorService.StartMonitorAsync(staleMonitor, staleTab).ConfigureAwait(false);
-            await monitorService.StartMonitorAsync(activeMonitor, activeTab).ConfigureAwait(false);
+            await monitorService.StartMonitorAsync(slowMonitor, slowTab).ConfigureAwait(false);
+            await monitorService.StartMonitorAsync(errorMonitor, errorTab).ConfigureAwait(false);
 
-            var deadline = DateTimeOffset.UtcNow.AddSeconds(55);
-            ChatPageState? staleState = null;
-            ChatPageState? activeState = null;
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(65);
+            ChatPageState? slowState = null;
+            ChatPageState? errorState = null;
             while (DateTimeOffset.UtcNow < deadline)
             {
-                staleState = await chrome.GetChatStateAsync(staleTab).ConfigureAwait(false);
-                activeState = await chrome.GetChatStateAsync(activeTab).ConfigureAwait(false);
-                if (string.Equals(staleState.LastAssistantText, "stale-load-2", StringComparison.Ordinal) &&
-                    string.Equals(activeState.LastAssistantText, "active-response-load-1", StringComparison.Ordinal))
+                slowState = await chrome.GetChatStateAsync(slowTab).ConfigureAwait(false);
+                errorState = await chrome.GetChatStateAsync(errorTab).ConfigureAwait(false);
+                if (string.Equals(slowState.LastAssistantText, "slow-complete-load-1", StringComparison.Ordinal) &&
+                    string.Equals(errorState.LastAssistantText, "error-recovered-load-2", StringComparison.Ordinal))
                     break;
                 await Task.Delay(500).ConfigureAwait(false);
             }
 
-            staleState ??= await chrome.GetChatStateAsync(staleTab).ConfigureAwait(false);
-            activeState ??= await chrome.GetChatStateAsync(activeTab).ConfigureAwait(false);
+            slowState ??= await chrome.GetChatStateAsync(slowTab).ConfigureAwait(false);
+            errorState ??= await chrome.GetChatStateAsync(errorTab).ConfigureAwait(false);
             await Task.Delay(1500).ConfigureAwait(false);
-            var staleFinal = await chrome.GetChatStateAsync(staleTab).ConfigureAwait(false);
-            var activeFinal = await chrome.GetChatStateAsync(activeTab).ConfigureAwait(false);
+            var slowFinal = await chrome.GetChatStateAsync(slowTab).ConfigureAwait(false);
+            var errorFinal = await chrome.GetChatStateAsync(errorTab).ConfigureAwait(false);
 
             string[] activitySnapshot;
             lock (activities) activitySnapshot = activities.ToArray();
 
-            var result = new NoResponseProbeResult
+            var result = new PassiveWaitProbeResult
             {
-                StaleMonitorId = staleMonitor.Id,
-                ActiveMonitorId = activeMonitor.Id,
-                StaleText = staleFinal.LastAssistantText,
-                ActiveText = activeFinal.LastAssistantText,
-                StaleReloadActivityCount = activitySnapshot.Count(x => x.Contains("No new response for 30s", StringComparison.Ordinal) && x.Contains("QA stale tab", StringComparison.Ordinal)),
-                ActiveReloadActivityCount = activitySnapshot.Count(x => x.Contains("No new response for 30s", StringComparison.Ordinal) && x.Contains("QA active tab", StringComparison.Ordinal)),
-                StaleStillRunning = monitorService.IsMonitorRunning(staleMonitor.Id),
-                ActiveStillRunning = monitorService.IsMonitorRunning(activeMonitor.Id),
+                SlowMonitorId = slowMonitor.Id,
+                ErrorMonitorId = errorMonitor.Id,
+                SlowText = slowFinal.LastAssistantText,
+                ErrorText = errorFinal.LastAssistantText,
+                SlowIsGenerating = slowFinal.IsGenerating,
+                ErrorIsGenerating = errorFinal.IsGenerating,
+                SlowErrorRefreshActivityCount = activitySnapshot.Count(x => x.Contains("QA slow thinking tab", StringComparison.Ordinal) && x.Contains("Error saved. Refreshing only this tab", StringComparison.Ordinal)),
+                ErrorRefreshActivityCount = activitySnapshot.Count(x => x.Contains("QA explicit error tab", StringComparison.Ordinal) && x.Contains("Error saved. Refreshing only this tab", StringComparison.Ordinal)),
+                ElapsedTimeRefreshActivityCount = activitySnapshot.Count(x => x.Contains("No new response for", StringComparison.OrdinalIgnoreCase) || x.Contains("NoResponseRefresh", StringComparison.OrdinalIgnoreCase)),
+                SlowStillRunning = monitorService.IsMonitorRunning(slowMonitor.Id),
+                ErrorStillRunning = monitorService.IsMonitorRunning(errorMonitor.Id),
                 Activity = activitySnapshot
             };
             await WriteResultAsync(outputPath, result).ConfigureAwait(false);
@@ -163,7 +167,7 @@ internal static class NoResponseWatchdogProcessProbe
         }
     }
 
-    private static async Task<SavedMonitor> SaveMonitorAsync(LocalDatabase database, string title, ChromeTab tab, bool enabled)
+    private static async Task<SavedMonitor> SaveMonitorAsync(LocalDatabase database, string title, ChromeTab tab)
     {
         var monitor = new SavedMonitor
         {
@@ -173,7 +177,7 @@ internal static class NoResponseWatchdogProcessProbe
             AutoReply = "qa-no-send",
             TimerSeconds = 1,
             ReplyDelaySeconds = 300,
-            Enabled = enabled,
+            Enabled = true,
             ModelRoutingEnabled = false,
             ConversationRotationEnabled = false
         };
@@ -190,35 +194,53 @@ internal static class NoResponseWatchdogProcessProbe
         WebSocketDebuggerUrl = physicalTab.WebSocketDebuggerUrl
     };
 
-    private static string StalePage() => """
+    private static string SlowPage() => """
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>QA stale monitor</title></head>
+<head><meta charset="utf-8"><title>QA slow thinking monitor</title></head>
 <body>
   <main data-message-author-role="assistant"></main>
+  <div data-message-author-role="user">Historical quote only: Something went wrong yesterday, but it is not a current error.</div>
+  <button data-testid="stop-button" aria-label="Stop generating" style="width:140px;height:32px">Stop</button>
   <script>
-    const key = 'gptdesktop-stale-load-count';
+    const key = 'gptdesktop-passive-wait-slow-load-count';
     const count = Number(sessionStorage.getItem(key) || '0') + 1;
     sessionStorage.setItem(key, String(count));
-    document.querySelector('[data-message-author-role="assistant"]').textContent = `stale-load-${count}`;
+    const target = document.querySelector('[data-message-author-role="assistant"]');
+    target.textContent = `slow-thinking-load-${count}`;
+    setTimeout(() => {
+      document.querySelector('[data-testid="stop-button"]')?.remove();
+      target.textContent = `slow-complete-load-${count}`;
+    }, 40000);
   </script>
 </body>
 </html>
 """;
 
-    private static string ActivePage() => """
+    private static string ErrorPage() => """
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>QA active monitor</title></head>
+<head><meta charset="utf-8"><title>QA explicit error monitor</title></head>
 <body>
   <main data-message-author-role="assistant"></main>
   <script>
-    const key = 'gptdesktop-active-load-count';
+    const key = 'gptdesktop-passive-wait-error-load-count';
     const count = Number(sessionStorage.getItem(key) || '0') + 1;
     sessionStorage.setItem(key, String(count));
     const target = document.querySelector('[data-message-author-role="assistant"]');
-    target.textContent = `active-initial-load-${count}`;
-    setTimeout(() => { target.textContent = `active-response-load-${count}`; }, 5000);
+    if (count === 1) {
+      target.textContent = 'error-wait-load-1';
+      setTimeout(() => {
+        const alert = document.createElement('div');
+        alert.setAttribute('role', 'alert');
+        alert.style.width = '360px';
+        alert.style.height = '32px';
+        alert.textContent = 'Something went wrong';
+        document.body.appendChild(alert);
+      }, 35000);
+    } else {
+      target.textContent = `error-recovered-load-${count}`;
+    }
   </script>
 </body>
 </html>
@@ -246,7 +268,7 @@ internal static class NoResponseWatchdogProcessProbe
             Arguments = arguments,
             UseShellExecute = true,
             WorkingDirectory = probeRoot
-        }) ?? throw new InvalidOperationException("Chrome no-response QA process could not be started.");
+        }) ?? throw new InvalidOperationException("Chrome passive-wait QA process could not be started.");
     }
 
     private static async Task<ChromeTab> WaitForTabAsync(ChromeDevToolsService chrome, Process process, string expectedUrl)
@@ -257,7 +279,7 @@ internal static class NoResponseWatchdogProcessProbe
         {
             process.Refresh();
             if (process.HasExited)
-                throw new InvalidOperationException($"Chrome no-response QA process exited before CDP became available. ExitCode={process.ExitCode}.");
+                throw new InvalidOperationException($"Chrome passive-wait QA process exited before CDP became available. ExitCode={process.ExitCode}.");
             try
             {
                 var tabs = await chrome.GetTabsAsync().ConfigureAwait(false);
@@ -270,7 +292,7 @@ internal static class NoResponseWatchdogProcessProbe
             }
             await Task.Delay(250).ConfigureAwait(false);
         }
-        throw new TimeoutException($"Chrome no-response QA tab was not available within 60 seconds.{(lastError is null ? string.Empty : $" Last error: {lastError.Message}")}");
+        throw new TimeoutException($"Chrome passive-wait QA tab was not available within 60 seconds.{(lastError is null ? string.Empty : $" Last error: {lastError.Message}")}");
     }
 
     private static string FindChromePath()
@@ -282,7 +304,7 @@ internal static class NoResponseWatchdogProcessProbe
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe")
         };
         return candidates.FirstOrDefault(File.Exists)
-            ?? throw new FileNotFoundException("Google Chrome was not found for the no-response QA probe.");
+            ?? throw new FileNotFoundException("Google Chrome was not found for the passive-wait QA probe.");
     }
 
     private static int ReserveLoopbackPort()
@@ -293,7 +315,7 @@ internal static class NoResponseWatchdogProcessProbe
         finally { listener.Stop(); }
     }
 
-    private static async Task WriteResultAsync(string path, NoResponseProbeResult result)
+    private static async Task WriteResultAsync(string path, PassiveWaitProbeResult result)
     {
         var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
         var temporary = path + ".tmp";
@@ -301,16 +323,19 @@ internal static class NoResponseWatchdogProcessProbe
         File.Move(temporary, path, true);
     }
 
-    private sealed class NoResponseProbeResult
+    private sealed class PassiveWaitProbeResult
     {
-        public long StaleMonitorId { get; init; }
-        public long ActiveMonitorId { get; init; }
-        public string StaleText { get; init; } = string.Empty;
-        public string ActiveText { get; init; } = string.Empty;
-        public int StaleReloadActivityCount { get; init; }
-        public int ActiveReloadActivityCount { get; init; }
-        public bool StaleStillRunning { get; init; }
-        public bool ActiveStillRunning { get; init; }
+        public long SlowMonitorId { get; init; }
+        public long ErrorMonitorId { get; init; }
+        public string SlowText { get; init; } = string.Empty;
+        public string ErrorText { get; init; } = string.Empty;
+        public bool SlowIsGenerating { get; init; }
+        public bool ErrorIsGenerating { get; init; }
+        public int SlowErrorRefreshActivityCount { get; init; }
+        public int ErrorRefreshActivityCount { get; init; }
+        public int ElapsedTimeRefreshActivityCount { get; init; }
+        public bool SlowStillRunning { get; init; }
+        public bool ErrorStillRunning { get; init; }
         public string[] Activity { get; init; } = [];
     }
 }
