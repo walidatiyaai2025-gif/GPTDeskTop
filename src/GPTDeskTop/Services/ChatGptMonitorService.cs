@@ -92,7 +92,6 @@ public sealed class ChatGptMonitorService
                 && !initial.IsGenerating
                 && !string.IsNullOrWhiteSpace(initialText)
                 && string.IsNullOrWhiteSpace(initial.ErrorText)
-                && !IsErrorResponse(initialText)
                 && !IsConversationContextLimit(initialText)
                 && initial.AssistantCount >= rotateAfterMessages;
             var lastHandledText = initialCountRotationDue ? string.Empty : initialText;
@@ -115,20 +114,19 @@ public sealed class ChatGptMonitorService
                         && !state.IsGenerating
                         && !string.IsNullOrWhiteSpace(text)
                         && string.IsNullOrWhiteSpace(state.ErrorText)
-                        && !IsErrorResponse(text)
                         && !IsConversationContextLimit(text)
                         && state.AssistantCount >= rotateAfterMessages;
                     var rotationSlotAvailable = monitor.MaxConversationRotations <= 0 || monitor.RotationCount < monitor.MaxConversationRotations;
                     var messageCountRotationDue = messageCountThresholdReached && rotationSlotAvailable;
 
                     // A slow/unchanged/empty response is a passive wait state. Time elapsed by itself
-                    // must never mutate the page. Recovery is driven only by explicit ChatGPT errors
-                    // or explicit terminal conditions such as conversation/context limits.
+                    // must never mutate the page. Recovery is driven only by explicit current ChatGPT
+                    // error UI or explicit terminal conditions such as conversation/context limits.
                     if (state.IsGenerating || string.IsNullOrWhiteSpace(text) || (string.Equals(text, lastHandledText, StringComparison.Ordinal) && !messageCountRotationDue)) { candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; continue; }
                     if (!string.Equals(candidateText, text, StringComparison.Ordinal)) { candidateText = text; candidateSince = DateTimeOffset.UtcNow; Activity?.Invoke(monitor.Id, $"{prefix} New response detected..."); continue; }
                     if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue;
                     lastHandledText = text; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
-                    var isError = !string.IsNullOrWhiteSpace(state.ErrorText) || IsErrorResponse(text); await _database.AddLogAsync("Inbound", string.Empty, text, IsConversationContextLimit(text) ? "ConversationLimit" : isError ? "Error" : "Detected", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke(); ResponseReceived?.Invoke(monitor.Id, monitor.Title, text, isError);
+                    var isError = !string.IsNullOrWhiteSpace(state.ErrorText); await _database.AddLogAsync("Inbound", string.Empty, text, IsConversationContextLimit(text) ? "ConversationLimit" : isError ? "Error" : "Detected", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke(); ResponseReceived?.Invoke(monitor.Id, monitor.Title, text, isError);
 
                     if (messageCountThresholdReached && !rotationSlotAvailable)
                     {
@@ -442,6 +440,5 @@ public sealed class ChatGptMonitorService
     private static string GetEffectiveResponse(ChatPageState state) => !string.IsNullOrWhiteSpace(state.ErrorText) ? state.ErrorText.Trim() : state.LastAssistantText.Trim();
     private static bool IsDeliveryTimeout(string text) => text.Contains("message delivery timed out", StringComparison.OrdinalIgnoreCase);
     private static bool IsConversationContextLimit(string text) { if (string.IsNullOrWhiteSpace(text)) return false; string[] markers = { "conversation is too long", "conversation is too large", "context length", "context window", "maximum context", "conversation limit", "start a new chat", "this conversation has reached", "reached the maximum length", "المحادثة طويلة جدًا", "طول المحادثة", "حد المحادثة", "ابدأ محادثة جديدة" }; return markers.Any(marker => text.Contains(marker, StringComparison.OrdinalIgnoreCase)); }
-    private static bool IsErrorResponse(string text) { if (string.IsNullOrWhiteSpace(text)) return false; string[] markers = { "message delivery timed out", "something went wrong", "there was an error", "network error", "failed to generate", "error generating", "unable to generate", "unable to load", "حدث خطأ", "خطأ في الشبكة", "تعذر إنشاء", "تعذر تحميل" }; return markers.Any(marker => text.Contains(marker, StringComparison.OrdinalIgnoreCase)); }
     private sealed record MonitorRuntime(CancellationTokenSource Cancellation, Task Worker);
 }
