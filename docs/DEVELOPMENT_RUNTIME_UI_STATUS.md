@@ -2,10 +2,11 @@
 
 ## Current Task
 
-- **UI-006 / Issue #105 — Home status font resource lifecycle:** implementation is complete on `agent/ui-006-status-font-cache`; the Saved Monitor Running/Stopped formatter now reuses owned cached fonts instead of allocating a new GDI-backed `Font` on every formatting pass, and the cache is disposed with `HomeMetricsService`. Merge remains blocked on the complete repository CI gate set.
+- No active tracked runtime/UI task after UI-006 verification. The next change should come from a tracked feature/fix issue or an explicit release operation.
 
 ## Completed
 
+- **UI-006 / Issue #105 — Home status font resource lifecycle:** merged via PR #106. Saved Monitor Running/Stopped formatting now reuses owned cached fonts instead of allocating a new GDI-backed `Font` on every formatting pass; the cache is disposed with `HomeMetricsService`. Final PR head and main implementation commit both passed the complete 8/8 gate set, and stable build `8a0ebe2e` was published successfully.
 - Production `DevelopmentTaskRuntimeBinding` owns the development engine and dynamic saved-monitor delivery coordinator.
 - Dashboard Start/Pause/Resume/Stop controls invoke the production runtime binding rather than a standalone engine.
 - Dashboard status/countdown/receipt data is sourced from the bound production engine state.
@@ -35,4 +36,4 @@
 
 The v1.8.0 runtime/UI baseline remains release-ready. The dedicated QA-005 real Windows/Chrome/CDP hidden-window endurance run completed successfully for **610.6930764 seconds** with **606 successful polls and zero failures**, while every-push CI retains the shorter 30-second smoke test.
 
-UI-006 is a post-baseline maintenance fix and is not considered complete until its exact PR head passes the full established CI gate set. Further changes should continue to be driven by tracked feature/fix tasks or an explicit release operation, not by repeating completed runtime UI gates.
+UI-006 is completed, verified and published in the stable release flow. Further changes should continue to be driven by tracked feature/fix tasks or an explicit release operation, not by repeating completed runtime UI gates.
