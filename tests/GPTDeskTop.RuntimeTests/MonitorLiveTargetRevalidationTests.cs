@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -22,8 +23,7 @@ public sealed class MonitorLiveTargetRevalidationTests
             var (service, database) = await CreateServiceAsync(root, navigated);
             var persisted = Monitor(savedUrl);
             await database.SaveMonitorAsync(persisted);
-            var activity = new List<string>();
-            service.Activity += (_, message) => activity.Add(message);
+            var activity = CaptureActivity(service);
 
             await service.StartMonitorAsync(persisted, requested);
 
@@ -50,8 +50,7 @@ public sealed class MonitorLiveTargetRevalidationTests
             var (service, database) = await CreateServiceAsync(root);
             var persisted = Monitor(savedUrl);
             await database.SaveMonitorAsync(persisted);
-            var activity = new List<string>();
-            service.Activity += (_, message) => activity.Add(message);
+            var activity = CaptureActivity(service);
 
             await service.StartMonitorAsync(persisted, requested);
 
@@ -76,8 +75,7 @@ public sealed class MonitorLiveTargetRevalidationTests
             var (service, database) = await CreateServiceAsync(root, live);
             var persisted = Monitor(savedUrl);
             await database.SaveMonitorAsync(persisted);
-            var activity = new List<string>();
-            service.Activity += (_, message) => activity.Add(message);
+            var activity = CaptureActivity(service);
 
             await service.StartMonitorAsync(persisted, requested);
 
@@ -127,6 +125,27 @@ public sealed class MonitorLiveTargetRevalidationTests
         Assert.DoesNotContain("UpdateMonitorRuntimeTargetIfConversationMatchesAsync", uiStart, StringComparison.Ordinal);
         Assert.DoesNotContain("monitor.TabId = tab.Id", uiStart, StringComparison.Ordinal);
         Assert.DoesNotContain("monitor.Title = tab.Title", uiStart, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void StartActivityRegressionCollectorsUseThreadSafeCaptureHelper()
+    {
+        var source = ReadSource("tests", "GPTDeskTop.RuntimeTests", "MonitorLiveTargetRevalidationTests.cs");
+        var unsafeCollector = "new List" + "<string>()";
+        var unsafeSubscription = "activity." + "Add(message)";
+
+        Assert.Contains("ConcurrentQueue<string>", source, StringComparison.Ordinal);
+        Assert.Contains("CaptureActivity(service)", source, StringComparison.Ordinal);
+        Assert.Contains("activity.Enqueue(message)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain(unsafeCollector, source, StringComparison.Ordinal);
+        Assert.DoesNotContain(unsafeSubscription, source, StringComparison.Ordinal);
+    }
+
+    private static ConcurrentQueue<string> CaptureActivity(ChatGptMonitorService service)
+    {
+        var activity = new ConcurrentQueue<string>();
+        service.Activity += (_, message) => activity.Enqueue(message);
+        return activity;
     }
 
     private static async Task<(ChatGptMonitorService Service, LocalDatabase Database)> CreateServiceAsync(string root, params ChromeTab[] liveTabs)
