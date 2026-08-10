@@ -105,15 +105,20 @@ public sealed class OperatorStartConversationIdentityTests
     }
 
     [Fact]
-    public void OperatorStartUsesSafeSharedResolverAndNeverAssignsTabUrlToMonitor()
+    public void OperatorStartUsesSafeSharedResolverAndServiceOwnedTargetCommit()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
         var service = ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs");
+        var uiStart = Slice(source, "private async Task StartMonitorAsync", "private ChromeTab? ResolveTab");
+        var serviceStart = Slice(service, "public async Task StartMonitorAsync", "public async Task<bool> UpdateMonitorConfigurationAsync");
 
         Assert.Contains("SavedMonitorTabResolver.Resolve(monitor, _tabs).Tab", source, StringComparison.Ordinal);
-        Assert.Contains("UpdateMonitorRuntimeTargetIfConversationMatchesAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdateMonitorRuntimeTargetIfConversationMatchesAsync", uiStart, StringComparison.Ordinal);
         Assert.DoesNotContain("monitor.Url = tab.Url", source, StringComparison.Ordinal);
-        Assert.Contains("ChatGptConversationIdentity.IsSame(monitor.Url, tab.Url)", service, StringComparison.Ordinal);
+        Assert.Contains("ChatGptConversationIdentity.IsSame(monitor.Url, tab.Url)", serviceStart, StringComparison.Ordinal);
+        Assert.Contains("await _chrome.GetTabsAsync()", serviceStart, StringComparison.Ordinal);
+        Assert.Contains("UpdateMonitorRuntimeTargetIfConversationMatchesAsync", serviceStart, StringComparison.Ordinal);
+        Assert.Contains("MonitorLoopAsync(persistedMonitor, liveTab, cts.Token)", serviceStart, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] parts)
@@ -123,6 +128,14 @@ public sealed class OperatorStartConversationIdentityTests
             "..", "..", "..", "..", "..",
             Path.Combine(parts)));
         return File.ReadAllText(path);
+    }
+
+    private static string Slice(string source, string startMarker, string endMarker)
+    {
+        var start = source.IndexOf(startMarker, StringComparison.Ordinal);
+        var end = source.IndexOf(endMarker, start + startMarker.Length, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start, $"Expected source markers '{startMarker}' and '{endMarker}'.");
+        return source[start..end];
     }
 
     private static string CreateTempRoot()
