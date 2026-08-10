@@ -87,6 +87,7 @@ public sealed class ChatGptMonitorService
             lock (_sync)
             {
                 if (!_running.TryGetValue(monitorId, out runtime)) return;
+                runtime.StopOwnsCleanup = true;
             }
 
             runtime.Cancellation.Cancel();
@@ -99,14 +100,18 @@ public sealed class ChatGptMonitorService
             }
             finally
             {
+                var removed = false;
                 lock (_sync)
                 {
                     if (_running.TryGetValue(monitorId, out var current) && ReferenceEquals(current, runtime))
+                    {
                         _running.Remove(monitorId);
+                        removed = true;
+                    }
                 }
                 runtime.Cancellation.Dispose();
                 Activity?.Invoke(monitorId, "Stopped.");
-                RunningStateChanged?.Invoke();
+                if (removed) RunningStateChanged?.Invoke();
             }
         }
         finally
@@ -279,7 +284,26 @@ public sealed class ChatGptMonitorService
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { Activity?.Invoke(monitor.Id, "Monitor cancellation requested; stopping cleanly."); }
         catch (Exception ex) when (IsTransientChromeException(ex)) { Activity?.Invoke(monitor.Id, $"Chrome connection unavailable during startup. Monitor remains stopped and can be started again: {ex.Message}"); }
         catch (Exception ex) { await ExceptionLogService.LogAsync(ex, "ChatGptMonitorService.WorkerFatal", monitor.Id, tab.Id, monitor.Title); Activity?.Invoke(monitor.Id, $"Monitor worker stopped by exception: {ex.Message}"); }
-        finally { lock (_sync) { if (_running.TryGetValue(monitor.Id, out var current) && current.Cancellation.Token == cancellationToken) _running.Remove(monitor.Id); } RunningStateChanged?.Invoke(); }
+        finally
+        {
+            MonitorRuntime? runtimeToDispose = null;
+            lock (_sync)
+            {
+                if (_running.TryGetValue(monitor.Id, out var current)
+                    && current.Cancellation.Token == cancellationToken
+                    && !current.StopOwnsCleanup)
+                {
+                    _running.Remove(monitor.Id);
+                    runtimeToDispose = current;
+                }
+            }
+
+            if (runtimeToDispose is not null)
+            {
+                runtimeToDispose.Cancellation.Dispose();
+                RunningStateChanged?.Invoke();
+            }
+        }
     }
 
     private async Task<ChromeTab?> CommitVerifiedConversationHandoffAsync(
@@ -437,7 +461,6 @@ public sealed class ChatGptMonitorService
             return null;
 
         Activity?.Invoke(monitor.Id, $"{prefix} Message-count rotation #{monitor.RotationCount} complete. Same Monitor ID is now bound to the new conversation.");
-
         try { await _chrome.CloseTabAsync(oldTab, cancellationToken); } catch (Exception closeEx) when (IsTransientChromeException(closeEx)) { Activity?.Invoke(monitor.Id, $"Old chat close was deferred after message-count rotation: {closeEx.Message}"); }
         if (monitor.RotationCooldownSeconds > 0)
             await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(monitor.RotationCooldownSeconds, 0, 3600)), cancellationToken);
@@ -493,5 +516,17 @@ public sealed class ChatGptMonitorService
     private static string GetEffectiveResponse(ChatPageState state) => !string.IsNullOrWhiteSpace(state.ErrorText) ? state.ErrorText.Trim() : state.LastAssistantText.Trim();
     private static bool IsDeliveryTimeout(string text) => text.Contains("message delivery timed out", StringComparison.OrdinalIgnoreCase);
     private static bool IsConversationContextLimit(string text) { if (string.IsNullOrWhiteSpace(text)) return false; string[] markers = { "conversation is too long", "conversation is too large", "context length", "context window", "maximum context", "conversation limit", "start a new chat", "this conversation has reached", "reached the maximum length", "المحادثة طويلة جدًا", "طول المحادثة", "حد المحادثة", "ابدأ محادثة جديدة" }; return markers.Any(marker => text.Contains(marker, StringComparison.OrdinalIgnoreCase)); }
-    private sealed record MonitorRuntime(CancellationTokenSource Cancellation, Task Worker);
+
+    private sealed class MonitorRuntime
+    {
+        public MonitorRuntime(CancellationTokenSource cancellation, Task worker)
+        {
+            Cancellation = cancellation;
+            Worker = worker;
+        }
+
+        public CancellationTokenSource Cancellation { get; }
+        public Task Worker { get; }
+        public bool StopOwnsCleanup { get; set; }
+    }
 }
