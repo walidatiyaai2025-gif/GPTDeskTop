@@ -958,8 +958,7 @@ public sealed class MainForm : Form
         var message = $"Delete monitor #{monitor.Id}?{Environment.NewLine}{Environment.NewLine}{monitor.Title}{Environment.NewLine}{Environment.NewLine}The monitor will be stopped if necessary and its saved configuration will be removed. This cannot be undone.";
         if (MessageBox.Show(this, message, "Delete Monitor", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
         var id = monitor.Id;
-        await _monitor.StopMonitorAsync(id);
-        await _database.DeleteMonitorAsync(id);
+        await _monitor.DeleteMonitorAsync(id);
         _selectedMonitor = null;
         await RefreshMonitorsAsync();
         AppendActivity($"Monitor #{id} deleted.");
