@@ -16,6 +16,7 @@ public sealed class MonitorIdentityRepairForm : Form
     private readonly Button _refreshButton = new() { Text = "Refresh", AutoSize = true };
     private readonly Button _rebindButton = new() { Text = "Rebind Monitor", AutoSize = true, Enabled = false };
     private readonly Button _cancelButton = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
     private bool _loading;
 
     public MonitorIdentityRepairForm(ChromeDevToolsService chrome, LocalDatabase database)
@@ -139,14 +140,15 @@ public sealed class MonitorIdentityRepairForm : Form
 
     private async Task RefreshChoicesAsync()
     {
-        if (_loading) return;
+        if (_loading || IsDisposed || Disposing || _lifetimeCancellation.IsCancellationRequested) return;
         _loading = true;
         _refreshButton.Enabled = false;
         _rebindButton.Enabled = false;
         _statusLabel.Text = "Checking saved monitors and open ChatGPT conversations…";
         try
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
             var monitors = await _database.GetSavedMonitorsAsync(timeout.Token);
             var duplicateIds = MonitorConversationOwnership.FindDuplicateMonitorIds(monitors);
             var blockers = monitors
@@ -161,6 +163,7 @@ public sealed class MonitorIdentityRepairForm : Form
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             var tabs = await _chrome.GetTabsAsync(timeout.Token);
+            if (IsDisposed || Disposing || _lifetimeCancellation.IsCancellationRequested) return;
             var conversations = tabs
                 .Where(tab => RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
                 .Where(tab => !ownedConversationUrls.Contains(tab.Url))
@@ -177,9 +180,14 @@ public sealed class MonitorIdentityRepairForm : Form
                     ? $"{invalidCount} invalid identity blocker(s) and {duplicateCount} duplicate-owner blocker(s) were found, but no unowned stable ChatGPT conversation is currently open."
                     : $"{invalidCount} invalid identity blocker(s) and {duplicateCount} duplicate-owner blocker(s) can be repaired. Select a monitor and unowned replacement conversation.";
         }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+            // Dialog teardown is expected; do not report it as a repair failure.
+        }
         catch (Exception ex)
         {
             ExceptionLogService.Log(ex, "MonitorIdentityRepairForm.RefreshChoices");
+            if (IsDisposed || Disposing) return;
             _monitorBox.DataSource = null;
             _conversationBox.DataSource = null;
             _statusLabel.Text = $"Cannot load repair choices: {ex.Message}";
@@ -187,8 +195,11 @@ public sealed class MonitorIdentityRepairForm : Form
         finally
         {
             _loading = false;
-            _refreshButton.Enabled = true;
-            UpdateActionState();
+            if (!IsDisposed && !Disposing && !_lifetimeCancellation.IsCancellationRequested)
+            {
+                _refreshButton.Enabled = true;
+                UpdateActionState();
+            }
         }
     }
 
@@ -237,6 +248,16 @@ public sealed class MonitorIdentityRepairForm : Form
                 UpdateActionState();
             }
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _lifetimeCancellation.Cancel();
+            _lifetimeCancellation.Dispose();
+        }
+        base.Dispose(disposing);
     }
 
     private sealed record MonitorChoice(SavedMonitor Monitor, bool IsDuplicateOwner)

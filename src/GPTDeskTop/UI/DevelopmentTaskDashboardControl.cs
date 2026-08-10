@@ -69,7 +69,6 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         BuildUi();
         WireEvents();
         Render();
-        _timer.Start();
     }
 
     private void BuildUi()
@@ -180,6 +179,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         _messagesButton.Click += (_, _) => OpenMessageCatalog();
         _settingsButton.Click += (_, _) => OpenScheduleSettings();
         _toggle.Click += (_, _) => ToggleExpanded();
+        VisibleChanged += (_, _) => Render();
         _binding.Engine.StateChanged += OnStateChanged;
         _binding.Engine.MessageReady += OnMessageReady;
         _binding.Engine.CoolingStarted += OnCoolingChanged;
@@ -194,6 +194,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         _body.Visible = _expanded;
         _toggle.Text = _expanded ? "Collapse" : "Details";
         Height = _expanded ? ExpandedHeight : CollapsedHeight;
+        Render();
     }
 
     private void OpenMessageCatalog()
@@ -237,7 +238,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
 
     private void Render()
     {
-        if (IsDisposed) return;
+        if (IsDisposed || Disposing) return;
         var state = _binding.State;
         _status.Text = $"● {state.Status}";
         ApplyStatusStyle(state.Status);
@@ -266,6 +267,23 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         _pause.Enabled = state.Status == DevelopmentTaskEngineStatus.Working;
         _resume.Enabled = state.Status is DevelopmentTaskEngineStatus.Paused or DevelopmentTaskEngineStatus.Stopped;
         _stop.Enabled = state.Status is not DevelopmentTaskEngineStatus.Stopped and not DevelopmentTaskEngineStatus.Completed;
+        UpdateTimerState(state.Status);
+    }
+
+    private void UpdateTimerState(DevelopmentTaskEngineStatus status)
+    {
+        var shouldRun = Visible
+            && _expanded
+            && status is DevelopmentTaskEngineStatus.Working or DevelopmentTaskEngineStatus.Cooling;
+
+        if (shouldRun)
+        {
+            if (!_timer.Enabled) _timer.Start();
+        }
+        else if (_timer.Enabled)
+        {
+            _timer.Stop();
+        }
     }
 
     private void ApplyStatusStyle(DevelopmentTaskEngineStatus status)
@@ -290,6 +308,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
     {
         if (disposing)
         {
+            _timer.Stop();
             _binding.Engine.StateChanged -= OnStateChanged;
             _binding.Engine.MessageReady -= OnMessageReady;
             _binding.Engine.CoolingStarted -= OnCoolingChanged;

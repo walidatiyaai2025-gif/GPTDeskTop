@@ -50,6 +50,8 @@ public sealed class HistoryWorkspaceControl : UserControl
     };
     private readonly DataGridView _grid = new();
     private readonly Panel _body = new() { Dock = DockStyle.Fill, BackColor = FluentTheme.Surface };
+    private readonly Font _statusFont = new("Segoe UI Variable Text", 9F, FontStyle.Bold);
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
 
     private List<MessageLog> _allLogs = new();
     private List<MessageLog> _visibleLogs = new();
@@ -248,28 +250,37 @@ public sealed class HistoryWorkspaceControl : UserControl
 
     private async Task RefreshAsync()
     {
-        if (_loading || IsDisposed) return;
+        if (_loading || IsDisposed || Disposing || _lifetimeCancellation.IsCancellationRequested) return;
         _loading = true;
         _refreshButton.Enabled = false;
         _summaryLabel.Text = "Loading history…";
         _summaryLabel.ForeColor = FluentTheme.Accent;
         try
         {
-            _allLogs = await _database.GetRecentLogsAsync(500);
+            _allLogs = await _database.GetRecentLogsAsync(500, _lifetimeCancellation.Token);
+            if (IsDisposed || Disposing || _lifetimeCancellation.IsCancellationRequested) return;
             RebuildFlowOptions();
             ApplyFilters();
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+            // Normal control teardown: do not surface an error or touch disposed controls.
         }
         catch (Exception ex)
         {
             ExceptionLogService.Log(ex, "HistoryWorkspaceControl.Refresh");
+            if (IsDisposed || Disposing) return;
             _summaryLabel.Text = $"History load failed: {ex.Message}";
             _summaryLabel.ForeColor = FluentTheme.Danger;
         }
         finally
         {
             _loading = false;
-            _refreshButton.Enabled = true;
-            UpdateActionState();
+            if (!IsDisposed && !Disposing && !_lifetimeCancellation.IsCancellationRequested)
+            {
+                _refreshButton.Enabled = true;
+                UpdateActionState();
+            }
         }
     }
 
@@ -442,7 +453,7 @@ public sealed class HistoryWorkspaceControl : UserControl
         _toggleButton.AccessibleDescription = _expanded
             ? "Collapse the stored history explorer."
             : "Expand the stored history explorer.";
-        if (_expanded && _allLogs.Count == 0 && !_loading) _ = RefreshAsync();
+        if (_expanded && _allLogs.Count == 0 && !_loading && !_lifetimeCancellation.IsCancellationRequested) _ = RefreshAsync();
     }
 
     private void FormatStatusCell(object? sender, DataGridViewCellFormattingEventArgs e)
@@ -457,7 +468,7 @@ public sealed class HistoryWorkspaceControl : UserControl
             HistoryWorkspaceLogic.Deferred => FluentTheme.Warning,
             _ => FluentTheme.Text
         };
-        style.Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold);
+        style.Font = _statusFont;
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -480,5 +491,17 @@ public sealed class HistoryWorkspaceControl : UserControl
             return true;
         }
         return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _lifetimeCancellation.Cancel();
+            _grid.CellFormatting -= FormatStatusCell;
+            _statusFont.Dispose();
+            _lifetimeCancellation.Dispose();
+        }
+        base.Dispose(disposing);
     }
 }
