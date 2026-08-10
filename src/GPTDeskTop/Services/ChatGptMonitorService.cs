@@ -70,11 +70,52 @@ public sealed class ChatGptMonitorService
             return;
         }
 
+        ChromeTab? liveTab;
+        try
+        {
+            var liveTabs = await _chrome.GetTabsAsync();
+            liveTab = liveTabs.FirstOrDefault(candidate => string.Equals(candidate.Id, tab.Id, StringComparison.Ordinal));
+        }
+        catch (Exception ex) when (ex is HttpRequestException || IsTransientChromeException(ex))
+        {
+            Activity?.Invoke(persistedMonitor.Id, $"Monitor #{persistedMonitor.Id}: live Chrome target revalidation is temporarily unavailable. Start was deferred: {ex.Message}");
+            return;
+        }
+
+        if (liveTab is null)
+        {
+            Activity?.Invoke(persistedMonitor.Id, $"Monitor #{persistedMonitor.Id}: selected Chrome target disappeared before Start. Refresh the open conversations and retry.");
+            return;
+        }
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(liveTab.Url))
+        {
+            Activity?.Invoke(persistedMonitor.Id, $"Monitor #{persistedMonitor.Id}: selected Chrome target no longer exposes a stable ChatGPT conversation. Start was ignored.");
+            return;
+        }
+        if (!ChatGptConversationIdentity.IsSame(persistedMonitor.Url, liveTab.Url))
+        {
+            Activity?.Invoke(persistedMonitor.Id, $"Monitor #{persistedMonitor.Id}: selected Chrome target navigated to a different conversation before Start. Refresh the open conversations and retry.");
+            return;
+        }
+
+        var targetUpdated = await _database.UpdateMonitorRuntimeTargetIfConversationMatchesAsync(
+            persistedMonitor.Id,
+            persistedMonitor.Url,
+            liveTab.Id,
+            liveTab.Title);
+        if (!targetUpdated)
+        {
+            Activity?.Invoke(persistedMonitor.Id, $"Monitor #{persistedMonitor.Id}: saved conversation changed before the live Chrome target could be committed. Start was ignored.");
+            return;
+        }
+        persistedMonitor.TabId = liveTab.Id;
+        persistedMonitor.Title = liveTab.Title;
+
         lock (_sync)
         {
             if (_running.ContainsKey(persistedMonitor.Id)) return;
             var cts = new CancellationTokenSource();
-            var worker = Task.Run(() => MonitorLoopAsync(persistedMonitor, tab, cts.Token));
+            var worker = Task.Run(() => MonitorLoopAsync(persistedMonitor, liveTab, cts.Token));
             _running.Add(persistedMonitor.Id, new MonitorRuntime(cts, worker));
         }
         Activity?.Invoke(persistedMonitor.Id, $"Started: {persistedMonitor.Title}");

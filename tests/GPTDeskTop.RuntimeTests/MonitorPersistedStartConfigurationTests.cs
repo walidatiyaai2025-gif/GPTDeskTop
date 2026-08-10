@@ -1,3 +1,6 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
@@ -13,8 +16,10 @@ public sealed class MonitorPersistedStartConfigurationTests
         var root = CreateTempRoot();
         try
         {
-            var (service, database) = await CreateServiceAsync(root);
-            var persisted = Monitor(0, "https://chatgpt.com/c/fresh-start-config");
+            const string url = "https://chatgpt.com/c/fresh-start-config";
+            var liveTab = Tab("fresh-start-tab", url);
+            var (service, database) = await CreateServiceAsync(root, liveTab);
+            var persisted = Monitor(0, url);
             persisted.Title = "Persisted title";
             persisted.AutoReply = "fresh-reply";
             persisted.ReplyDelaySeconds = 13;
@@ -34,10 +39,10 @@ public sealed class MonitorPersistedStartConfigurationTests
                     startupActivity.TrySetResult(message);
             };
 
-            await service.StartMonitorAsync(stale, Tab("fresh-start-tab", persisted.Url));
+            await service.StartMonitorAsync(stale, liveTab);
             var startup = await startupActivity.Task.WaitAsync(TimeSpan.FromSeconds(8));
 
-            Assert.Contains("Persisted title", startup, StringComparison.Ordinal);
+            Assert.Contains("fresh-start-tab", startup, StringComparison.Ordinal);
             Assert.Contains("Timer 7s", startup, StringComparison.Ordinal);
             Assert.Contains("Delay 13s", startup, StringComparison.Ordinal);
             Assert.Contains("Reply: fresh-reply", startup, StringComparison.Ordinal);
@@ -58,13 +63,15 @@ public sealed class MonitorPersistedStartConfigurationTests
         var root = CreateTempRoot();
         try
         {
-            var (service, database) = await CreateServiceAsync(root);
-            var persisted = Monitor(0, "https://chatgpt.com/c/running-settings-guard");
+            const string url = "https://chatgpt.com/c/running-settings-guard";
+            var liveTab = Tab("running-settings-tab", url);
+            var (service, database) = await CreateServiceAsync(root, liveTab);
+            var persisted = Monitor(0, url);
             persisted.AutoReply = "before";
             persisted.TimerSeconds = 5;
             await database.SaveMonitorAsync(persisted);
 
-            await service.StartMonitorAsync(Monitor(persisted.Id, persisted.Url), Tab("running-settings-tab", persisted.Url));
+            await service.StartMonitorAsync(Monitor(persisted.Id, persisted.Url), liveTab);
             Assert.True(service.IsMonitorRunning(persisted.Id));
 
             var update = Monitor(persisted.Id, persisted.Url);
@@ -94,8 +101,10 @@ public sealed class MonitorPersistedStartConfigurationTests
         var root = CreateTempRoot();
         try
         {
-            var (service, database) = await CreateServiceAsync(root);
-            var persisted = Monitor(0, "https://chatgpt.com/c/save-before-start");
+            const string url = "https://chatgpt.com/c/save-before-start";
+            var liveTab = Tab("save-before-start-tab", url);
+            var (service, database) = await CreateServiceAsync(root, liveTab);
+            var persisted = Monitor(0, url);
             persisted.AutoReply = "before";
             persisted.TimerSeconds = 2;
             persisted.ReplyDelaySeconds = 1;
@@ -120,7 +129,7 @@ public sealed class MonitorPersistedStartConfigurationTests
                     startupActivity.TrySetResult(message);
             };
 
-            await service.StartMonitorAsync(staleStart, Tab("save-before-start-tab", persisted.Url));
+            await service.StartMonitorAsync(staleStart, liveTab);
             var startup = await startupActivity.Task.WaitAsync(TimeSpan.FromSeconds(8));
 
             Assert.Contains("Timer 6s", startup, StringComparison.Ordinal);
@@ -148,7 +157,7 @@ public sealed class MonitorPersistedStartConfigurationTests
         Assert.Contains("using var lifecycleLease = await AcquireLifecycleGateAsync(monitor.Id);", start, StringComparison.Ordinal);
         Assert.Contains("var persistedMonitor = savedMonitors.FirstOrDefault", start, StringComparison.Ordinal);
         Assert.Contains("string.IsNullOrWhiteSpace(persistedMonitor.AutoReply)", start, StringComparison.Ordinal);
-        Assert.Contains("MonitorLoopAsync(persistedMonitor, tab, cts.Token)", start, StringComparison.Ordinal);
+        Assert.Contains("MonitorLoopAsync(persistedMonitor, liveTab, cts.Token)", start, StringComparison.Ordinal);
         Assert.DoesNotContain("MonitorLoopAsync(monitor, tab, cts.Token)", start, StringComparison.Ordinal);
 
         Assert.Contains("using var lifecycleLease = await AcquireLifecycleGateAsync(monitor.Id);", update, StringComparison.Ordinal);
@@ -160,11 +169,13 @@ public sealed class MonitorPersistedStartConfigurationTests
         Assert.Contains("await RefreshMonitorsAsync()", edit, StringComparison.Ordinal);
     }
 
-    private static async Task<(ChatGptMonitorService Service, LocalDatabase Database)> CreateServiceAsync(string root)
+    private static async Task<(ChatGptMonitorService Service, LocalDatabase Database)> CreateServiceAsync(string root, params ChromeTab[] liveTabs)
     {
         var database = new LocalDatabase(Path.Combine(root, "test.db"));
         await database.InitializeAsync();
-        var chrome = new ChromeDevToolsService(new HttpClient(), new ChromeConfig());
+        var chrome = new ChromeDevToolsService(
+            new HttpClient(new ChromeListHandler(liveTabs)),
+            new ChromeConfig());
         return (new ChatGptMonitorService(chrome, database, new MonitoringConfig()), database);
     }
 
@@ -195,7 +206,7 @@ public sealed class MonitorPersistedStartConfigurationTests
         Title = id,
         Url = url,
         Type = "page",
-        WebSocketDebuggerUrl = $"ws://fake/{id}"
+        WebSocketDebuggerUrl = $"ws://127.0.0.1:1/devtools/page/{id}"
     };
 
     private static string ReadSource(params string[] parts)
@@ -223,5 +234,29 @@ public sealed class MonitorPersistedStartConfigurationTests
     {
         try { Directory.Delete(root, recursive: true); }
         catch { }
+    }
+
+    private sealed class ChromeListHandler : HttpMessageHandler
+    {
+        private readonly ChromeTab[] _tabs;
+
+        public ChromeListHandler(IEnumerable<ChromeTab> tabs)
+            => _tabs = tabs.ToArray();
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var payload = JsonSerializer.Serialize(_tabs.Select(tab => new
+            {
+                id = tab.Id,
+                title = tab.Title,
+                url = tab.Url,
+                type = tab.Type,
+                webSocketDebuggerUrl = tab.WebSocketDebuggerUrl
+            }));
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            });
+        }
     }
 }

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Data;
@@ -74,7 +75,8 @@ internal static class NoResponseWatchdogProcessProbe
             DelayAfterSendMilliseconds = 250
         };
 
-        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        var identityHandler = new ConversationIdentityChromeListHandler();
+        using var httpClient = new HttpClient(identityHandler) { Timeout = TimeSpan.FromSeconds(5) };
         var chrome = new ChromeDevToolsService(httpClient, chromeConfig);
         var database = new LocalDatabase(Path.Combine(probeRoot, "passive-wait.db"));
         await database.InitializeAsync().ConfigureAwait(false);
@@ -97,8 +99,13 @@ internal static class NoResponseWatchdogProcessProbe
             var slowPhysicalTab = await WaitForTabAsync(chrome, chromeProcess, slowUrl).ConfigureAwait(false);
             var errorPhysicalTab = await chrome.CreateTabAsync(errorUrl).ConfigureAwait(false);
 
-            var slowTab = WithConversationIdentity(slowPhysicalTab, "https://chatgpt.com/c/qa-passive-wait-slow");
-            var errorTab = WithConversationIdentity(errorPhysicalTab, "https://chatgpt.com/c/qa-passive-wait-error");
+            const string slowConversationUrl = "https://chatgpt.com/c/qa-passive-wait-slow";
+            const string errorConversationUrl = "https://chatgpt.com/c/qa-passive-wait-error";
+            identityHandler.Map(slowPhysicalTab.Id, slowConversationUrl);
+            identityHandler.Map(errorPhysicalTab.Id, errorConversationUrl);
+
+            var slowTab = WithConversationIdentity(slowPhysicalTab, slowConversationUrl);
+            var errorTab = WithConversationIdentity(errorPhysicalTab, errorConversationUrl);
 
             var slowMonitor = await SaveMonitorAsync(database, "QA slow thinking tab", slowTab).ConfigureAwait(false);
             var errorMonitor = await SaveMonitorAsync(database, "QA explicit error tab", errorTab).ConfigureAwait(false);
@@ -136,8 +143,8 @@ internal static class NoResponseWatchdogProcessProbe
                 ErrorText = errorFinal.LastAssistantText,
                 SlowIsGenerating = slowFinal.IsGenerating,
                 ErrorIsGenerating = errorFinal.IsGenerating,
-                SlowErrorRefreshActivityCount = activitySnapshot.Count(x => x.Contains("QA slow thinking tab", StringComparison.Ordinal) && x.Contains("Error saved. Refreshing only this tab", StringComparison.Ordinal)),
-                ErrorRefreshActivityCount = activitySnapshot.Count(x => x.Contains("QA explicit error tab", StringComparison.Ordinal) && x.Contains("Error saved. Refreshing only this tab", StringComparison.Ordinal)),
+                SlowErrorRefreshActivityCount = activitySnapshot.Count(x => x.Contains("QA slow thinking monitor", StringComparison.Ordinal) && x.Contains("Error saved. Refreshing only this tab", StringComparison.Ordinal)),
+                ErrorRefreshActivityCount = activitySnapshot.Count(x => x.Contains("QA explicit error monitor", StringComparison.Ordinal) && x.Contains("Error saved. Refreshing only this tab", StringComparison.Ordinal)),
                 ElapsedTimeRefreshActivityCount = activitySnapshot.Count(x => x.Contains("No new response for", StringComparison.OrdinalIgnoreCase) || x.Contains("NoResponseRefresh", StringComparison.OrdinalIgnoreCase)),
                 SlowStillRunning = monitorService.IsMonitorRunning(slowMonitor.Id),
                 ErrorStillRunning = monitorService.IsMonitorRunning(errorMonitor.Id),
@@ -237,7 +244,7 @@ internal static class NoResponseWatchdogProcessProbe
         alert.style.height = '32px';
         alert.textContent = 'Something went wrong';
         document.body.appendChild(alert);
-      }, 35000);
+      }, 10000);
     } else {
       target.textContent = `error-recovered-load-${count}`;
     }
@@ -251,24 +258,29 @@ internal static class NoResponseWatchdogProcessProbe
         var chromePath = FindChromePath();
         var profilePath = Path.Combine(probeRoot, "ChromeProfile");
         Directory.CreateDirectory(profilePath);
-        var arguments = string.Join(' ',
-            "--remote-debugging-address=127.0.0.1",
-            $"--remote-debugging-port={port}",
-            $"--user-data-dir=\"{profilePath}\"",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-background-networking",
-            "--disable-component-update",
-            "--disable-sync",
-            "--disable-gpu",
-            $"--new-window \"{url}\"");
-        return Process.Start(new ProcessStartInfo
+
+        var startInfo = new ProcessStartInfo
         {
             FileName = chromePath,
-            Arguments = arguments,
-            UseShellExecute = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
             WorkingDirectory = probeRoot
-        }) ?? throw new InvalidOperationException("Chrome passive-wait QA process could not be started.");
+        };
+        startInfo.ArgumentList.Add("--headless=new");
+        startInfo.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
+        startInfo.ArgumentList.Add($"--remote-debugging-port={port}");
+        startInfo.ArgumentList.Add($"--user-data-dir={profilePath}");
+        startInfo.ArgumentList.Add("--no-first-run");
+        startInfo.ArgumentList.Add("--no-default-browser-check");
+        startInfo.ArgumentList.Add("--disable-background-networking");
+        startInfo.ArgumentList.Add("--disable-component-update");
+        startInfo.ArgumentList.Add("--disable-sync");
+        startInfo.ArgumentList.Add("--disable-extensions");
+        startInfo.ArgumentList.Add("--disable-gpu");
+        startInfo.ArgumentList.Add(url);
+
+        return Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Chrome passive-wait QA process could not be started.");
     }
 
     private static async Task<ChromeTab> WaitForTabAsync(ChromeDevToolsService chrome, Process process, string expectedUrl)
@@ -321,6 +333,54 @@ internal static class NoResponseWatchdogProcessProbe
         var temporary = path + ".tmp";
         await File.WriteAllTextAsync(temporary, json).ConfigureAwait(false);
         File.Move(temporary, path, true);
+    }
+
+    private sealed class ConversationIdentityChromeListHandler : DelegatingHandler
+    {
+        private static readonly JsonSerializerOptions JsonOptions = new()
+        {
+            PropertyNameCaseInsensitive = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
+        private readonly object _sync = new();
+        private readonly Dictionary<string, string> _conversationUrls = new(StringComparer.Ordinal);
+
+        public ConversationIdentityChromeListHandler()
+            : base(new HttpClientHandler())
+        {
+        }
+
+        public void Map(string targetId, string conversationUrl)
+        {
+            lock (_sync)
+                _conversationUrls[targetId] = conversationUrl;
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode ||
+                !string.Equals(request.RequestUri?.AbsolutePath, "/json/list", StringComparison.OrdinalIgnoreCase))
+                return response;
+
+            var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var tabs = JsonSerializer.Deserialize<List<ChromeTab>>(json, JsonOptions);
+            if (tabs is null || tabs.Count == 0) return response;
+
+            Dictionary<string, string> mappings;
+            lock (_sync)
+                mappings = new Dictionary<string, string>(_conversationUrls, StringComparer.Ordinal);
+
+            foreach (var tab in tabs)
+            {
+                if (mappings.TryGetValue(tab.Id, out var conversationUrl))
+                    tab.Url = conversationUrl;
+            }
+
+            response.Content.Dispose();
+            response.Content = new StringContent(JsonSerializer.Serialize(tabs, JsonOptions), Encoding.UTF8, "application/json");
+            return response;
+        }
     }
 
     private sealed class PassiveWaitProbeResult
