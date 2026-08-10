@@ -1,11 +1,7 @@
 # Last release
 
-This folder is managed automatically by the `Update Last release` GitHub Actions workflow.
+`GPTDeskTop.exe` is the latest verified Windows x64 Release application that passed all eight required stable CI workflows for the same `main` source commit.
 
-After the publisher is merged and the current `main` commit passes the complete stable gate set, this folder will contain:
+This folder is automation-managed. Do not manually replace the executable.
 
-- `GPTDeskTop.exe` — latest verified Windows x64 Release application, self-contained and single-file.
-- `RELEASE.txt` — source commit, version, generated time, validation receipt and SHA-256 checksum.
-- `README.md` — this usage contract.
-
-A newer build must never replace the executable until all eight required stable CI workflows pass for the same `main` source commit.
+See `RELEASE.txt` for the source commit, version, generation time and SHA-256 checksum.
