@@ -9,6 +9,7 @@ public sealed class HomeMetricsService : IDisposable
     private readonly Label _crashCard;
     private readonly Label _monitorCard;
     private readonly List<DataGridView> _statusGrids = new();
+    private readonly Dictionary<(string Family, float Size, GraphicsUnit Unit, byte GdiCharSet, bool Vertical, FontStyle Style), Font> _statusFonts = new();
     private bool _disposed;
 
     public HomeMetricsService(Form form, LocalDatabase database, ChatGptMonitorService monitor)
@@ -82,8 +83,31 @@ public sealed class HomeMetricsService : IDisposable
 
         e.Value = presentation.Text;
         style.ForeColor = presentation.ForeColor;
-        style.Font = new Font(grid.Font, presentation.FontStyle);
+        style.Font = GetOrCreateStatusFont(grid.Font, presentation.FontStyle);
         e.FormattingApplied = true;
+    }
+
+    private Font GetOrCreateStatusFont(Font baseFont, FontStyle style)
+    {
+        var key = (
+            baseFont.FontFamily.Name,
+            baseFont.Size,
+            baseFont.Unit,
+            baseFont.GdiCharSet,
+            baseFont.GdiVerticalFont,
+            style);
+
+        if (_statusFonts.TryGetValue(key, out var cached)) return cached;
+
+        var created = new Font(
+            baseFont.FontFamily,
+            baseFont.Size,
+            style,
+            baseFont.Unit,
+            baseFont.GdiCharSet,
+            baseFont.GdiVerticalFont);
+        _statusFonts.Add(key, created);
+        return created;
     }
 
     private async void OnShown(object? sender, EventArgs e) => await RefreshAsync();
@@ -128,5 +152,7 @@ public sealed class HomeMetricsService : IDisposable
         _disposed = true;
         _monitor.RunningStateChanged -= OnRunningStateChanged;
         foreach (var grid in _statusGrids) grid.CellFormatting -= OnStatusCellFormatting;
+        foreach (var font in _statusFonts.Values) font.Dispose();
+        _statusFonts.Clear();
     }
 }
