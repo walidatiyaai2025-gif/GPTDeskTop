@@ -244,7 +244,7 @@ internal static class NoResponseWatchdogProcessProbe
         alert.style.height = '32px';
         alert.textContent = 'Something went wrong';
         document.body.appendChild(alert);
-      }, 35000);
+      }, 10000);
     } else {
       target.textContent = `error-recovered-load-${count}`;
     }
