@@ -135,6 +135,7 @@ jobs:
             --runtime win-x64 `
             --self-contained true `
             -p:PublishSingleFile=true `
+            -p:EnableCompressionInSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:DebugType=None `
             -p:DebugSymbols=false `
@@ -167,7 +168,7 @@ jobs:
             'File: GPTDeskTop.exe',
             "Version: $version",
             'Platform: Windows x64',
-            'Configuration: Release / self-contained / single-file',
+            'Configuration: Release / self-contained / single-file / compressed',
             "Source commit: $source",
             "Generated UTC: $generated",
             'Validation: 8/8 required GitHub Actions workflows passed for the same source commit',
