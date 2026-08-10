@@ -4,7 +4,7 @@ Issue: #148
 
 Implementation branch: `agent/instance-002-preflight-commit`
 
-Status: **IN PROGRESS**
+Status: **DONE / VERIFIED / MERGED / STABLE PUBLISHED**
 
 ## Objective
 
@@ -42,7 +42,7 @@ This task removes avoidable pre-commit readiness/liveness failures. It does not 
 
 ## Regression coverage
 
-`InstanceHandoffRegressionTests.cs` now locks:
+`InstanceHandoffRegressionTests.cs` locks:
 
 - ownership primitive opened before negotiation and ownership wait after commit acceptance;
 - client ordering: Offer -> Preflight -> Ready -> CommitAccepted -> mutex wait;
@@ -51,6 +51,29 @@ This task removes avoidable pre-commit readiness/liveness failures. It does not 
 - old `InstanceHandoffAck` protocol is absent;
 - existing absolute DB/config inheritance, browser-preserving shutdown, fatal-restart fallback and previously-running monitor resume contracts remain intact.
 
-## Validation plan
+## Verification receipt
 
-Full required GitHub Actions workflow set must be Green on one exact PR head before merge, followed by same-SHA main validation and reconciliation.
+- Issue #148: **Closed / Completed**.
+- PR #149: **Merged**.
+- Final implementation head: `1b3fdc43b90a55a540804476d10b9a5805a41fb4`.
+- Main merge commit: `36195ecc62f23f47c834511591baedca3f0f7244`.
+- PR validation on the exact final head: **8/8 Green**.
+  - Build GPTDeskTop #539 — SUCCESS
+  - QA Passive Chat Wait #303 — SUCCESS
+  - QA Hidden Chrome CDP #309 — SUCCESS
+  - QA Crash Process Recovery #317 — SUCCESS
+  - QA Release x64 #327 — SUCCESS
+  - Development Delivery Receipts #417 — SUCCESS
+  - Development Task Recovery #413 — SUCCESS
+  - Development Message Reload #244 — SUCCESS
+- Build #539 passed runtime automation, work-window lifecycle, runtime binding/integration, delivery invariants, multi-monitor delivery, saved-monitor rebinding, CDP reliability, crash recovery, application build, setup build, helper build and rotation safety.
+
+## Stable publication
+
+`Last release/GPTDeskTop.exe` was published from the exact main implementation source commit `36195ecc62f23f47c834511591baedca3f0f7244` after **8/8 same-source validation**.
+
+- Version: `1.8.0.0`
+- Stable build ID: `36195ecc`
+- Informational version: `1.8.0+stable.36195ecc.36195ecc62f23f47c834511591baedca3f0f7244`
+- SHA-256: `68796b70b6b9de213215240e05017669c90912170d64bb2452a1d0c30df2334a`
+- Generated UTC: `2026-08-10T12:33:48Z`
