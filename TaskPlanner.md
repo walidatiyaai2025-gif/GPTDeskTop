@@ -53,8 +53,9 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 | UI-002 | Right-click menus for Open Tabs / Saved Monitors / History | UI Developer | Medium | Done | `MainForm.cs` |
 | UI-003 | Green/red runtime lamp in monitor Status column | UI Developer | Medium | Done | `HomeMetricsService.cs` |
 | UI-004 | Add Crash Count and Monitor Count home cards | UI Developer | Medium | Done | `HomeMetricsService.cs` |
-| UI-005 | Keep legacy no-response timeout field/schema compatibility until a dedicated settings migration removes or relabels it | UI / Backend | Low | Compatibility only | `SettingsForm.cs` |
+| UI-005 | Retire the misleading no-response refresh control while preserving the legacy key for database and schema 1.0 backup compatibility | UI / Backend | Low | Done | `SettingsForm.cs`, `RetiredNoResponseSettingUiTests.cs` |
 | NOT-001 | Configurable balloon duration and sound | UI / Backend | High | Done | Notification/Settings services |
+| NOT-002 | Reload tray notification duration and sound immediately after successful main-window Settings changes | UI / Backend | Medium | Done | `Program.cs`, `MainForm.cs`, `TrayNotificationService.cs` |
 | DEV-001 | Prevent duplicate development-task workers; persist state and safely resume Working/Cooling after restart | Backend Engineer | High | Done | `DevelopmentTaskEngine.cs`, `DevelopmentTaskState.cs` |
 | DEV-002 | Add regression coverage for Cooling persistence/resume and worker lifecycle | QA / Backend | High | Done | `tests/GPTDeskTop.RuntimeTests/DevelopmentTaskEngineTests.cs` |
 | DEV-003 | Await worker shutdown before restart/stop/dispose and support concurrent atomic message-catalog hot reload | Backend / Runtime | High | Done | `DevelopmentTaskEngine.cs`, message reload tests |
@@ -63,14 +64,15 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 | CI-003 | Serialize full-solution Setup packaging behind the application dependency and verify Build Solution emits the standalone Setup | DevOps / Release | High | Done | `GPTDeskTop.sln`, `GPTDeskTop.Setup.csproj`, `qa-release-x64.yml` |
 | REL-001 | Synchronize application, publish and setup metadata to `1.8.0` | Release Engineer | High | Done | `GPTDeskTop.csproj`, setup/build projects |
 | REL-002 | Establish validated v1.8.0 release-readiness baseline without creating a tag/release | Release Engineer / QA | High | Done | Main CI, Release x64 CI, QA workflows, documentation |
+| REL-003 | Maintain `Last release/GPTDeskTop.exe` as the newest same-commit 8/8-gate-verified stable Windows x64 executable with a checksum receipt | Release Engineer / CI | High | In Progress | `update-last-release.yml`, `Last release`, `docs/work/REL-003.md` |
 | QA-001 | Build `Release | x64` in Visual Studio-compatible solution configuration and verify all three project outputs | QA Engineer | High | Automated | `qa-release-x64.yml`, whole solution |
-| QA-002 | Verify `Promise was collected` transient retry and confirm retry attempts do not create repeated crash diagnostics | QA Engineer | High | Automated | `ChromeTransientFailureRegressionTests.cs`, Chrome integration |
+| QA-002 | Verify `Promise was collected` transient retry and confirm retry attempts do not create repeated crash diagnostics | QA Engineer | High | Done / Verified | `ChromeTransientFailureRegressionTests.cs`, Chrome integration |
 | QA-003 | Force-kill the real GPTDeskTop process, relaunch against the same SQLite DB, and verify `CrashCount`, pending recovery and recovery identity | QA Engineer | High | Automated | `CrashRecoveryProcessProbe.cs`, `qa-crash-process.yml` |
 | QA-004 | Verify every recreated recovery tab receives the configured recovery message, enabled monitors restart, partial failure stays pending, and retries do not resend verified monitors | QA Engineer | High | Automated | `ICrashRecoveryRuntime.cs`, `CrashRecoveryOrchestrationTests.cs` |
 | QA-005 | Run monitor hidden for 10+ minutes and verify CDP polling continues | QA Engineer | High | Automated | `HiddenChromeProcessProbe.cs`, `qa-hidden-chrome.yml` |
 | QA-006 | Keep legacy no-response value at 30 seconds, run a real tab generating beyond that threshold with zero elapsed-time refreshes, then surface an explicit current error on another tab and verify exactly one error-driven refresh | QA Engineer | High | Automated / Green | `NoResponseWatchdogProcessProbe.cs`, `qa-no-response-watchdog.yml` |
 | QA-007 | Verify green lamp while monitor runs, red lamp when stopped, and home cards update correctly | QA Engineer | Medium | Automated | `HomeMetricsPresentation.cs`, `HomeMetricsPresentationTests.cs` |
-| QA-008 | Verify development task engine survives restart while Working and Cooling without duplicate MessageReady events | QA Engineer | High | Automated | Runtime automation tests |
+| QA-008 | Verify development task engine survives restart while Working and Cooling without duplicate MessageReady events | QA Engineer | High | Done / Verified | Runtime automation tests |
 | QA-009 | Lock conversation-limit rotation retry behavior, new-chat-only recovery reload, and deferred recovery send semantics with regression tests | QA / Backend | High | Automated | `ChatGptRotationHandoffRegressionTests.cs` |
 | QA-010 | Source-contract regression: monitor loop contains no elapsed-time refresh trigger, generic recovery requires current structured ErrorText, and Chrome state detection never scans arbitrary body history for current errors | QA / Backend | High | Automated / Green | `ChatMonitorErrorDrivenWaitRegressionTests.cs` |
 
@@ -88,7 +90,7 @@ Other validated gates include force-kill/relaunch crash recovery, persisted sche
 ## Acceptance Criteria
 - Transient `Promise was collected` errors are retried automatically and do not flood the exception history.
 - Every real exception remains visible in Stored History and the exception log file.
-- `NoResponseRefreshSeconds` may remain persisted/editable for schema and backup compatibility, but `ChatGptMonitorService` must not read it or use elapsed time as a refresh/recovery trigger.
+- `NoResponseRefreshSeconds` remains persisted and accepted by schema 1.0 backup import/export for compatibility, but is not editable in Settings and `ChatGptMonitorService` must not read it or use elapsed time as a refresh/recovery trigger.
 - A ChatGPT response that is slow, unchanged, temporarily empty, thinking or streaming may continue indefinitely without page refresh, new-chat recovery, rotation, or other page mutation solely because time elapsed.
 - With the legacy `NoResponseRefreshSeconds=30`, a test tab remains on load 1 while generating for 40 seconds; an old/historical phrase such as `Something went wrong` elsewhere in conversation content does not become a current error.
 - Generic error recovery requires a current visible structured ChatGPT error signal; normal assistant prose containing phrases such as `Something went wrong` is not itself a recovery trigger.

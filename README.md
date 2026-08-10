@@ -41,9 +41,9 @@ Each rotation is also persisted in `ConversationRotations` and logged in Stored 
 
 **Important:** rotation is triggered by an actual conversation/context-limit signal exposed by the ChatGPT page. GPTDeskTop does not predict, spoof, or attempt to bypass account usage quotas or access controls.
 
-Global Settings stored in SQLite include Default Auto Reply, Default Monitor Delay, Default Monitor Timer, No-response refresh timeout (default `180` seconds), Timeout Recovery Message, Balloon Duration and Balloon Sound settings.
+Global Settings stored in SQLite include Default Auto Reply, Default Monitor Delay, Default Monitor Timer, Timeout Recovery Message, Balloon Duration and Balloon Sound settings.
 
-If a running monitor receives no new assistant response for `NoResponseRefreshSeconds`, GPTDeskTop refreshes only that tab, records `NoResponseRefresh` in history, resets the watchdog and continues monitoring.
+Monitoring is passive while ChatGPT is slow, thinking, streaming, unchanged or temporarily empty. Elapsed time alone never refreshes a tab or starts recovery; generic recovery requires current visible structured error UI. The legacy `NoResponseRefreshSeconds` key remains supported only for existing databases and schema 1.0 backup import/export compatibility. It is no longer shown in Settings or consumed by the monitor runtime.
 
 ## Chrome DevTools resilience
 

@@ -1,4 +1,7 @@
 using System.Reflection;
+using System.Text.Json;
+using GPTDeskTop.Configuration;
+using GPTDeskTop.Models;
 using GPTDeskTop.Services;
 
 namespace GPTDeskTop.RuntimeTests;
@@ -61,7 +64,7 @@ public sealed class ChromeTransientFailureRegressionTests
         var evaluateBody = source[evaluateStart..classifierStart];
         Assert.Contains("attempt <= 3", evaluateBody, StringComparison.Ordinal);
         Assert.Contains("IsTransientPromiseCollected(ex) && attempt < 3", evaluateBody, StringComparison.Ordinal);
-        Assert.Contains("Task.Delay(120 * attempt", evaluateBody, StringComparison.Ordinal);
+        Assert.Contains("_retryDelay(TimeSpan.FromMilliseconds(120 * attempt)", evaluateBody, StringComparison.Ordinal);
         Assert.DoesNotContain("ExceptionLogService.Log", evaluateBody, StringComparison.Ordinal);
     }
 
@@ -85,5 +88,44 @@ public sealed class ChromeTransientFailureRegressionTests
         var transientBranch = source[transientCatch..genericCatch];
         Assert.Contains("Background retry continues", transientBranch, StringComparison.Ordinal);
         Assert.DoesNotContain("ExceptionLogService.Log", transientBranch, StringComparison.Ordinal);
+    }
+    [Fact]
+    public async Task RuntimeEvaluateRetriesTwoPromiseCollectedFailuresThenSucceedsWithoutDiagnostics()
+    {
+        var attempts = 0;
+        var delays = new List<TimeSpan>();
+        var diagnostics = new List<string>();
+        void CaptureDiagnostic(string message) => diagnostics.Add(message);
+        ExceptionLogService.Logged += CaptureDiagnostic;
+
+        try
+        {
+            var service = new ChromeDevToolsService(
+                new HttpClient(),
+                new ChromeConfig(),
+                (_, method, _, _, extractRuntimeValue) =>
+                {
+                    Assert.Equal("Runtime.evaluate", method);
+                    Assert.True(extractRuntimeValue);
+                    attempts++;
+                    if (attempts <= 2)
+                        throw new InvalidOperationException("Chrome DevTools error: Promise was collected");
+
+                    using var document = JsonDocument.Parse("""{"assistantCount":1,"lastAssistantText":"ready","isGenerating":false,"errorText":""}""");
+                    return Task.FromResult(document.RootElement.Clone());
+                },
+                (delay, _) => { delays.Add(delay); return Task.CompletedTask; });
+
+            var state = await service.GetChatStateAsync(new ChromeTab(), CancellationToken.None);
+
+            Assert.Equal(3, attempts);
+            Assert.Equal([TimeSpan.FromMilliseconds(120), TimeSpan.FromMilliseconds(240)], delays);
+            Assert.Equal("ready", state.LastAssistantText);
+            Assert.Empty(diagnostics);
+        }
+        finally
+        {
+            ExceptionLogService.Logged -= CaptureDiagnostic;
+        }
     }
 }
