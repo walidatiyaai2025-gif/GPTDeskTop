@@ -1,4 +1,4 @@
-name: QA No-Response Watchdog
+name: QA Passive Chat Wait
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   watchdog:
-    name: Refresh only stale monitor tab
+    name: Wait on slow chat and recover explicit error
     runs-on: windows-latest
 
     steps:
@@ -27,13 +27,13 @@ jobs:
       - name: Build application
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release --no-restore
 
-      - name: Verify 30-second per-tab watchdog
+      - name: Verify passive long-response wait and explicit-error recovery
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = (Resolve-Path 'src/GPTDeskTop/bin/Release/net8.0-windows/GPTDeskTop.exe').Path
           $workingDirectory = Split-Path $exe -Parent
-          $root = Join-Path $env:RUNNER_TEMP "gptdesktop-no-response-$env:GITHUB_RUN_ID"
+          $root = Join-Path $env:RUNNER_TEMP "gptdesktop-passive-wait-$env:GITHUB_RUN_ID"
           $resultPath = Join-Path $root 'result.json'
           New-Item -ItemType Directory -Path $root -Force | Out-Null
 
@@ -42,7 +42,7 @@ jobs:
           while (-not $probe.HasExited) {
             if ((Get-Date) -ge $deadline) {
               Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue
-              throw 'No-response watchdog probe exceeded its 150-second workflow deadline.'
+              throw 'Passive chat-wait probe exceeded its 150-second workflow deadline.'
             }
             Start-Sleep -Seconds 1
             $probe.Refresh()
@@ -51,15 +51,16 @@ jobs:
           if ($probe.ExitCode -ne 0) {
             $errorPath = "$resultPath.error.txt"
             if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
-            throw "No-response watchdog probe failed. ExitCode=$($probe.ExitCode)"
+            throw "Passive chat-wait probe failed. ExitCode=$($probe.ExitCode)"
           }
-          if (-not (Test-Path $resultPath)) { throw 'No-response watchdog probe did not create result.json.' }
+          if (-not (Test-Path $resultPath)) { throw 'Passive chat-wait probe did not create result.json.' }
 
           $result = Get-Content $resultPath -Raw | ConvertFrom-Json
-          if ($result.StaleText -ne 'stale-load-2') { throw "Expected stale tab to reload exactly once, final text='$($result.StaleText)'." }
-          if ($result.ActiveText -ne 'active-response-load-1') { throw "Active tab was unexpectedly reloaded or failed to update, final text='$($result.ActiveText)'." }
-          if ([int]$result.StaleReloadActivityCount -ne 1) { throw "Expected exactly one stale-tab watchdog refresh activity, got $($result.StaleReloadActivityCount)." }
-          if ([int]$result.ActiveReloadActivityCount -ne 0) { throw "Expected zero active-tab watchdog refreshes, got $($result.ActiveReloadActivityCount)." }
-          if ($result.StaleStillRunning -ne $true -or $result.ActiveStillRunning -ne $true) { throw 'One or both monitor workers stopped before verification.' }
+          if ($result.SlowText -ne 'slow-complete-load-1') { throw "Slow/generating tab was unexpectedly reloaded or did not complete, final text='$($result.SlowText)'." }
+          if ($result.ErrorText -ne 'error-recovered-load-2') { throw "Explicit-error tab was not refreshed exactly once, final text='$($result.ErrorText)'." }
+          if ([int]$result.SlowErrorRefreshActivityCount -ne 0) { throw "Historical error text caused a false refresh; count=$($result.SlowErrorRefreshActivityCount)." }
+          if ([int]$result.ErrorRefreshActivityCount -ne 1) { throw "Expected exactly one explicit-error refresh, got $($result.ErrorRefreshActivityCount)." }
+          if ([int]$result.ElapsedTimeRefreshActivityCount -ne 0) { throw "Elapsed time still triggered refresh behavior; count=$($result.ElapsedTimeRefreshActivityCount)." }
+          if ($result.SlowStillRunning -ne $true -or $result.ErrorStillRunning -ne $true) { throw 'One or both monitor workers stopped before verification.' }
 
-          Write-Host "Verified no-response isolation: stale=$($result.StaleText), active=$($result.ActiveText), staleRefreshes=$($result.StaleReloadActivityCount), activeRefreshes=$($result.ActiveReloadActivityCount)."
+          Write-Host "Verified passive wait: slow=$($result.SlowText), explicitError=$($result.ErrorText), errorRefreshes=$($result.ErrorRefreshActivityCount), elapsedRefreshes=$($result.ElapsedTimeRefreshActivityCount)."
