@@ -221,13 +221,37 @@ internal static class Program
 
                     if (takeover is not null)
                     {
-                        var resumed = await InstanceHandoffCoordinator.ResumeRunningMonitorsAsync(
+                        await InstanceHandoffCoordinator.ResumeRunningMonitorsAsync(
                             takeover,
                             chrome,
                             monitor,
                             database);
+
+                        var reconciliation = await InstanceHandoffResumeReconciler.ReconcileAsync(
+                            takeover,
+                            chrome,
+                            monitor,
+                            database);
+                        var incompleteIds = string.Join(",", reconciliation.IncompleteMonitorIds);
+
                         await database.SetSettingAsync("LastInstanceHandoffUtc", DateTimeOffset.UtcNow.ToString("O"));
-                        await database.SetSettingAsync("LastInstanceHandoffResumedCount", resumed.ToString());
+                        await database.SetSettingAsync("LastInstanceHandoffRequestedCount", reconciliation.RequestedCount.ToString());
+                        await database.SetSettingAsync("LastInstanceHandoffResumedCount", reconciliation.ResumedCount.ToString());
+                        await database.SetSettingAsync("LastInstanceHandoffIncompleteCount", reconciliation.IncompleteCount.ToString());
+                        await database.SetSettingAsync("LastInstanceHandoffIncompleteIds", incompleteIds);
+
+                        if (reconciliation.IncompleteCount > 0)
+                        {
+                            var summary = string.Join(
+                                "; ",
+                                reconciliation.Outcomes
+                                    .Where(outcome => !string.Equals(outcome.Status, "Resumed", StringComparison.Ordinal))
+                                    .Select(outcome => $"{outcome.MonitorId}:{outcome.Reason}"));
+                            await ExceptionLogService.LogAsync(
+                                new InvalidOperationException(
+                                    $"Instance takeover resumed {reconciliation.ResumedCount}/{reconciliation.RequestedCount} requested monitors. Incomplete outcomes: {summary}"),
+                                "Program.InstanceHandoffResumeIncomplete");
+                        }
                     }
                 }
                 catch (Exception ex)
