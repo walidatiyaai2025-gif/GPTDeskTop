@@ -45,6 +45,17 @@ public sealed class ChatGptMonitorService
         try
         {
             var savedMonitors = await _database.GetSavedMonitorsAsync();
+            var persistedMonitor = savedMonitors.FirstOrDefault(candidate => candidate.Id == monitor.Id);
+            if (persistedMonitor is null)
+            {
+                Activity?.Invoke(monitor.Id, $"Monitor #{monitor.Id} no longer exists in SQLite. Stale Start was ignored.");
+                return;
+            }
+            if (!ChatGptConversationIdentity.IsSame(persistedMonitor.Url, monitor.Url))
+            {
+                Activity?.Invoke(monitor.Id, $"Monitor #{monitor.Id} conversation identity changed before Start. Refresh the saved monitor before retrying.");
+                return;
+            }
             if (MonitorConversationOwnership.IsDuplicateOwner(monitor.Id, savedMonitors))
             {
                 const string message = "Saved monitor conversation ownership is ambiguous. Resolve duplicate monitor rows before starting this monitor.";
@@ -83,40 +94,60 @@ public sealed class ChatGptMonitorService
         await lifecycleGate.WaitAsync();
         try
         {
-            MonitorRuntime? runtime;
-            lock (_sync)
-            {
-                if (!_running.TryGetValue(monitorId, out runtime)) return;
-                runtime.StopOwnsCleanup = true;
-            }
-
-            runtime.Cancellation.Cancel();
-            try
-            {
-                await runtime.Worker;
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            finally
-            {
-                var removed = false;
-                lock (_sync)
-                {
-                    if (_running.TryGetValue(monitorId, out var current) && ReferenceEquals(current, runtime))
-                    {
-                        _running.Remove(monitorId);
-                        removed = true;
-                    }
-                }
-                runtime.Cancellation.Dispose();
-                Activity?.Invoke(monitorId, "Stopped.");
-                if (removed) RunningStateChanged?.Invoke();
-            }
+            await StopMonitorCoreAsync(monitorId);
         }
         finally
         {
             lifecycleGate.Release();
+        }
+    }
+
+    public async Task DeleteMonitorAsync(long monitorId)
+    {
+        var lifecycleGate = GetLifecycleGate(monitorId);
+        await lifecycleGate.WaitAsync();
+        try
+        {
+            await StopMonitorCoreAsync(monitorId);
+            await _database.DeleteMonitorAsync(monitorId);
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
+    }
+
+    private async Task StopMonitorCoreAsync(long monitorId)
+    {
+        MonitorRuntime? runtime;
+        lock (_sync)
+        {
+            if (!_running.TryGetValue(monitorId, out runtime)) return;
+            runtime.StopOwnsCleanup = true;
+        }
+
+        runtime.Cancellation.Cancel();
+        try
+        {
+            await runtime.Worker;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            var removed = false;
+            lock (_sync)
+            {
+                if (_running.TryGetValue(monitorId, out var current) && ReferenceEquals(current, runtime))
+                {
+                    _running.Remove(monitorId);
+                    removed = true;
+                }
+            }
+            runtime.Cancellation.Dispose();
+            Activity?.Invoke(monitorId, "Stopped.");
+            if (removed) RunningStateChanged?.Invoke();
         }
     }
 
