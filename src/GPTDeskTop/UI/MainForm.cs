@@ -1028,21 +1028,7 @@ public sealed class MainForm : Form
             AppendActivity($"Monitor #{monitor.Id}: matching tab not open.");
             return;
         }
-        var expectedConversationUrl = monitor.Url;
-        var targetUpdated = await _database.UpdateMonitorRuntimeTargetIfConversationMatchesAsync(
-            monitor.Id,
-            expectedConversationUrl,
-            tab.Id,
-            tab.Title);
-        if (!targetUpdated)
-        {
-            AppendActivity($"Monitor #{monitor.Id}: saved conversation changed before Start could update the Chrome target. Refreshing monitor state.");
-            await RefreshMonitorsAsync();
-            return;
-        }
 
-        monitor.TabId = tab.Id;
-        monitor.Title = tab.Title;
         await _monitor.StartMonitorAsync(monitor, tab);
         await RefreshMonitorsAsync();
     }
