@@ -3,13 +3,6 @@ name: Development Message Reload
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'src/GPTDeskTop/Services/DevelopmentTaskEngine/**'
-      - 'src/GPTDeskTop/UI/DevelopmentMessageCatalogControl.cs'
-      - 'data/development-task-messages.json'
-      - 'tests/GPTDeskTop.RuntimeTests/DevelopmentTaskMessageReloadTests.cs'
-      - 'tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj'
-      - '.github/workflows/development-message-reload.yml'
   pull_request:
     branches: [ main ]
   workflow_dispatch:
