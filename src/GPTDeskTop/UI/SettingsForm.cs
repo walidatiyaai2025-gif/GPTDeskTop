@@ -10,7 +10,6 @@ public sealed class SettingsForm : Form
     private readonly NumericUpDown _defaultDelay = new() { Minimum = 0, Maximum = 300, Width = 140 };
     private readonly NumericUpDown _defaultTimer = new() { Minimum = 1, Maximum = 60, Width = 140 };
     private readonly NumericUpDown _rotateAfterMessages = new() { Minimum = 0, Maximum = 10000, Width = 140 };
-    private readonly NumericUpDown _noResponseRefresh = new() { Minimum = 30, Maximum = 3600, Width = 140, Increment = 30 };
     private readonly NumericUpDown _notificationDuration = new() { Minimum = 1, Maximum = 60, Width = 140 };
     private readonly TextBox _defaultReply = new() { Dock = DockStyle.Fill, Text = "كمل" };
     private readonly TextBox _messageCountRotationStartMessage = new() { Dock = DockStyle.Fill, Text = "كمل" };
@@ -127,7 +126,7 @@ public sealed class SettingsForm : Form
         AddRow(layout, 2, "Default auto reply", _defaultReply, "Message sent after a stable assistant response.");
         AddRow(layout, 3, "Reply delay", _defaultDelay, "Seconds to wait before sending the configured auto reply.");
         AddRow(layout, 4, "Polling timer", _defaultTimer, "Seconds between ChatGPT state checks for a running monitor.");
-        AddRow(layout, 5, "No-response refresh", _noResponseRefresh, "If no new assistant response appears in this many seconds, only that tab is refreshed.");
+        AddSectionTitle(layout, 5, "Error-driven response waiting", "Slow, thinking, streaming, unchanged or temporarily empty responses wait indefinitely. Elapsed time alone never refreshes or recovers a healthy chat.");
         page.Controls.Add(layout);
         return page;
     }
@@ -253,7 +252,6 @@ public sealed class SettingsForm : Form
         ConfigureAccessible(_defaultReply, "Default auto reply", "Message sent after a completed assistant response.", 0);
         ConfigureAccessible(_defaultDelay, "Default reply delay", "Seconds to wait before sending the automatic reply.", 1);
         ConfigureAccessible(_defaultTimer, "Default polling timer", "Seconds between monitor checks.", 2);
-        ConfigureAccessible(_noResponseRefresh, "No response refresh timeout", "Seconds without a new assistant response before refreshing the monitored tab.", 3);
 
         ConfigureAccessible(_rotateAfterMessages, "Assistant message rotation threshold", "Number of assistant messages before proactive conversation rotation. Zero disables it.", 0);
         ConfigureAccessible(_messageCountRotationStartMessage, "Rotation start message", "Message sent in the new conversation after message-count rotation.", 1);
@@ -355,7 +353,6 @@ public sealed class SettingsForm : Form
             _defaultTimer.Value = await _database.GetIntSettingAsync("DefaultMonitorTimerSeconds", 1, 1, 60);
             _rotateAfterMessages.Value = await _database.GetIntSettingAsync("RotateAfterAssistantMessages", 0, 0, 10000);
             _messageCountRotationStartMessage.Text = await _database.GetSettingAsync("MessageCountRotationStartMessage") ?? "كمل";
-            _noResponseRefresh.Value = await _database.GetIntSettingAsync("NoResponseRefreshSeconds", 180, 30, 3600);
             _timeoutRecovery.Text = await _database.GetSettingAsync("TimeoutRecoveryMessage") ?? "كمل";
             _notificationDuration.Value = await _database.GetIntSettingAsync("NotificationDurationSeconds", 8, 1, 60);
             _soundEnabled.Checked = !string.Equals(await _database.GetSettingAsync("NotificationSoundEnabled"), "0", StringComparison.Ordinal);
@@ -390,7 +387,6 @@ public sealed class SettingsForm : Form
             ["DefaultMonitorTimerSeconds"] = ((int)_defaultTimer.Value).ToString(),
             ["RotateAfterAssistantMessages"] = ((int)_rotateAfterMessages.Value).ToString(),
             ["MessageCountRotationStartMessage"] = rotationStartMessage,
-            ["NoResponseRefreshSeconds"] = ((int)_noResponseRefresh.Value).ToString(),
             ["TimeoutRecoveryMessage"] = string.IsNullOrWhiteSpace(_timeoutRecovery.Text) ? "كمل" : _timeoutRecovery.Text.Trim(),
             ["NotificationDurationSeconds"] = ((int)_notificationDuration.Value).ToString(),
             ["NotificationSoundEnabled"] = _soundEnabled.Checked ? "1" : "0",
