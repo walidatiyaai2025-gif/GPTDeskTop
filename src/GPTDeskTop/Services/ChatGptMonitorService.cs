@@ -13,6 +13,7 @@ public sealed class ChatGptMonitorService
     private readonly ModelRoutingService _modelRouting = new();
     private readonly object _sync = new();
     private readonly Dictionary<long, MonitorRuntime> _running = new();
+    private readonly Dictionary<long, SemaphoreSlim> _lifecycleGates = new();
 
     public event Action<long, string>? Activity;
     public event Action? HistoryChanged;
@@ -39,41 +40,93 @@ public sealed class ChatGptMonitorService
         if (!ChatGptConversationIdentity.IsSame(monitor.Url, tab.Url))
             throw new InvalidOperationException("The selected Chrome target no longer represents the saved ChatGPT conversation identity.");
 
-        var savedMonitors = await _database.GetSavedMonitorsAsync();
-        if (MonitorConversationOwnership.IsDuplicateOwner(monitor.Id, savedMonitors))
+        var lifecycleGate = GetLifecycleGate(monitor.Id);
+        await lifecycleGate.WaitAsync();
+        try
         {
-            const string message = "Saved monitor conversation ownership is ambiguous. Resolve duplicate monitor rows before starting this monitor.";
-            await _database.AddLogAsync(
-                "System",
-                string.Empty,
-                message,
-                "MonitorStartDuplicateConversationOwnership",
-                monitor.Id,
-                monitor.TabId,
-                monitor.Title);
-            HistoryChanged?.Invoke();
-            Activity?.Invoke(monitor.Id, message);
-            return;
-        }
+            var savedMonitors = await _database.GetSavedMonitorsAsync();
+            if (MonitorConversationOwnership.IsDuplicateOwner(monitor.Id, savedMonitors))
+            {
+                const string message = "Saved monitor conversation ownership is ambiguous. Resolve duplicate monitor rows before starting this monitor.";
+                await _database.AddLogAsync(
+                    "System",
+                    string.Empty,
+                    message,
+                    "MonitorStartDuplicateConversationOwnership",
+                    monitor.Id,
+                    monitor.TabId,
+                    monitor.Title);
+                HistoryChanged?.Invoke();
+                Activity?.Invoke(monitor.Id, message);
+                return;
+            }
 
-        lock (_sync)
-        {
-            if (_running.ContainsKey(monitor.Id)) return;
-            var cts = new CancellationTokenSource();
-            var worker = Task.Run(() => MonitorLoopAsync(monitor, tab, cts.Token));
-            _running.Add(monitor.Id, new MonitorRuntime(cts, worker));
+            lock (_sync)
+            {
+                if (_running.ContainsKey(monitor.Id)) return;
+                var cts = new CancellationTokenSource();
+                var worker = Task.Run(() => MonitorLoopAsync(monitor, tab, cts.Token));
+                _running.Add(monitor.Id, new MonitorRuntime(cts, worker));
+            }
+            Activity?.Invoke(monitor.Id, $"Started: {monitor.Title}");
+            RunningStateChanged?.Invoke();
         }
-        Activity?.Invoke(monitor.Id, $"Started: {monitor.Title}");
-        RunningStateChanged?.Invoke();
+        finally
+        {
+            lifecycleGate.Release();
+        }
     }
 
     public async Task StopMonitorAsync(long monitorId)
     {
-        MonitorRuntime? runtime; lock (_sync) { if (!_running.Remove(monitorId, out runtime)) return; }
-        runtime.Cancellation.Cancel(); try { await runtime.Worker; } catch (OperationCanceledException) { } finally { runtime.Cancellation.Dispose(); Activity?.Invoke(monitorId, "Stopped."); RunningStateChanged?.Invoke(); }
+        var lifecycleGate = GetLifecycleGate(monitorId);
+        await lifecycleGate.WaitAsync();
+        try
+        {
+            MonitorRuntime? runtime;
+            lock (_sync)
+            {
+                if (!_running.TryGetValue(monitorId, out runtime)) return;
+            }
+
+            runtime.Cancellation.Cancel();
+            try
+            {
+                await runtime.Worker;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            finally
+            {
+                lock (_sync)
+                {
+                    if (_running.TryGetValue(monitorId, out var current) && ReferenceEquals(current, runtime))
+                        _running.Remove(monitorId);
+                }
+                runtime.Cancellation.Dispose();
+                Activity?.Invoke(monitorId, "Stopped.");
+                RunningStateChanged?.Invoke();
+            }
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
     }
 
     public async Task StopAllAsync() { long[] ids; lock (_sync) ids = _running.Keys.ToArray(); await Task.WhenAll(ids.Select(StopMonitorAsync)); }
+
+    private SemaphoreSlim GetLifecycleGate(long monitorId)
+    {
+        lock (_sync)
+        {
+            if (_lifecycleGates.TryGetValue(monitorId, out var existing)) return existing;
+            var created = new SemaphoreSlim(1, 1);
+            _lifecycleGates.Add(monitorId, created);
+            return created;
+        }
+    }
 
     private async Task MonitorLoopAsync(SavedMonitor monitor, ChromeTab tab, CancellationToken cancellationToken)
     {

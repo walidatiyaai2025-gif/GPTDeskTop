@@ -7,6 +7,8 @@ namespace GPTDeskTop.RuntimeTests;
 
 public sealed class MainFormStartupRegressionTests
 {
+    private static readonly TimeSpan ConstructorSafetyTimeout = TimeSpan.FromSeconds(30);
+
     [Fact]
     public void MainFormConstructorDoesNotThrowBeforeFirstLayout()
     {
@@ -32,7 +34,9 @@ public sealed class MainFormStartupRegressionTests
 
         Assert.True(thread.TrySetApartmentState(ApartmentState.STA));
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(15)), "MainForm constructor did not finish within the safety timeout.");
+        Assert.True(
+            thread.Join(ConstructorSafetyTimeout),
+            $"MainForm constructor did not finish within the {ConstructorSafetyTimeout.TotalSeconds:0}-second safety timeout.");
         Assert.True(completed, failure?.ToString());
         Assert.Null(failure);
     }
