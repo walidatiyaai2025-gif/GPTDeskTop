@@ -50,11 +50,34 @@ public sealed class LastReleasePublisherRegressionTests
     }
 
     [Fact]
+    public void PublisherStampsAndVerifiesStableBuildIdentity()
+    {
+        var workflow = ReadSource(".github", "workflows", "update-last-release.yml");
+
+        Assert.Contains("$buildId = $source.Substring(0, 8).ToLowerInvariant()", workflow, StringComparison.Ordinal);
+        Assert.Contains("$informationalVersion = \"$productVersion+stable.$buildId\"", workflow, StringComparison.Ordinal);
+        Assert.Contains("-p:InformationalVersion=$informationalVersion", workflow, StringComparison.Ordinal);
+        Assert.Contains("VersionInfo.ProductVersion", workflow, StringComparison.Ordinal);
+        Assert.Contains("Stable build ID: $buildId", workflow, StringComparison.Ordinal);
+        Assert.Contains("Informational version: $embeddedProductVersion", workflow, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProgramShowsStableBuildIdentityOnlyForStampedBuilds()
+    {
+        var program = ReadSource("src", "GPTDeskTop", "Program.cs");
+
+        Assert.Contains("ApplicationBuildIdentity.StableBuildId is not null", program, StringComparison.Ordinal);
+        Assert.Contains("mainForm.Text = $\"GPTDeskTop {ApplicationBuildIdentity.DisplayVersion}\";", program, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RepositoryContainsOperatorVisibleLastReleaseContract()
     {
         var readme = ReadSource("Last release", "README.md");
         Assert.Contains("GPTDeskTop.exe", readme, StringComparison.Ordinal);
         Assert.Contains("latest verified Windows x64 Release application", readme, StringComparison.Ordinal);
         Assert.Contains("eight required stable CI workflows", readme, StringComparison.Ordinal);
+        Assert.Contains("stable build ID", readme, StringComparison.OrdinalIgnoreCase);
     }
 }
