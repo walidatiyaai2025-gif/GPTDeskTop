@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Data;
 using GPTDeskTop.Services;
@@ -190,6 +191,11 @@ internal static class Program
                     if (mainForm.IsDisposed || mainForm.Disposing)
                         throw new InvalidOperationException("The current GPTDeskTop instance is already shutting down.");
 
+                    // Persist the live window/splitter layout before the offer is ACKed so the
+                    // replacement process restores the latest operator workspace, not only the
+                    // last layout captured by a normal application exit.
+                    await PersistOperatorLayoutForInstanceHandoffAsync(mainForm, cancellationToken);
+
                     var savedMonitors = await database.GetSavedMonitorsAsync(cancellationToken);
                     var runningMonitorIds = savedMonitors
                         .Where(saved => monitor.IsMonitorRunning(saved.Id))
@@ -266,6 +272,46 @@ internal static class Program
             ? fileName
             : Path.Combine(AppContext.BaseDirectory, fileName);
         return Path.GetFullPath(path);
+    }
+
+    private static async Task PersistOperatorLayoutForInstanceHandoffAsync(
+        MainForm mainForm,
+        CancellationToken cancellationToken)
+    {
+        var method = typeof(MainForm).GetMethod(
+            "PersistOperatorLayoutAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(typeof(MainForm).FullName, "PersistOperatorLayoutAsync");
+
+        async Task PersistOnUiThreadAsync()
+        {
+            var result = method.Invoke(mainForm, new object[] { cancellationToken });
+            if (result is not Task task)
+                throw new InvalidOperationException("MainForm layout persistence did not return a Task.");
+            await task;
+        }
+
+        if (!mainForm.InvokeRequired)
+        {
+            await PersistOnUiThreadAsync();
+            return;
+        }
+
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        mainForm.BeginInvoke(new Action(async () =>
+        {
+            try
+            {
+                await PersistOnUiThreadAsync();
+                completion.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        }));
+
+        await completion.Task.WaitAsync(cancellationToken);
     }
 
     private static async Task CompleteCommittedInstanceHandoffAsync(
