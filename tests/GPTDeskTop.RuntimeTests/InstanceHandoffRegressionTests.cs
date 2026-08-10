@@ -157,8 +157,11 @@ public sealed class InstanceHandoffRegressionTests
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
 
         Assert.Contains("RunningMonitorIds", source, StringComparison.Ordinal);
-        Assert.Contains("requestedIds.Contains(saved.Id)", source, StringComparison.Ordinal);
-        Assert.Contains("if (!savedMonitor.Enabled) continue;", source, StringComparison.Ordinal);
+        Assert.Contains(".Where(id => id > 0)", source, StringComparison.Ordinal);
+        Assert.Contains("foreach (var monitorId in requestedIds)", source, StringComparison.Ordinal);
+        Assert.Contains("if (!savedById.TryGetValue(monitorId, out var savedMonitor))", source, StringComparison.Ordinal);
+        Assert.Contains("if (!savedMonitor.Enabled)", source, StringComparison.Ordinal);
+        Assert.Contains("pendingIds.Add(monitorId)", source, StringComparison.Ordinal);
         Assert.Contains("SavedMonitorTabResolver.Resolve(savedMonitor, tabs)", source, StringComparison.Ordinal);
         Assert.Contains("monitorService.StartMonitorAsync(savedMonitor, tab)", source, StringComparison.Ordinal);
         Assert.Contains("monitor.IsMonitorRunning(saved.Id)", program, StringComparison.Ordinal);
