@@ -4,7 +4,7 @@ Issue: #151
 
 Implementation branch: `agent/instance-003-resume-reconciliation`
 
-Status: **IN PROGRESS**
+Status: **DONE / VERIFIED / MERGED / STABLE PUBLISHED**
 
 ## Objective
 
@@ -38,6 +38,39 @@ Make instance takeover observable and accountable at the monitor level. A proces
 - `tests/GPTDeskTop.RuntimeTests/InstanceHandoffResumeReconciliationTests.cs`
 - `docs/work/INSTANCE-003.md`
 
-## Validation plan
+## Verification receipt
 
-Full required GitHub Actions workflow set must be Green on one exact PR head before merge. After merge, main validation and stable publication must be verified before the work receipt is marked completed.
+- Issue #151: **Closed / Completed**.
+- PR #152: **Merged**.
+- Final implementation head: `2afe79091ab144de0d6f1328c48a7a8db2952c62`.
+- Main merge commit: `730ff3ecc11a06cf7ecb938371fc66ddddadfba4`.
+- PR validation on the final head: **8/8 Green**.
+  - Build GPTDeskTop #544 — SUCCESS
+  - QA Passive Chat Wait #308 — SUCCESS
+  - QA Hidden Chrome CDP #314 — SUCCESS
+  - QA Crash Process Recovery #322 — SUCCESS
+  - QA Release x64 #332 — SUCCESS
+  - Development Delivery Receipts #422 — SUCCESS
+  - Development Task Recovery #418 — SUCCESS
+  - Development Message Reload #249 — SUCCESS
+- Main push validation on `730ff3ecc11a06cf7ecb938371fc66ddddadfba4`: **8/8 Green**.
+  - Build GPTDeskTop #545 — SUCCESS
+  - QA Passive Chat Wait #309 — SUCCESS
+  - QA Hidden Chrome CDP #315 — SUCCESS
+  - QA Crash Process Recovery #323 — SUCCESS
+  - all Release/Development push gates completed successfully on the same source commit.
+- Build #545 passed runtime automation, work-window lifecycle, runtime binding/integration, delivery invariants, multi-monitor delivery, saved-monitor rebinding, CDP reliability, crash recovery, application build, setup build, helper build and rotation safety.
+
+## CI repair note
+
+The initial PR head exposed one compile-only namespace omission for `SavedMonitorTabResolver`. The repair added the missing `GPTDeskTop.Services.DevelopmentTaskEngine` import only; runtime semantics did not change. The repaired final head then passed the complete workflow set.
+
+## Stable publication
+
+`Last release/GPTDeskTop.exe` was published from the exact implementation source commit `730ff3ecc11a06cf7ecb938371fc66ddddadfba4` after **8/8 same-source validation**.
+
+- Version: `1.8.0.0`
+- Stable build ID: `730ff3ec`
+- Informational version: `1.8.0+stable.730ff3ec.730ff3ecc11a06cf7ecb938371fc66ddddadfba4`
+- SHA-256: `4b337b67589f94356b4febf71c074748474e3ab1d42d7a826719d9209b5e9009`
+- Generated UTC: `2026-08-10T15:41:19Z`
