@@ -34,10 +34,11 @@ public sealed class TrayNotificationService : IDisposable
         _monitor.ResponseReceived += OnResponseReceived;
     }
 
-    public async Task InitializeAsync() => await ReloadSettingsAsync();
+    public Task InitializeAsync() => ReloadSettingsAsync();
 
-    private async Task ReloadSettingsAsync()
+    public async Task ReloadSettingsAsync()
     {
+        if (_disposed) return;
         _durationSeconds = await _database.GetIntSettingAsync("NotificationDurationSeconds", 8, 1, 60);
         _soundEnabled = !string.Equals(await _database.GetSettingAsync("NotificationSoundEnabled"), "0", StringComparison.Ordinal);
         _soundType = await _database.GetSettingAsync("NotificationSoundType") ?? "Asterisk";
