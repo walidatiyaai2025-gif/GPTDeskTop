@@ -221,13 +221,7 @@ internal static class Program
 
                     if (takeover is not null)
                     {
-                        await InstanceHandoffCoordinator.ResumeRunningMonitorsAsync(
-                            takeover,
-                            chrome,
-                            monitor,
-                            database);
-
-                        var reconciliation = await InstanceHandoffResumeReconciler.ReconcileAsync(
+                        var reconciliation = await InstanceHandoffCoordinator.ResumeRunningMonitorsAsync(
                             takeover,
                             chrome,
                             monitor,
