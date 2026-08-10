@@ -17,7 +17,7 @@ public sealed class DevelopmentTaskEngineTests
             var messagesPath = Path.Combine(root, "task-messages.json");
             await File.WriteAllTextAsync(messagesPath, "{\"Messages\":[\"one\",\"two\"]}");
             var emissions = 0;
-            var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var deliveryCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
             await using (var first = new DevelopmentTaskEngine(
                 workWindow: TimeSpan.FromMinutes(1),
@@ -36,11 +36,11 @@ public sealed class DevelopmentTaskEngineTests
                             "tab-1",
                             DevelopmentTaskDeliveryCoordinator.Fingerprint(message),
                             cancellationToken);
-                        delivered.TrySetResult();
                     });
+                coordinator.DeliverySucceeded += _ => deliveryCompleted.TrySetResult();
 
                 await first.StartAsync("plan-1", "Plan One");
-                await delivered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+                await deliveryCompleted.Task.WaitAsync(TimeSpan.FromSeconds(3));
                 await WaitUntilAsync(() => first.State.CurrentMessageIndex == 1, TimeSpan.FromSeconds(3));
             }
 
