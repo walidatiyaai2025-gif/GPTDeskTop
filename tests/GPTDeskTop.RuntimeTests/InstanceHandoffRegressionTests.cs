@@ -40,6 +40,21 @@ public sealed class InstanceHandoffRegressionTests
     }
 
     [Fact]
+    public void LiveOperatorWorkspaceIsPersistedBeforeTakeoverOfferIsCaptured()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Program.cs");
+
+        var persist = source.IndexOf("await PersistOperatorLayoutForInstanceHandoffAsync(mainForm, cancellationToken);", StringComparison.Ordinal);
+        var snapshot = source.IndexOf("var savedMonitors = await database.GetSavedMonitorsAsync(cancellationToken);", persist, StringComparison.Ordinal);
+
+        Assert.True(persist >= 0 && snapshot > persist, "Current window/splitter state must be saved before the handoff snapshot is offered.");
+        Assert.Contains("PersistOperatorLayoutAsync", source, StringComparison.Ordinal);
+        Assert.Contains("BindingFlags.Instance | BindingFlags.NonPublic", source, StringComparison.Ordinal);
+        Assert.Contains("mainForm.BeginInvoke", source, StringComparison.Ordinal);
+        Assert.Contains("completion.Task.WaitAsync(cancellationToken)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CommittedTakeoverStopsWorkersButLeavesChromeAndGeneratingChatsAlive()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
@@ -67,6 +82,20 @@ public sealed class InstanceHandoffRegressionTests
         Assert.Contains("InstanceHandoffAck", source, StringComparison.Ordinal);
         Assert.Contains("MutexName", source, StringComparison.Ordinal);
         Assert.Contains("OwnershipTimeout = TimeSpan.FromSeconds(25)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FatalRestartRaceMayClaimOnlyAReleasedOrAbandonedOwnerMutex()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "InstanceHandoffCoordinator.cs");
+
+        var noOffer = source.IndexOf("if (offer is null)", StringComparison.Ordinal);
+        var orphanWait = source.IndexOf("WaitForMutex(orphanedOwnerMutex, OrphanedOwnerTimeout)", noOffer, StringComparison.Ordinal);
+        var failClosed = source.IndexOf("The second runtime was not started", orphanWait, StringComparison.Ordinal);
+
+        Assert.True(noOffer >= 0 && orphanWait > noOffer && failClosed > orphanWait);
+        Assert.Contains("OrphanedOwnerTimeout = TimeSpan.FromSeconds(2)", source, StringComparison.Ordinal);
+        Assert.Contains("catch (AbandonedMutexException)", source, StringComparison.Ordinal);
     }
 
     [Fact]
