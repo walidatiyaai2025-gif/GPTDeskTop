@@ -32,7 +32,6 @@ public sealed class ChatGptMonitorService
         ArgumentNullException.ThrowIfNull(monitor);
         ArgumentNullException.ThrowIfNull(tab);
         if (monitor.Id <= 0) throw new InvalidOperationException("Save the monitor before starting it.");
-        if (string.IsNullOrWhiteSpace(monitor.AutoReply)) throw new InvalidOperationException("Auto reply text cannot be empty.");
         if (!RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url))
             throw new InvalidOperationException("The saved monitor URL is not a stable ChatGPT conversation identity.");
         if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
@@ -53,6 +52,8 @@ public sealed class ChatGptMonitorService
             Activity?.Invoke(monitor.Id, $"Monitor #{monitor.Id} conversation identity changed before Start. Refresh the saved monitor before retrying.");
             return;
         }
+        if (string.IsNullOrWhiteSpace(persistedMonitor.AutoReply))
+            throw new InvalidOperationException("Auto reply text cannot be empty.");
         if (MonitorConversationOwnership.IsDuplicateOwner(monitor.Id, savedMonitors))
         {
             const string message = "Saved monitor conversation ownership is ambiguous. Resolve duplicate monitor rows before starting this monitor.";
@@ -61,23 +62,38 @@ public sealed class ChatGptMonitorService
                 string.Empty,
                 message,
                 "MonitorStartDuplicateConversationOwnership",
-                monitor.Id,
-                monitor.TabId,
-                monitor.Title);
+                persistedMonitor.Id,
+                persistedMonitor.TabId,
+                persistedMonitor.Title);
             HistoryChanged?.Invoke();
-            Activity?.Invoke(monitor.Id, message);
+            Activity?.Invoke(persistedMonitor.Id, message);
             return;
         }
 
         lock (_sync)
         {
-            if (_running.ContainsKey(monitor.Id)) return;
+            if (_running.ContainsKey(persistedMonitor.Id)) return;
             var cts = new CancellationTokenSource();
-            var worker = Task.Run(() => MonitorLoopAsync(monitor, tab, cts.Token));
-            _running.Add(monitor.Id, new MonitorRuntime(cts, worker));
+            var worker = Task.Run(() => MonitorLoopAsync(persistedMonitor, tab, cts.Token));
+            _running.Add(persistedMonitor.Id, new MonitorRuntime(cts, worker));
         }
-        Activity?.Invoke(monitor.Id, $"Started: {monitor.Title}");
+        Activity?.Invoke(persistedMonitor.Id, $"Started: {persistedMonitor.Title}");
         RunningStateChanged?.Invoke();
+    }
+
+    public async Task<bool> UpdateMonitorConfigurationAsync(SavedMonitor monitor)
+    {
+        ArgumentNullException.ThrowIfNull(monitor);
+        if (monitor.Id <= 0) throw new InvalidOperationException("Save the monitor before changing its settings.");
+        if (string.IsNullOrWhiteSpace(monitor.AutoReply)) throw new InvalidOperationException("Auto reply text cannot be empty.");
+
+        using var lifecycleLease = await AcquireLifecycleGateAsync(monitor.Id);
+        lock (_sync)
+        {
+            if (_running.ContainsKey(monitor.Id)) return false;
+        }
+
+        return await _database.UpdateMonitorConfigurationAsync(monitor);
     }
 
     public async Task StopMonitorAsync(long monitorId)

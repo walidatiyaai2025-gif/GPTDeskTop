@@ -160,18 +160,27 @@ public sealed class MonitorConfigurationUpdateTests
     }
 
     [Fact]
-    public void ExistingMonitorUiEditUsesConfigOnlyDatabaseUpdate()
+    public void ExistingMonitorUiEditUsesConfigOnlyServiceBoundary()
     {
         var mainForm = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
+        var service = ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs");
         var database = ReadSource("src", "GPTDeskTop", "Data", "LocalDatabase.cs");
 
         var editStart = mainForm.IndexOf("private async Task EditSelectedMonitorSettingsAsync", StringComparison.Ordinal);
         var editEnd = mainForm.IndexOf("private async Task DeleteSelectedMonitorAsync", editStart, StringComparison.Ordinal);
         var editBlock = mainForm[editStart..editEnd];
 
-        Assert.Contains("UpdateMonitorConfigurationAsync(_selectedMonitor)", editBlock, StringComparison.Ordinal);
+        Assert.Contains("await _monitor.UpdateMonitorConfigurationAsync(_selectedMonitor)", editBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("_database.UpdateMonitorConfigurationAsync(_selectedMonitor)", editBlock, StringComparison.Ordinal);
         Assert.DoesNotContain("SaveMonitorAsync(_selectedMonitor)", editBlock, StringComparison.Ordinal);
         Assert.Contains("await RefreshMonitorsAsync()", editBlock, StringComparison.Ordinal);
+
+        var serviceStart = service.IndexOf("public async Task<bool> UpdateMonitorConfigurationAsync", StringComparison.Ordinal);
+        var serviceEnd = service.IndexOf("public async Task StopMonitorAsync", serviceStart, StringComparison.Ordinal);
+        var serviceBlock = service[serviceStart..serviceEnd];
+        Assert.Contains("AcquireLifecycleGateAsync(monitor.Id)", serviceBlock, StringComparison.Ordinal);
+        Assert.Contains("_running.ContainsKey(monitor.Id)", serviceBlock, StringComparison.Ordinal);
+        Assert.Contains("_database.UpdateMonitorConfigurationAsync(monitor)", serviceBlock, StringComparison.Ordinal);
 
         var methodStart = database.IndexOf("public async Task<bool> UpdateMonitorConfigurationAsync", StringComparison.Ordinal);
         var methodEnd = database.IndexOf("public async Task<bool> UpdateMonitorRuntimeTargetIfConversationMatchesAsync", methodStart, StringComparison.Ordinal);
