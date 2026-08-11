@@ -26,7 +26,9 @@ internal static class SecondaryScreenExperience
 
         RegisterResponsive(form, () => Apply(form));
 
-        if (form is SettingsForm)
+        if (form is MainForm)
+            EnhanceMainForm(form);
+        else if (form is SettingsForm)
             EnhanceSettingsForm(form);
         else if (form is MonitorSettingsForm)
             EnhanceMonitorSettingsForm(form);
@@ -35,6 +37,9 @@ internal static class SecondaryScreenExperience
         {
             switch (control)
             {
+                case DevelopmentTaskDashboardControl development:
+                    EnhanceDevelopmentDashboard(development);
+                    break;
                 case RuntimeHealthControl runtimeHealth:
                     EnhanceRuntimeHealth(runtimeHealth);
                     break;
@@ -47,6 +52,72 @@ internal static class SecondaryScreenExperience
             }
         }
     }
+
+    private static void EnhanceMainForm(Form form)
+    {
+        EnsureMainWindowDockOrder(form);
+        AppendAccessibleHint(form, "Primary operator workspace with reserved top and bottom command surfaces that never overlap the main content.");
+
+        foreach (var button in Descendants(form).OfType<Button>())
+        {
+            var width = DesiredMainActionButtonWidth(button.Text);
+            if (width <= 0) continue;
+            EnsureButtonSize(button, width);
+        }
+    }
+
+    private static void EnsureMainWindowDockOrder(Form form)
+    {
+        var development = form.Controls.OfType<DevelopmentTaskDashboardControl>().FirstOrDefault();
+        var runtime = form.Controls.OfType<RuntimeHealthControl>().FirstOrDefault();
+        var support = form.Controls.OfType<SupportDiagnosticsControl>().FirstOrDefault();
+        var history = form.Controls.OfType<HistoryWorkspaceControl>().FirstOrDefault();
+        var mainContent = form.Controls.Cast<Control>().FirstOrDefault(control => control.Dock == DockStyle.Fill);
+        if (mainContent is null) return;
+
+        // WinForms docks direct children in reverse z-order. Keep the Fill surface at index 0
+        // and edge-docked surfaces after it so Top/Bottom controls reserve real layout space
+        // instead of painting over the primary workspace.
+        var desired = new Control?[] { mainContent, history, support, runtime, development }
+            .Where(control => control is not null)
+            .Cast<Control>()
+            .ToArray();
+
+        var alreadyOrdered = desired
+            .Select((control, index) => form.Controls.GetChildIndex(control) == index)
+            .All(matches => matches);
+        if (alreadyOrdered) return;
+
+        form.SuspendLayout();
+        try
+        {
+            for (var index = 0; index < desired.Length; index++)
+                form.Controls.SetChildIndex(desired[index], index);
+        }
+        finally
+        {
+            form.ResumeLayout(performLayout: true);
+        }
+    }
+
+    private static int DesiredMainActionButtonWidth(string? text)
+        => Normalize(text) switch
+        {
+            "Launch Chrome" => 116,
+            "Hide Chrome" => 104,
+            "Show Chrome" => 106,
+            "Refresh" => 88,
+            "Add Monitor" => 110,
+            "Edit Monitor" => 110,
+            "Delete" => 84,
+            "Start Selected" => 118,
+            "Stop Selected" => 116,
+            "Start All" => 90,
+            "Stop All" => 90,
+            "Settings" => 90,
+            "Edit Selected Monitor" => 164,
+            _ => 0
+        };
 
     private static void EnhanceSettingsForm(Form form)
     {
@@ -185,6 +256,64 @@ internal static class SecondaryScreenExperience
             box.AccessibleDescription ??= "Leave Auto to preserve the current ChatGPT model selection.";
     }
 
+    private static void EnhanceDevelopmentDashboard(DevelopmentTaskDashboardControl control)
+    {
+        RegisterResponsive(control, () => EnhanceDevelopmentDashboard(control));
+        control.BackColor = FluentTheme.Background;
+        control.Padding = new Padding(Scale(control, 12), Scale(control, 6), Scale(control, 12), Scale(control, 4));
+        control.AccessibleDescription ??= "Development-plan command center with fully visible lifecycle and configuration actions.";
+
+        var frame = control.Controls.OfType<Panel>().FirstOrDefault(panel => panel.Dock == DockStyle.Fill);
+        if (frame is not null)
+        {
+            frame.BackColor = FluentTheme.SurfaceRaised;
+            frame.Padding = new Padding(Scale(frame, 11), Scale(frame, 6), Scale(frame, 11), Scale(frame, 8));
+        }
+
+        var header = Descendants(control).OfType<TableLayoutPanel>()
+            .FirstOrDefault(table => table.ColumnCount == 5 && table.RowCount == 1 && Descendants(table).OfType<Label>().Any(label => label.Text == "Development Plan"));
+        if (header is not null && header.ColumnStyles.Count >= 5)
+        {
+            var compact = control.Width < Scale(control, 920);
+            SetAbsoluteColumn(header, 0, Scale(header, compact ? 150 : 175));
+            SetAbsoluteColumn(header, 1, Scale(header, compact ? 112 : 120));
+            header.ColumnStyles[2].SizeType = SizeType.Percent;
+            header.ColumnStyles[2].Width = 100;
+            SetAbsoluteColumn(header, 3, Scale(header, compact ? 92 : 108));
+            SetAbsoluteColumn(header, 4, Scale(header, 112));
+        }
+
+        var actions = Descendants(control).OfType<FlowLayoutPanel>()
+            .FirstOrDefault(flow => flow.Controls.OfType<Button>().Any(button => Normalize(button.Text) == "Start")
+                                    && flow.Controls.OfType<Button>().Any(button => Normalize(button.Text) == "Schedule"));
+        if (actions is not null)
+        {
+            actions.WrapContents = false;
+            actions.AutoScroll = false;
+            actions.Padding = new Padding(0, Scale(actions, 1), 0, 0);
+        }
+
+        foreach (var button in Descendants(control).OfType<Button>())
+        {
+            var width = DesiredDevelopmentButtonWidth(button.Text);
+            EnsureButtonSize(button, width > 0 ? width : 90);
+        }
+    }
+
+    private static int DesiredDevelopmentButtonWidth(string? text)
+        => Normalize(text) switch
+        {
+            "Start" => 78,
+            "Pause" => 78,
+            "Resume" => 88,
+            "Stop" => 78,
+            "Messages" => 96,
+            "Schedule" => 96,
+            "Collapse" => 100,
+            "Details" => 92,
+            _ => 90
+        };
+
     private static void EnhanceRuntimeHealth(RuntimeHealthControl control)
     {
         RegisterResponsive(control, () => EnhanceRuntimeHealth(control));
@@ -218,22 +347,33 @@ internal static class SecondaryScreenExperience
 
         foreach (var button in Descendants(control).OfType<Button>())
         {
-            button.MinimumSize = new Size(Math.Max(button.MinimumSize.Width, Scale(button, 72)), Math.Max(button.MinimumSize.Height, Scale(button, 36)));
-            button.AutoEllipsis = true;
+            var width = DesiredRuntimeButtonWidth(button.Text);
+            EnsureButtonSize(button, width);
         }
     }
+
+    private static int DesiredRuntimeButtonWidth(string? text)
+        => Normalize(text) switch
+        {
+            "Refresh" => 90,
+            "Repair…" => 90,
+            "Retry" => 80,
+            "Collapse" => 100,
+            "Details" => 94,
+            _ => 88
+        };
 
     private static void ApplyRuntimeHeaderResponsive(Control owner, TableLayoutPanel header)
     {
         if (header.ColumnStyles.Count < 8) return;
 
-        var compact = owner.Width < Scale(owner, 930);
-        var veryCompact = owner.Width < Scale(owner, 760);
+        var compact = owner.Width < Scale(owner, 1080);
+        var veryCompact = owner.Width < Scale(owner, 900);
         var summary = header.GetControlFromPosition(2, 0);
         var lastChecked = header.GetControlFromPosition(3, 0);
 
-        SetAbsoluteColumn(header, 0, Scale(header, compact ? 132 : 150));
-        SetAbsoluteColumn(header, 1, Scale(header, compact ? 108 : 125));
+        SetAbsoluteColumn(header, 0, Scale(header, compact ? 140 : 150));
+        SetAbsoluteColumn(header, 1, Scale(header, compact ? 116 : 125));
 
         if (veryCompact)
         {
@@ -255,11 +395,15 @@ internal static class SecondaryScreenExperience
         else
         {
             if (lastChecked is not null) lastChecked.Visible = true;
-            SetAbsoluteColumn(header, 3, Scale(header, 150));
+            SetAbsoluteColumn(header, 3, Scale(header, 140));
         }
 
-        for (var column = 4; column <= 7; column++)
-            SetAbsoluteColumn(header, column, Scale(header, compact ? 72 : 86));
+        // Each action column includes the button's minimum width plus Fluent margins.
+        // Never collapse these columns to text-truncating widths.
+        SetAbsoluteColumn(header, 4, Scale(header, 102));
+        SetAbsoluteColumn(header, 5, Scale(header, 102));
+        SetAbsoluteColumn(header, 6, Scale(header, 92));
+        SetAbsoluteColumn(header, 7, Scale(header, 112));
     }
 
     private static void EnhanceHistory(HistoryWorkspaceControl control)
@@ -275,7 +419,7 @@ internal static class SecondaryScreenExperience
         if (header is not null && header.ColumnStyles.Count >= 3)
         {
             SetAbsoluteColumn(header, 0, Scale(header, compact ? 148 : 180));
-            SetAbsoluteColumn(header, 2, Scale(header, compact ? 88 : 100));
+            SetAbsoluteColumn(header, 2, Scale(header, compact ? 108 : 116));
         }
 
         var filters = Descendants(control).OfType<FlowLayoutPanel>()
@@ -310,8 +454,8 @@ internal static class SecondaryScreenExperience
 
         foreach (var button in Descendants(control).OfType<Button>())
         {
-            button.MinimumSize = new Size(Math.Max(button.MinimumSize.Width, Scale(button, 78)), Math.Max(button.MinimumSize.Height, Scale(button, 36)));
-            button.AutoEllipsis = true;
+            var width = DesiredHistoryButtonWidth(button.Text);
+            EnsureButtonSize(button, width);
         }
 
         foreach (var grid in Descendants(control).OfType<DataGridView>())
@@ -326,6 +470,18 @@ internal static class SecondaryScreenExperience
         foreach (var status in Descendants(control).OfType<Label>().Where(label => label.AccessibleRole == AccessibleRole.StatusBar))
             EnhanceStatusLabel(status, "Stored history result summary");
     }
+
+    private static int DesiredHistoryButtonWidth(string? text)
+        => Normalize(text) switch
+        {
+            "Clear Filters" => 104,
+            "Refresh" => 88,
+            "Copy Selected" => 118,
+            "Export Visible CSV" => 142,
+            "Collapse" => 100,
+            "History" => 92,
+            _ => 88
+        };
 
     private static void EnhanceSupportDiagnostics(SupportDiagnosticsControl control)
     {
@@ -379,6 +535,15 @@ internal static class SecondaryScreenExperience
         label.ForeColor = foreground;
         if (label.Parent is Panel host)
             host.BackColor = surface;
+    }
+
+    private static void EnsureButtonSize(Button button, int logicalWidth, int logicalHeight = 36)
+    {
+        button.MinimumSize = new Size(
+            Math.Max(button.MinimumSize.Width, Scale(button, logicalWidth)),
+            Math.Max(button.MinimumSize.Height, Scale(button, logicalHeight)));
+        button.Padding = new Padding(Scale(button, 10), Scale(button, 5), Scale(button, 10), Scale(button, 5));
+        button.AutoEllipsis = false;
     }
 
     private static void RegisterResponsive(Control control, Action callback)
