@@ -1,10 +1,16 @@
 # PERF-002 — Harden long-running CDP polling against hangs and allocation churn
 
-Issue: #157
+Issue: #157 — **Closed / Completed**
 
 Implementation branch: `agent/perf-002-cdp-stability`
 
-Status: **IMPLEMENTED / VALIDATION PENDING**
+Implementation PR: #158
+
+Verified PR head: `a958b25c4d21a582ffdaf161295396fb44586ea4`
+
+Squash merge to `main`: `b6dbdc52fc8393f0908d8bb1636dd5a5794a1736`
+
+Status: **DONE / VERIFIED / MERGED**
 
 ## Problem
 
@@ -31,6 +37,17 @@ For a monitor polling every second, repeated buffer allocation creates avoidable
 - message growth bounding,
 - and `TimeoutException` remaining on the transient monitor retry path.
 
-## Validation
+## Verification receipts
 
-GitHub Actions validation is required on the implementation PR before merge.
+All eight established GitHub Actions workflows passed on the exact final PR head `a958b25c4d21a582ffdaf161295396fb44586ea4`:
+
+- Build GPTDeskTop #553 — Success
+- QA Release x64 #341 — Success
+- QA Hidden Chrome CDP #323 — Success
+- QA Passive Chat Wait #317 — Success
+- QA Crash Process Recovery #331 — Success
+- Development Delivery Receipts #431 — Success
+- Development Task Recovery #427 — Success
+- Development Message Reload #258 — Success
+
+PR #158 was then squash-merged to `main` as `b6dbdc52fc8393f0908d8bb1636dd5a5794a1736`, and issue #157 closed as Completed.
