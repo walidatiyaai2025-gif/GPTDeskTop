@@ -27,8 +27,10 @@ public sealed class SecondaryScreenExperienceRegressionTests
     {
         var source = Source;
 
+        Assert.Contains("form is MainForm", source, StringComparison.Ordinal);
         Assert.Contains("form is SettingsForm", source, StringComparison.Ordinal);
         Assert.Contains("form is MonitorSettingsForm", source, StringComparison.Ordinal);
+        Assert.Contains("case DevelopmentTaskDashboardControl development", source, StringComparison.Ordinal);
         Assert.Contains("case RuntimeHealthControl runtimeHealth", source, StringComparison.Ordinal);
         Assert.Contains("case HistoryWorkspaceControl history", source, StringComparison.Ordinal);
         Assert.Contains("case SupportDiagnosticsControl support", source, StringComparison.Ordinal);
@@ -38,15 +40,17 @@ public sealed class SecondaryScreenExperienceRegressionTests
     }
 
     [Fact]
-    public void RuntimeHealthAndHistoryHaveCompactLayoutContracts()
+    public void RuntimeHealthAndHistoryHaveReadableResponsiveLayoutContracts()
     {
         var source = Source;
 
         Assert.Contains("ApplyRuntimeHeaderResponsive", source, StringComparison.Ordinal);
-        Assert.Contains("owner.Width < Scale(owner, 930)", source, StringComparison.Ordinal);
-        Assert.Contains("owner.Width < Scale(owner, 760)", source, StringComparison.Ordinal);
+        Assert.Contains("owner.Width < Scale(owner, 1080)", source, StringComparison.Ordinal);
+        Assert.Contains("owner.Width < Scale(owner, 900)", source, StringComparison.Ordinal);
         Assert.Contains("lastChecked.Visible = false", source, StringComparison.Ordinal);
         Assert.Contains("summary.Visible = false", source, StringComparison.Ordinal);
+        Assert.Contains("SetAbsoluteColumn(header, 4, Scale(header, 102))", source, StringComparison.Ordinal);
+        Assert.Contains("SetAbsoluteColumn(header, 7, Scale(header, 112))", source, StringComparison.Ordinal);
         Assert.Contains("filters.WrapContents = true", source, StringComparison.Ordinal);
         Assert.Contains("bodyLayout.RowStyles[0].SizeType = compact ? SizeType.AutoSize : SizeType.Absolute", source, StringComparison.Ordinal);
         Assert.Contains("search.Width = Scale(search, compact ? 220 : 280)", source, StringComparison.Ordinal);
