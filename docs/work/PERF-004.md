@@ -1,10 +1,16 @@
 # PERF-004 — Reduce monitor hot-loop payload and SQLite polling
 
-Issue: #165
+Issue: #165 — **Closed / Completed**
 
 Implementation branch: `agent/perf-004-monitor-hot-loop`
 
-Status: **IMPLEMENTED / VALIDATION PENDING**
+Implementation PR: #166
+
+Verified PR head: `4a4316edabbae5bfb071e0f2de56f46bd6581ef0`
+
+Squash merge to `main`: `2c0554af33ad374e05ce6a3fd711c59e2caad700`
+
+Status: **DONE / VERIFIED / MERGED**
 
 ## Problem
 
@@ -34,6 +40,17 @@ For long responses and multiple monitors, both costs scale continuously with run
 - the five-second runtime settings refresh contract,
 - and the absence of per-poll SQLite setting reads.
 
-## Validation
+## Verification receipts
 
-GitHub Actions validation is required on the implementation PR before merge.
+All eight established GitHub Actions workflows passed on the exact final PR head `4a4316edabbae5bfb071e0f2de56f46bd6581ef0`:
+
+- Build GPTDeskTop #565 — Success
+- QA Release x64 #353 — Success
+- QA Hidden Chrome CDP #335 — Success
+- QA Passive Chat Wait #329 — Success
+- QA Crash Process Recovery #343 — Success
+- Development Delivery Receipts #443 — Success
+- Development Task Recovery #439 — Success
+- Development Message Reload #270 — Success
+
+PR #166 was then squash-merged to `main` as `2c0554af33ad374e05ce6a3fd711c59e2caad700`, and issue #165 closed as Completed.
