@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Runtime.InteropServices;
@@ -13,6 +14,9 @@ public sealed class ChromeDevToolsService
     private const int SwHide = 0;
     private const int SwShow = 5;
     private const int SwRestore = 9;
+    private const int ReceiveBufferSize = 64 * 1024;
+    private const int MaxDevToolsMessageBytes = 2 * 1024 * 1024;
+    private static readonly TimeSpan DevToolsCommandTimeout = TimeSpan.FromSeconds(12);
     private readonly HttpClient _httpClient;
     private readonly ChromeConfig _config;
     private Process? _monitorChromeProcess;
@@ -93,7 +97,65 @@ public sealed class ChromeDevToolsService
     public async Task ReloadTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) => await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
     private async Task<JsonElement> EvaluateAsync(ChromeTab tab, string expression, CancellationToken cancellationToken, bool awaitPromise) { for (var attempt = 1; attempt <= 3; attempt++) { try { return await SendCommandAsync(tab, "Runtime.evaluate", new { expression, returnByValue = true, awaitPromise, userGesture = true }, cancellationToken, true); } catch (InvalidOperationException ex) when (IsTransientPromiseCollected(ex) && attempt < 3) { await Task.Delay(120 * attempt, cancellationToken); } } throw new InvalidOperationException("Runtime.evaluate failed after transient retry attempts."); }
     private static bool IsTransientPromiseCollected(Exception ex) => ex.Message.Contains("Promise was collected", StringComparison.OrdinalIgnoreCase);
-    private static async Task<JsonElement> SendCommandAsync(ChromeTab tab, string method, object parameters, CancellationToken cancellationToken, bool extractRuntimeValue = false) { if (string.IsNullOrWhiteSpace(tab.WebSocketDebuggerUrl)) throw new InvalidOperationException("The selected tab does not expose a DevTools WebSocket URL."); using var socket = new ClientWebSocket(); await socket.ConnectAsync(new Uri(tab.WebSocketDebuggerUrl), cancellationToken); var request = JsonSerializer.Serialize(new { id = 1, method, @params = parameters }); var bytes = Encoding.UTF8.GetBytes(request); await socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken); var buffer = new byte[64 * 1024]; using var stream = new MemoryStream(); while (true) { var result = await socket.ReceiveAsync(buffer, cancellationToken); if (result.MessageType == WebSocketMessageType.Close) throw new InvalidOperationException("Chrome closed the DevTools connection."); stream.Write(buffer, 0, result.Count); if (!result.EndOfMessage) continue; var payload = Encoding.UTF8.GetString(stream.ToArray()); stream.SetLength(0); using var document = JsonDocument.Parse(payload); var root = document.RootElement; if (!root.TryGetProperty("id", out var id) || id.GetInt32() != 1) continue; if (root.TryGetProperty("error", out var error)) throw new InvalidOperationException($"Chrome DevTools error: {error}"); if (!extractRuntimeValue) return root.TryGetProperty("result", out var commandResult) ? commandResult.Clone() : JsonDocument.Parse("null").RootElement.Clone(); var resultElement = root.GetProperty("result").GetProperty("result"); if (resultElement.TryGetProperty("subtype", out var subtype) && subtype.GetString() == "error") throw new InvalidOperationException(resultElement.TryGetProperty("description", out var d) ? d.GetString() : "JavaScript evaluation failed."); return resultElement.TryGetProperty("value", out var value) ? value.Clone() : JsonDocument.Parse("null").RootElement.Clone(); } }
+    private static async Task<JsonElement> SendCommandAsync(ChromeTab tab, string method, object parameters, CancellationToken cancellationToken, bool extractRuntimeValue = false)
+    {
+        if (string.IsNullOrWhiteSpace(tab.WebSocketDebuggerUrl))
+            throw new InvalidOperationException("The selected tab does not expose a DevTools WebSocket URL.");
+
+        using var commandCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        commandCts.CancelAfter(DevToolsCommandTimeout);
+        var commandToken = commandCts.Token;
+
+        try
+        {
+            using var socket = new ClientWebSocket();
+            await socket.ConnectAsync(new Uri(tab.WebSocketDebuggerUrl), commandToken);
+            var request = JsonSerializer.Serialize(new { id = 1, method, @params = parameters });
+            var bytes = Encoding.UTF8.GetBytes(request);
+            await socket.SendAsync(bytes, WebSocketMessageType.Text, true, commandToken);
+
+            var buffer = ArrayPool<byte>.Shared.Rent(ReceiveBufferSize);
+            try
+            {
+                using var stream = new MemoryStream();
+                while (true)
+                {
+                    var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer, 0, ReceiveBufferSize), commandToken);
+                    if (result.MessageType == WebSocketMessageType.Close)
+                        throw new InvalidOperationException("Chrome closed the DevTools connection.");
+
+                    if (stream.Length + result.Count > MaxDevToolsMessageBytes)
+                        throw new InvalidOperationException($"Chrome DevTools message exceeded the {MaxDevToolsMessageBytes} byte safety limit.");
+
+                    stream.Write(buffer, 0, result.Count);
+                    if (!result.EndOfMessage) continue;
+
+                    var payload = Encoding.UTF8.GetString(stream.GetBuffer(), 0, checked((int)stream.Length));
+                    stream.SetLength(0);
+                    using var document = JsonDocument.Parse(payload);
+                    var root = document.RootElement;
+                    if (!root.TryGetProperty("id", out var id) || id.GetInt32() != 1) continue;
+                    if (root.TryGetProperty("error", out var error))
+                        throw new InvalidOperationException($"Chrome DevTools error: {error}");
+                    if (!extractRuntimeValue)
+                        return root.TryGetProperty("result", out var commandResult) ? commandResult.Clone() : JsonDocument.Parse("null").RootElement.Clone();
+
+                    var resultElement = root.GetProperty("result").GetProperty("result");
+                    if (resultElement.TryGetProperty("subtype", out var subtype) && subtype.GetString() == "error")
+                        throw new InvalidOperationException(resultElement.TryGetProperty("description", out var d) ? d.GetString() : "JavaScript evaluation failed.");
+                    return resultElement.TryGetProperty("value", out var value) ? value.Clone() : JsonDocument.Parse("null").RootElement.Clone();
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Chrome DevTools command '{method}' timed out after {DevToolsCommandTimeout.TotalSeconds:0} seconds.");
+        }
+    }
     private static string FindChromePath() { var candidates = new[] { Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", "chrome.exe"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe") }; var chrome = candidates.FirstOrDefault(File.Exists); if (chrome is null) throw new FileNotFoundException("Google Chrome was not found. Install Chrome or update the configured path."); return chrome; }
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hWnd);
