@@ -1,12 +1,16 @@
 # UI-POLISH-004 — 100 main dashboard operations-console refinements
 
 ## Status
-IMPLEMENTED / VALIDATION PENDING
+DONE / VERIFIED / MERGED
 
 ## Tracking
-- Issue: #171
+- Issue: #171 — Closed / Completed
+- PR: #172
 - Branch: `agent/ui-polish-004-main-dashboard`
-- Baseline main: `d9b687410f6c13b69254778e4d4311f990827b38`
+- Original baseline main: `d9b687410f6c13b69254778e4d4311f990827b38`
+- Final validation base: `9b56f9cf7a6526db30506cf210291f1534875946`
+- Verified PR head: `daf0e54b163c3144131fc82dd59842086badaad9`
+- Squash merge to main: `701d7a7d70db0707ecec1067ed9c56fb50c6facf`
 
 ## Goal
 Refine the Main Dashboard into a clearer operations console while preserving all monitoring, recovery, Chrome/CDP, persistence, task-engine and release semantics.
@@ -136,5 +140,18 @@ Refine the Main Dashboard into a clearer operations console while preserving all
 ## Scope boundary
 Implementation is intentionally isolated to `src/GPTDeskTop/UI/MainDashboardExperience.cs`, UI regression coverage, and this receipt. It does not call monitoring, recovery, Chrome/CDP, database, task-engine, setup or release services.
 
-## Validation
-Pending exact-head GitHub Actions validation.
+## Verification receipts
+All eight established pull-request workflows completed successfully on the exact verified head `daf0e54b163c3144131fc82dd59842086badaad9`:
+
+- Build GPTDeskTop #583 — Success
+- QA Release x64 #371 — Success
+- QA Crash Process Recovery #361 — Success
+- QA Hidden Chrome CDP #353 — Success
+- QA Passive Chat Wait #347 — Success
+- Development Delivery Receipts #461 — Success
+- Development Task Recovery #457 — Success
+- Development Message Reload #288 — Success
+
+The implementation branch was refreshed onto the verified PERF-005 main state before final validation so the dashboard batch includes the latest CDP hardening without introducing UI overlap.
+
+PR #172 was squash-merged to `main` as `701d7a7d70db0707ecec1067ed9c56fb50c6facf`, and issue #171 closed as Completed.
