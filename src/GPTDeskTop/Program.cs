@@ -61,6 +61,7 @@ internal static class Program
 
             database = new LocalDatabase(databasePath);
             database.InitializeAsync().GetAwaiter().GetResult();
+            DatabasePerformanceInitializer.ApplyAsync(databasePath).GetAwaiter().GetResult();
 
             if (database.GetSettingAsync("NoResponseRefreshSeconds").GetAwaiter().GetResult() is null)
                 database.SetSettingAsync("NoResponseRefreshSeconds", "180").GetAwaiter().GetResult();
