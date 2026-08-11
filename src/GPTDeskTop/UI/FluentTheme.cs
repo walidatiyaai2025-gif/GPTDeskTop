@@ -1,28 +1,37 @@
+using System.Drawing.Drawing2D;
+
 namespace GPTDeskTop.UI;
 
 public static class FluentTheme
 {
-    public static readonly Color Background = Color.FromArgb(243, 246, 249);
+    public static readonly Color Background = Color.FromArgb(245, 247, 250);
     public static readonly Color Surface = Color.White;
     public static readonly Color SurfaceAlt = Color.FromArgb(248, 250, 252);
-    public static readonly Color Accent = Color.FromArgb(0, 120, 212);
-    public static readonly Color AccentHover = Color.FromArgb(16, 110, 190);
-    public static readonly Color AccentSubtle = Color.FromArgb(232, 242, 252);
-    public static readonly Color Text = Color.FromArgb(32, 31, 30);
-    public static readonly Color Muted = Color.FromArgb(96, 94, 92);
-    public static readonly Color Border = Color.FromArgb(225, 230, 235);
-    public static readonly Color Danger = Color.FromArgb(196, 43, 28);
-    public static readonly Color DangerSubtle = Color.FromArgb(253, 238, 236);
-    public static readonly Color Success = Color.FromArgb(16, 124, 65);
-    public static readonly Color SuccessSubtle = Color.FromArgb(232, 247, 239);
-    public static readonly Color Warning = Color.FromArgb(157, 93, 0);
-    public static readonly Color WarningSubtle = Color.FromArgb(255, 246, 220);
+    public static readonly Color SurfaceHover = Color.FromArgb(241, 245, 249);
+    public static readonly Color Accent = Color.FromArgb(37, 99, 235);
+    public static readonly Color AccentHover = Color.FromArgb(29, 78, 216);
+    public static readonly Color AccentPressed = Color.FromArgb(30, 64, 175);
+    public static readonly Color AccentSubtle = Color.FromArgb(239, 246, 255);
+    public static readonly Color Text = Color.FromArgb(15, 23, 42);
+    public static readonly Color Muted = Color.FromArgb(100, 116, 139);
+    public static readonly Color Border = Color.FromArgb(226, 232, 240);
+    public static readonly Color BorderStrong = Color.FromArgb(203, 213, 225);
+    public static readonly Color Danger = Color.FromArgb(190, 24, 93);
+    public static readonly Color DangerSubtle = Color.FromArgb(253, 242, 248);
+    public static readonly Color Success = Color.FromArgb(5, 150, 105);
+    public static readonly Color SuccessSubtle = Color.FromArgb(236, 253, 245);
+    public static readonly Color Warning = Color.FromArgb(180, 83, 9);
+    public static readonly Color WarningSubtle = Color.FromArgb(255, 251, 235);
+
+    private static readonly Font BodyFont = new("Segoe UI Variable Text", 9.5F, FontStyle.Regular, GraphicsUnit.Point);
+    private static readonly Font ButtonFont = new("Segoe UI Variable Text", 9F, FontStyle.Bold, GraphicsUnit.Point);
+    private static readonly Font SectionFont = new("Segoe UI Variable Display", 11F, FontStyle.Bold, GraphicsUnit.Point);
 
     public static void Apply(Form form)
     {
         form.BackColor = Background;
         form.ForeColor = Text;
-        form.Font = new Font("Segoe UI Variable Text", 9.5F, FontStyle.Regular, GraphicsUnit.Point);
+        form.Font = BodyFont;
         ApplyRecursive(form.Controls);
     }
 
@@ -40,38 +49,46 @@ public static class FluentTheme
                     break;
                 case GroupBox group:
                     group.ForeColor = Text;
+                    group.Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold);
                     if (group.BackColor == SystemColors.Control) group.BackColor = Background;
                     break;
                 case TextBox box:
-                    box.BorderStyle = BorderStyle.FixedSingle;
-                    box.BackColor = Surface;
-                    box.ForeColor = Text;
+                    StyleTextBox(box);
                     break;
                 case RichTextBox rich:
-                    rich.BorderStyle = BorderStyle.FixedSingle;
+                    rich.BorderStyle = BorderStyle.None;
+                    rich.BackColor = Surface;
+                    rich.ForeColor = Text;
                     break;
                 case NumericUpDown numeric:
                     numeric.BorderStyle = BorderStyle.FixedSingle;
                     numeric.BackColor = Surface;
                     numeric.ForeColor = Text;
+                    numeric.Font = BodyFont;
                     break;
                 case ComboBox combo:
                     combo.BackColor = Surface;
                     combo.ForeColor = Text;
+                    combo.FlatStyle = FlatStyle.Flat;
+                    combo.Font = BodyFont;
                     break;
                 case CheckBox check:
                     check.ForeColor = Text;
+                    check.Font = BodyFont;
                     break;
                 case Label label:
                     if (label.ForeColor == SystemColors.ControlText) label.ForeColor = Text;
                     break;
                 case TabControl tabs:
-                    tabs.Font = new Font("Segoe UI Variable Text", 9.5F, FontStyle.Regular);
-                    tabs.Padding = new Point(16, 6);
+                    tabs.Font = BodyFont;
+                    tabs.Padding = new Point(16, 7);
                     break;
                 case TabPage page:
                     page.BackColor = Surface;
                     page.ForeColor = Text;
+                    break;
+                case SplitContainer split:
+                    split.BackColor = Background;
                     break;
                 case TableLayoutPanel table:
                     if (table.BackColor == SystemColors.Control) table.BackColor = Background;
@@ -80,29 +97,36 @@ public static class FluentTheme
                     if (flow.BackColor == SystemColors.Control) flow.BackColor = Background;
                     break;
                 case Panel panel:
-                    if (panel.BackColor == SystemColors.Control) panel.BackColor = Background;
+                    if (panel.BorderStyle == BorderStyle.FixedSingle)
+                        StyleCard(panel);
+                    else if (panel.BackColor == SystemColors.Control)
+                        panel.BackColor = Background;
                     break;
             }
+
             if (control.HasChildren) ApplyRecursive(control.Controls);
         }
     }
 
     public static void StyleButton(Button button, bool primary = false, bool danger = false)
     {
+        button.UseVisualStyleBackColor = false;
         button.FlatStyle = FlatStyle.Flat;
-        button.FlatAppearance.BorderSize = 1;
-        button.FlatAppearance.MouseOverBackColor = primary ? AccentHover : danger ? DangerSubtle : AccentSubtle;
-        button.FlatAppearance.MouseDownBackColor = Color.FromArgb(220, 232, 242);
-        button.Padding = new Padding(12, 5, 12, 5);
+        button.FlatAppearance.BorderSize = primary ? 0 : 1;
+        button.FlatAppearance.MouseOverBackColor = primary ? AccentHover : danger ? DangerSubtle : SurfaceHover;
+        button.FlatAppearance.MouseDownBackColor = primary ? AccentPressed : danger ? Color.FromArgb(252, 231, 243) : AccentSubtle;
+        button.Padding = new Padding(14, 6, 14, 6);
         button.Margin = new Padding(4);
-        button.MinimumSize = new Size(0, 34);
+        button.MinimumSize = new Size(0, 36);
         button.Cursor = Cursors.Hand;
-        button.Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Regular);
+        button.Font = ButtonFont;
+        button.TextAlign = ContentAlignment.MiddleCenter;
+
         if (danger)
         {
             button.BackColor = Surface;
             button.ForeColor = Danger;
-            button.FlatAppearance.BorderColor = Color.FromArgb(235, 170, 165);
+            button.FlatAppearance.BorderColor = Color.FromArgb(249, 168, 212);
         }
         else if (primary)
         {
@@ -114,8 +138,10 @@ public static class FluentTheme
         {
             button.BackColor = Surface;
             button.ForeColor = Text;
-            button.FlatAppearance.BorderColor = Border;
+            button.FlatAppearance.BorderColor = BorderStrong;
         }
+
+        ApplyRoundedRegion(button, 8);
     }
 
     public static void StyleGrid(DataGridView grid)
@@ -126,19 +152,21 @@ public static class FluentTheme
         grid.GridColor = Border;
         grid.EnableHeadersVisualStyles = false;
         grid.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None;
+        grid.RowHeadersVisible = false;
         grid.ColumnHeadersDefaultCellStyle.BackColor = SurfaceAlt;
         grid.ColumnHeadersDefaultCellStyle.ForeColor = Muted;
-        grid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold);
+        grid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI Variable Text", 8.75F, FontStyle.Bold);
         grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = SurfaceAlt;
         grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = Text;
         grid.DefaultCellStyle.BackColor = Surface;
         grid.DefaultCellStyle.ForeColor = Text;
         grid.DefaultCellStyle.SelectionBackColor = AccentSubtle;
         grid.DefaultCellStyle.SelectionForeColor = Text;
-        grid.DefaultCellStyle.Padding = new Padding(4, 2, 4, 2);
-        grid.AlternatingRowsDefaultCellStyle.BackColor = SurfaceAlt;
-        grid.RowTemplate.Height = 34;
-        grid.ColumnHeadersHeight = 38;
+        grid.DefaultCellStyle.Padding = new Padding(7, 4, 7, 4);
+        grid.DefaultCellStyle.Font = BodyFont;
+        grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(251, 252, 254);
+        grid.RowTemplate.Height = 38;
+        grid.ColumnHeadersHeight = 40;
         grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
         grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
     }
@@ -148,7 +176,7 @@ public static class FluentTheme
         {
             Text = text,
             Dock = DockStyle.Fill,
-            Font = new Font("Segoe UI Variable Display", 11F, FontStyle.Bold),
+            Font = SectionFont,
             ForeColor = Text,
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true
@@ -160,10 +188,99 @@ public static class FluentTheme
             Text = text,
             Dock = DockStyle.Fill,
             ForeColor = Muted,
+            Font = new Font("Segoe UI Variable Text", 8.75F, FontStyle.Regular),
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true
         };
 
     public static ContextMenuStrip CreateMenu()
-        => new() { Renderer = new ToolStripProfessionalRenderer(), Font = new Font("Segoe UI Variable Text", 9F) };
+    {
+        var menu = new ContextMenuStrip
+        {
+            Renderer = new ToolStripProfessionalRenderer(new FluentMenuColorTable()),
+            Font = new Font("Segoe UI Variable Text", 9F),
+            BackColor = Surface,
+            ForeColor = Text,
+            ShowImageMargin = true,
+            Padding = new Padding(4)
+        };
+        return menu;
+    }
+
+    private static void StyleTextBox(TextBox box)
+    {
+        box.BorderStyle = BorderStyle.FixedSingle;
+        box.BackColor = box.ReadOnly ? SurfaceAlt : Surface;
+        box.ForeColor = box.ReadOnly ? Muted : Text;
+        box.Font = BodyFont;
+    }
+
+    private static void StyleCard(Panel panel)
+    {
+        panel.BorderStyle = BorderStyle.None;
+        panel.BackColor = Surface;
+        panel.Padding = EnsureMinimumPadding(panel.Padding, 1);
+        ApplyRoundedRegion(panel, 10);
+        panel.Paint += (_, e) =>
+        {
+            using var path = CreateRoundedRectangle(new Rectangle(0, 0, Math.Max(1, panel.Width - 1), Math.Max(1, panel.Height - 1)), 10);
+            using var pen = new Pen(Border);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.DrawPath(pen, path);
+        };
+    }
+
+    private static Padding EnsureMinimumPadding(Padding padding, int minimum)
+        => new(
+            Math.Max(minimum, padding.Left),
+            Math.Max(minimum, padding.Top),
+            Math.Max(minimum, padding.Right),
+            Math.Max(minimum, padding.Bottom));
+
+    private static void ApplyRoundedRegion(Control control, int radius)
+    {
+        if (control.Region is not null) return;
+
+        void UpdateRegion()
+        {
+            if (control.Width <= 1 || control.Height <= 1) return;
+            using var path = CreateRoundedRectangle(new Rectangle(0, 0, control.Width, control.Height), radius);
+            var oldRegion = control.Region;
+            control.Region = new Region(path);
+            oldRegion?.Dispose();
+        }
+
+        UpdateRegion();
+        control.Resize += (_, _) => UpdateRegion();
+    }
+
+    private static GraphicsPath CreateRoundedRectangle(Rectangle bounds, int radius)
+    {
+        var effectiveRadius = Math.Max(1, Math.Min(radius, Math.Min(bounds.Width, bounds.Height) / 2));
+        var diameter = Math.Max(2, effectiveRadius * 2);
+        var arc = new Rectangle(bounds.Location, new Size(diameter, diameter));
+        var path = new GraphicsPath();
+        path.AddArc(arc, 180, 90);
+        arc.X = bounds.Right - diameter;
+        path.AddArc(arc, 270, 90);
+        arc.Y = bounds.Bottom - diameter;
+        path.AddArc(arc, 0, 90);
+        arc.X = bounds.Left;
+        path.AddArc(arc, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    private sealed class FluentMenuColorTable : ProfessionalColorTable
+    {
+        public override Color MenuItemSelected => AccentSubtle;
+        public override Color MenuItemBorder => Border;
+        public override Color MenuBorder => BorderStrong;
+        public override Color ToolStripDropDownBackground => Surface;
+        public override Color ImageMarginGradientBegin => Surface;
+        public override Color ImageMarginGradientMiddle => Surface;
+        public override Color ImageMarginGradientEnd => Surface;
+        public override Color SeparatorDark => Border;
+        public override Color SeparatorLight => Surface;
+    }
 }
