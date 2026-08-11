@@ -1,10 +1,16 @@
 # PERF-003 — Reuse CDP WebSocket sessions for long-running monitors
 
-Issue: #161
+Issue: #161 — **Closed / Completed**
 
 Implementation branch: `agent/perf-003-cdp-session-reuse`
 
-Status: **IMPLEMENTED / VALIDATION PENDING**
+Implementation PR: #162
+
+Verified PR head: `aec0ecc0bc88eebcd49a8cc85d478efa644d1e82`
+
+Squash merge to `main`: `d55ee36422a66ca5d206520483c4ee50d626ba47`
+
+Status: **DONE / VERIFIED / MERGED**
 
 ## Problem
 
@@ -34,6 +40,17 @@ PERF-002 prevents one Chrome DevTools command from hanging forever and pools its
 - target pruning and close invalidation,
 - and timeout classification as a recoverable monitor failure.
 
-## Validation
+## Verification receipts
 
-GitHub Actions validation is required on the implementation PR before merge.
+All eight established GitHub Actions workflows passed on the exact final PR head `aec0ecc0bc88eebcd49a8cc85d478efa644d1e82`:
+
+- Build GPTDeskTop #559 — Success
+- QA Release x64 #347 — Success
+- QA Hidden Chrome CDP #329 — Success
+- QA Passive Chat Wait #323 — Success
+- QA Crash Process Recovery #337 — Success
+- Development Delivery Receipts #437 — Success
+- Development Task Recovery #433 — Success
+- Development Message Reload #264 — Success
+
+PR #162 was then squash-merged to `main` as `d55ee36422a66ca5d206520483c4ee50d626ba47`, and issue #161 closed as Completed.
