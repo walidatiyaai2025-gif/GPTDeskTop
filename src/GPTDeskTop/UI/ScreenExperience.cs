@@ -1,4 +1,3 @@
-using System.Drawing.Drawing2D;
 using System.Runtime.CompilerServices;
 
 namespace GPTDeskTop.UI;
@@ -371,7 +370,7 @@ internal static class ScreenExperience
         grid.ClearSelection();
         row.Selected = true;
         grid.CurrentCell = cell;
-        if (rowIndex >= 0 && rowIndex < grid.RowCount)
+        if (row.Visible)
             grid.FirstDisplayedScrollingRowIndex = rowIndex;
     }
 
@@ -494,11 +493,12 @@ internal static class ScreenExperience
             return;
         }
 
-        if (e.Alt && e.KeyCode >= Keys.D1 && e.KeyCode <= Keys.D9)
+        var keyCode = (int)e.KeyCode;
+        if (e.Alt && keyCode >= (int)Keys.D1 && keyCode <= (int)Keys.D9)
         {
             var tabs = Descendants(form).OfType<TabControl>().FirstOrDefault(control => control.Visible && control.Enabled);
             if (tabs is null) return;
-            var index = (int)e.KeyCode - (int)Keys.D1;
+            var index = keyCode - (int)Keys.D1;
             if (index >= tabs.TabCount) return;
             tabs.SelectedIndex = index;
             tabs.Focus();
@@ -538,9 +538,6 @@ internal static class ScreenExperience
             if (!flow.Controls.OfType<Button>().Any()) continue;
             flow.WrapContents = compact || flow.Controls.OfType<Button>().Count() > 3;
         }
-
-        foreach (var label in Descendants(form).OfType<Label>().Where(label => label.AutoEllipsis))
-            label.MaximumSize = Size.Empty;
     }
 
     private static IEnumerable<Control> Descendants(Control root)
