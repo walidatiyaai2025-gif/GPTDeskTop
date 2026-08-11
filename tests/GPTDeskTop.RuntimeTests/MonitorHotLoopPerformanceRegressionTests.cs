@@ -75,33 +75,27 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
     }
 
     [Fact]
-    public void RuntimeRotationSettingsAreCachedBetweenPollsAndRefreshWithinFiveSeconds()
+    public void RuntimeRotationSettingsAreSharedAcrossWorkersAndRefreshWithinFiveSeconds()
     {
         var source = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
 
-        Assert.Contains(
-            "RuntimeSettingsRefreshInterval = TimeSpan.FromSeconds(5)",
-            source,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "var nextRuntimeSettingsRefreshUtc = DateTimeOffset.UtcNow + RuntimeSettingsRefreshInterval;",
-            source,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "if (DateTimeOffset.UtcNow >= nextRuntimeSettingsRefreshUtc)",
-            source,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "nextRuntimeSettingsRefreshUtc = DateTimeOffset.UtcNow + RuntimeSettingsRefreshInterval;",
-            source,
-            StringComparison.Ordinal);
+        Assert.Contains("RuntimeSettingsRefreshInterval = TimeSpan.FromSeconds(5)", source, StringComparison.Ordinal);
+        Assert.Contains("private readonly SemaphoreSlim _runtimeSettingsRefreshGate = new(1, 1);", source, StringComparison.Ordinal);
+        Assert.Contains("private RuntimeSettingsSnapshot? _runtimeSettingsSnapshot;", source, StringComparison.Ordinal);
+        Assert.Contains("GetRuntimeSettingsSnapshotAsync(cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("await _runtimeSettingsRefreshGate.WaitAsync(cancellationToken);", source, StringComparison.Ordinal);
+        Assert.Contains("Volatile.Read(ref _runtimeSettingsSnapshot)", source, StringComparison.Ordinal);
+        Assert.Contains("Volatile.Write(ref _runtimeSettingsSnapshot, snapshot);", source, StringComparison.Ordinal);
+        Assert.Contains("Task.WhenAll(rotateTask, messageTask)", source, StringComparison.Ordinal);
+        Assert.Contains("ExpiresUtc", source, StringComparison.Ordinal);
+        Assert.Contains("if (DateTimeOffset.UtcNow >= nextRuntimeSettingsRefreshUtc)", source, StringComparison.Ordinal);
 
         Assert.Equal(
-            2,
+            1,
             source.Split("GetIntSettingAsync(\"RotateAfterAssistantMessages\"", StringSplitOptions.None).Length - 1);
         Assert.Equal(
-            2,
+            1,
             source.Split("GetSettingAsync(\"MessageCountRotationStartMessage\"", StringSplitOptions.None).Length - 1);
     }
 }
