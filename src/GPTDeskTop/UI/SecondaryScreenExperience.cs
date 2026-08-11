@@ -24,7 +24,18 @@ internal static class SecondaryScreenExperience
     {
         if (form.IsDisposed || form.Disposing) return;
 
-        RegisterResponsive(form, () => Apply(form));
+        var registration = Registrations.GetValue(form, _ => new ControlRegistration());
+        if (registration.InitialExperienceApplied) return;
+        registration.InitialExperienceApplied = true;
+
+        RegisterResponsive(form, () => ApplyPresentation(form));
+        RegisterDynamicTree(form, form);
+        ApplyPresentation(form);
+    }
+
+    private static void ApplyPresentation(Form form)
+    {
+        if (form.IsDisposed || form.Disposing) return;
 
         if (form is MainForm)
             EnhanceMainForm(form);
@@ -51,6 +62,26 @@ internal static class SecondaryScreenExperience
                     break;
             }
         }
+    }
+
+    private static void RegisterDynamicTree(Form form, Control root)
+    {
+        if (root.IsDisposed) return;
+
+        var registration = Registrations.GetValue(root, _ => new ControlRegistration());
+        if (!registration.ChildAddedHooked)
+        {
+            registration.ChildAddedHooked = true;
+            root.ControlAdded += (_, e) =>
+            {
+                if (form.IsDisposed || e.Control is null || e.Control.IsDisposed) return;
+                RegisterDynamicTree(form, e.Control);
+                ApplyPresentation(form);
+            };
+        }
+
+        foreach (Control child in root.Controls)
+            RegisterDynamicTree(form, child);
     }
 
     private static void EnhanceMainForm(Form form)
@@ -619,6 +650,8 @@ internal static class SecondaryScreenExperience
 
     private sealed class ControlRegistration
     {
+        internal bool InitialExperienceApplied { get; set; }
+        internal bool ChildAddedHooked { get; set; }
         internal bool ResponsiveHooked { get; set; }
         internal bool TextChangedHooked { get; set; }
     }
