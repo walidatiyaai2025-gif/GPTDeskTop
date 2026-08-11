@@ -1,12 +1,15 @@
 # UI-POLISH-002 — 100-task professional UX batch
 
 ## Status
-IMPLEMENTED / VALIDATION PENDING
+DONE / VERIFIED / MERGED
 
 ## Tracking
-- Issue: #163
+- Issue: #163 — Closed / Completed
+- PR: #164
 - Branch: `agent/ui-polish-002-100-task-batch`
 - Baseline: `124bbd058338fe71dc6d03a2e71f9f28d141ed9d`
+- Verified PR head: `c00f9987d37761aee1d99fc651b56cc2263bfcf2`
+- Squash merge to main: `03cc74f9992eebc1a48210b2e2af5460daff526a`
 
 ## Goal
 Deliver one hundred concrete UI/UX polish microtasks without changing monitoring, recovery, persistence, Chrome/CDP, or release semantics.
@@ -134,9 +137,23 @@ Deliver one hundred concrete UI/UX polish microtasks without changing monitoring
 - [x] 100 Use weak per-control registration state so theme lifecycle metadata does not retain disposed controls.
 
 ## Regression boundary
-- No monitor worker, recovery, delivery, Chrome/CDP, database, timer, task-engine or release-publisher code changed.
+- No monitor worker, recovery, delivery, Chrome/CDP, database, timer, task-engine or release-publisher code changed by this batch.
 - The implementation is centralized in `src/GPTDeskTop/UI/FluentTheme.cs` so existing forms/controls inherit the polish without duplicating operational logic.
 - Existing explicit primary/danger button restyling remains supported.
+- A compile-risk review removed reliance on protected `ShowFocusCues` and avoided changing DataGridView selection/tab semantics.
 
-## Validation
-Pending exact-head GitHub Actions validation.
+## Verification receipts
+All eight established pull-request workflows completed successfully on verified head `c00f9987d37761aee1d99fc651b56cc2263bfcf2`:
+
+- Build GPTDeskTop #562 — Success
+- QA Release x64 #350 — Success
+- QA Crash Process Recovery #340 — Success
+- QA Hidden Chrome CDP #332 — Success
+- QA Passive Chat Wait #326 — Success after rerunning its failed job
+- Development Delivery Receipts #440 — Success
+- Development Task Recovery #436 — Success
+- Development Message Reload #267 — Success
+
+The first Passive Chat Wait attempt failed because the merge-base PERF-003 transport path surfaced a transient disposed `ClientWebSocket`; the UI diff did not touch that path. The isolated failed job rerun passed without any UI code change.
+
+PR #164 was then squash-merged to `main` as `03cc74f9992eebc1a48210b2e2af5460daff526a`.
