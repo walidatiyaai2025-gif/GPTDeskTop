@@ -93,9 +93,9 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
 
         Assert.Equal(
             1,
-            source.Split("GetIntSettingAsync(\"RotateAfterAssistantMessages\"", StringSplitOptions.None).Length - 1);
+            source.Split("\"RotateAfterAssistantMessages\"", StringSplitOptions.None).Length - 1);
         Assert.Equal(
             1,
-            source.Split("GetSettingAsync(\"MessageCountRotationStartMessage\"", StringSplitOptions.None).Length - 1);
+            source.Split("\"MessageCountRotationStartMessage\"", StringSplitOptions.None).Length - 1);
     }
 }
