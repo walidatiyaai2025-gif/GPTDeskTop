@@ -1,12 +1,18 @@
 # PERF-006 — Cache ChatGPT DOM state with an event-driven page observer
 
-Issue: #173
+Issue: #173 — **Closed / Completed**
 
 Branch: `agent/perf-006-chat-state-cache`
 
+PR: #175
+
 Baseline main: `b39c1f99056f884665c8821a125c8212a01c80f6`
 
-Status: **IMPLEMENTED / VALIDATION PENDING**
+Verified PR head: `28d48075557eea2293b7980af652dbc9db78eb25`
+
+Squash merge to `main`: `ed9879560859b7870eca076aa5c64f0b4ed18326`
+
+Status: **DONE / VERIFIED / MERGED**
 
 ## Problem
 
@@ -37,7 +43,7 @@ PERF-004 already prevented serialization of the growing assistant response while
 
 ## Regression coverage
 
-`MonitorHotLoopPerformanceRegressionTests` now locks:
+`MonitorHotLoopPerformanceRegressionTests` locks:
 
 - no growing assistant body serialization while generating,
 - versioned page-side state cache,
@@ -46,6 +52,17 @@ PERF-004 already prevented serialization of the growing assistant response while
 - tiny steady-state CDP read expression,
 - automatic helper reinstall after page globals disappear.
 
-## Validation
+## Verification receipts
 
-All established PR GitHub Actions workflows must pass on the exact final PR head before merge.
+All eight established GitHub Actions workflows passed on exact head `28d48075557eea2293b7980af652dbc9db78eb25`:
+
+- Build GPTDeskTop #585 — Success
+- QA Release x64 #373 — Success
+- QA Hidden Chrome CDP #355 — Success
+- QA Passive Chat Wait #349 — Success
+- QA Crash Process Recovery #363 — Success
+- Development Delivery Receipts #463 — Success
+- Development Task Recovery #459 — Success
+- Development Message Reload #290 — Success
+
+PR #175 was squash-merged to `main` as `ed9879560859b7870eca076aa5c64f0b4ed18326`.
