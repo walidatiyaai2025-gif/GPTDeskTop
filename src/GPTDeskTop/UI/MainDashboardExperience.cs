@@ -28,19 +28,17 @@ internal static class MainDashboardExperience
         if (form.IsDisposed || form.Disposing) return;
 
         var registration = Registrations.GetValue(form, _ => new DashboardRegistration());
-        if (!registration.Initialized)
+        if (registration.Initialized) return;
+        registration.Initialized = true;
+        registration.ToolTip = CreateToolTip();
+        form.AccessibleName ??= "GPTDeskTop operations dashboard";
+        AppendAccessibleHint(form, "Primary operator workspace for ChatGPT conversations, saved monitors, runtime state, live activity and stored history.");
+        form.FormClosed += (_, _) =>
         {
-            registration.Initialized = true;
-            registration.ToolTip = CreateToolTip();
-            form.AccessibleName ??= "GPTDeskTop operations dashboard";
-            AppendAccessibleHint(form, "Primary operator workspace for ChatGPT conversations, saved monitors, runtime state, live activity and stored history.");
-            form.FormClosed += (_, _) =>
-            {
-                registration.ToolTip?.Dispose();
-                registration.ToolTip = null;
-            };
-            form.Resize += (_, _) => ApplyResponsiveLayout(form);
-        }
+            registration.ToolTip?.Dispose();
+            registration.ToolTip = null;
+        };
+        form.Resize += (_, _) => ApplyResponsiveLayout(form);
 
         EnhanceDashboard(form, registration);
         ApplyResponsiveLayout(form);
@@ -183,6 +181,15 @@ internal static class MainDashboardExperience
             group.Padding = new Padding(8, 5, 8, 5);
             group.Margin = new Padding(0, 0, 10, 4);
             RoundPanelLike(group, 10);
+
+            // Action buttons inside one dashboard group stay on one row. The outer
+            // dashboard toolbar already owns wrapping between whole groups, so nested
+            // component FlowLayoutPanels are never used as a responsive fallback here.
+            foreach (var actionRow in group.Controls.OfType<FlowLayoutPanel>())
+            {
+                actionRow.WrapContents = false;
+                actionRow.AutoScroll = false;
+            }
         }
 
         var shortcuts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -395,25 +402,26 @@ internal static class MainDashboardExperience
     {
         if (form.IsDisposed || form.Disposing) return;
         var compact = form.ClientSize.Width < 1180;
-        var narrow = form.ClientSize.Width < 1020;
 
-        foreach (var flow in Descendants(form).OfType<FlowLayoutPanel>())
-        {
-            var buttons = flow.Controls.OfType<Button>().ToList();
-            if (buttons.Count > 1)
-            {
-                flow.WrapContents = compact || buttons.Count >= 4;
-                flow.AutoScroll = narrow && flow.Dock == DockStyle.Fill;
-            }
-        }
-
+        // MainDashboardExperience owns only the dashboard-shell command groups.
+        // Nested operational controls (Development Plan, Runtime Health, History,
+        // Support Diagnostics) keep their own responsive rules.
         foreach (var group in Descendants(form).OfType<TableLayoutPanel>())
         {
-            if (!group.Controls.OfType<Label>().Any(label => new[] { "BROWSER", "MONITOR", "RUNTIME", "APP" }.Contains(Normalize(label.Text), StringComparer.OrdinalIgnoreCase)))
-                continue;
+            if (!IsDashboardActionGroup(group)) continue;
+
             group.Margin = compact ? new Padding(0, 0, 7, 4) : new Padding(0, 0, 10, 4);
+            foreach (var actionRow in group.Controls.OfType<FlowLayoutPanel>())
+            {
+                actionRow.WrapContents = false;
+                actionRow.AutoScroll = false;
+            }
         }
     }
+
+    private static bool IsDashboardActionGroup(TableLayoutPanel group)
+        => group.Controls.OfType<Label>().Any(label =>
+            Normalize(label.Text) is "BROWSER" or "MONITOR" or "RUNTIME" or "APP");
 
     private static void HookTextChanged(Control control, Action handler)
     {
