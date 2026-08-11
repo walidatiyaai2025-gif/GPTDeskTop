@@ -7,6 +7,7 @@ namespace GPTDeskTop.Services;
 
 public sealed class ChatGptMonitorService
 {
+    private static readonly TimeSpan RuntimeSettingsRefreshInterval = TimeSpan.FromSeconds(5);
     private readonly ChromeDevToolsService _chrome;
     private readonly LocalDatabase _database;
     private readonly MonitoringConfig _config;
@@ -244,6 +245,7 @@ public sealed class ChatGptMonitorService
         var replyDelaySeconds = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300);
         var rotateAfterMessages = await _database.GetIntSettingAsync("RotateAfterAssistantMessages", 0, 0, 10000, cancellationToken);
         var messageCountRotationStartMessage = await _database.GetSettingAsync("MessageCountRotationStartMessage", cancellationToken) ?? "كمل";
+        var nextRuntimeSettingsRefreshUtc = DateTimeOffset.UtcNow + RuntimeSettingsRefreshInterval;
         var transientFailures = 0;
         Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Timer {timerSeconds}s | Delay {replyDelaySeconds}s | Passive long-response wait ON (elapsed time never reloads a healthy chat) | Rotation {(monitor.ConversationRotationEnabled ? "ON" : "OFF")} | Count rotation {(rotateAfterMessages > 0 ? $"{rotateAfterMessages} assistant messages" : "OFF")} | Model routing {(monitor.ModelRoutingEnabled ? "ON" : "OFF")} | Reply: {monitor.AutoReply}");
         try
@@ -270,8 +272,12 @@ public sealed class ChatGptMonitorService
                     var state = await _chrome.GetChatStateAsync(tab, cancellationToken);
                     var text = GetEffectiveResponse(state);
                     transientFailures = 0;
-                    rotateAfterMessages = await _database.GetIntSettingAsync("RotateAfterAssistantMessages", 0, 0, 10000, cancellationToken);
-                    messageCountRotationStartMessage = await _database.GetSettingAsync("MessageCountRotationStartMessage", cancellationToken) ?? "كمل";
+                    if (DateTimeOffset.UtcNow >= nextRuntimeSettingsRefreshUtc)
+                    {
+                        rotateAfterMessages = await _database.GetIntSettingAsync("RotateAfterAssistantMessages", 0, 0, 10000, cancellationToken);
+                        messageCountRotationStartMessage = await _database.GetSettingAsync("MessageCountRotationStartMessage", cancellationToken) ?? "كمل";
+                        nextRuntimeSettingsRefreshUtc = DateTimeOffset.UtcNow + RuntimeSettingsRefreshInterval;
+                    }
                     var messageCountThresholdReached = monitor.ConversationRotationEnabled
                         && rotateAfterMessages > 0
                         && !state.IsGenerating

@@ -39,11 +39,11 @@ public sealed class ChromeDevToolsService
     const style = getComputedStyle(element);
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
-  const messages = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
-  const last = messages.length ? (messages[messages.length - 1].innerText || '').trim() : '';
+  const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
   const testStopButton = document.querySelector('button[data-testid="stop-button"]');
   const stopButton = visible(testStopButton) ? testStopButton : [...document.querySelectorAll('button')].find(b => visible(b) && /stop generating|stop responding|stop|إيقاف/i.test(`${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''}`));
   const streamingSignal = [...document.querySelectorAll('[data-is-streaming="true"],[data-streaming="true"],.result-streaming,[aria-busy="true"]')].some(element => visible(element) && (element.closest('[data-message-author-role="assistant"]') || element.closest('form')));
+  const isGenerating = !!stopButton || streamingSignal;
   const candidates = [...document.querySelectorAll('[role="alert"]'), ...document.querySelectorAll('[aria-live="assertive"]'), ...document.querySelectorAll('[data-testid*="error"]'), ...document.querySelectorAll('[data-testid*="retry"]')];
   const errorPattern = /message delivery timed out|something went wrong|there was an error|network error|failed to (generate|load)|unable to (generate|load)|error generating|حدث خطأ|خطأ في الشبكة|تعذر/i;
   let errorText = '';
@@ -52,7 +52,8 @@ public sealed class ChromeDevToolsService
     const text = (element.innerText || element.textContent || '').trim();
     if (text && errorPattern.test(text)) { errorText = text; break; }
   }
-  return { assistantCount: messages.length, lastAssistantText: last, isGenerating: !!stopButton || streamingSignal, errorText };
+  const last = !isGenerating && messages.length ? (messages[messages.length - 1].innerText || '').trim() : '';
+  return { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText };
 })()
 """;
         var value = await EvaluateAsync(tab, expression, cancellationToken, false);
