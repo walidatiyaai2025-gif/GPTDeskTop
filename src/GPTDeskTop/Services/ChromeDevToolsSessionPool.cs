@@ -127,7 +127,8 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
         private readonly SemaphoreSlim _commandGate = new(1, 1);
         private int _nextCommandId;
         private int _broken;
-        private int _disposed;
+        private int _retired;
+        private int _socketDisposed;
 
         public DevToolsSession(string webSocketDebuggerUrl)
         {
@@ -137,9 +138,27 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
         public string WebSocketDebuggerUrl { get; }
 
         public bool IsUsable
-            => Volatile.Read(ref _disposed) == 0
-               && Volatile.Read(ref _broken) == 0
-               && (_socket.State == WebSocketState.None || _socket.State == WebSocketState.Open);
+        {
+            get
+            {
+                if (Volatile.Read(ref _retired) != 0
+                    || Volatile.Read(ref _broken) != 0
+                    || Volatile.Read(ref _socketDisposed) != 0)
+                    return false;
+
+                try
+                {
+                    var state = _socket.State;
+                    return Volatile.Read(ref _retired) == 0
+                           && Volatile.Read(ref _socketDisposed) == 0
+                           && (state == WebSocketState.None || state == WebSocketState.Open);
+                }
+                catch (ObjectDisposedException)
+                {
+                    return false;
+                }
+            }
+        }
 
         public bool Matches(string webSocketDebuggerUrl)
             => string.Equals(WebSocketDebuggerUrl, webSocketDebuggerUrl, StringComparison.Ordinal);
@@ -153,7 +172,7 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
             await _commandGate.WaitAsync(cancellationToken);
             try
             {
-                if (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _broken) != 0)
+                if (Volatile.Read(ref _retired) != 0 || Volatile.Read(ref _broken) != 0)
                     throw new IOException("Chrome DevTools session was invalidated before the command could run.");
 
                 using var commandCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -247,6 +266,11 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
                     MarkBroken();
                     throw;
                 }
+                catch (ObjectDisposedException ex)
+                {
+                    MarkBroken();
+                    throw new IOException("Chrome DevTools session became unavailable during command execution.", ex);
+                }
                 catch (WebSocketException)
                 {
                     MarkBroken();
@@ -261,12 +285,38 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
             finally
             {
                 _commandGate.Release();
+                TryDisposeSocketIfRetired();
             }
         }
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            if (Interlocked.Exchange(ref _retired, 1) != 0) return;
+
+            // Abort interrupts active I/O without racing ClientWebSocket.Dispose against a command.
+            // The actual dispose is attempted only after exclusively reacquiring the command gate.
+            try { _socket.Abort(); } catch { }
+            TryDisposeSocketIfRetired();
+        }
+
+        private void TryDisposeSocketIfRetired()
+        {
+            if (Volatile.Read(ref _retired) == 0 || Volatile.Read(ref _socketDisposed) != 0) return;
+            if (!_commandGate.Wait(0)) return;
+            try
+            {
+                if (Volatile.Read(ref _retired) != 0)
+                    DisposeSocketUnderGate();
+            }
+            finally
+            {
+                _commandGate.Release();
+            }
+        }
+
+        private void DisposeSocketUnderGate()
+        {
+            if (Interlocked.Exchange(ref _socketDisposed, 1) != 0) return;
             try { _socket.Dispose(); } catch { }
         }
 
