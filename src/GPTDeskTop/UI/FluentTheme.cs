@@ -239,6 +239,8 @@ public static class FluentTheme
 
     private static void ApplyRoundedRegion(Control control, int radius)
     {
+        if (control.Region is not null) return;
+
         void UpdateRegion()
         {
             if (control.Width <= 1 || control.Height <= 1) return;
