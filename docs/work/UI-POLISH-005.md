@@ -1,12 +1,16 @@
 # UI-POLISH-005 — Secondary screens DPI and responsive final pass
 
 ## Status
-IMPLEMENTED / VALIDATION PENDING
+DONE / VERIFIED / MERGED
 
 ## Tracking
-- Issue: #174
+- Issue: #174 — Closed / Completed
+- PR: #176
 - Branch: `agent/ui-polish-005-secondary-final-pass`
-- Baseline main: `b39c1f99056f884665c8821a125c8212a01c80f6`
+- Original baseline main: `b39c1f99056f884665c8821a125c8212a01c80f6`
+- Final validation base: `5d69eb53636cccfcb4626149f293a7b67e566f94`
+- Verified PR head: `47f9e93bac4267e89de2d7f537184b8838c07299`
+- Squash merge to main: `eaec55b3db0451ff65dee439aa799e212159531a`
 
 ## Goal
 Close the remaining core visual-polish gaps across secondary operator screens while preserving all monitoring, recovery, Chrome/CDP, persistence, task-engine, instance-handoff, setup and release semantics.
@@ -136,5 +140,18 @@ Close the remaining core visual-polish gaps across secondary operator screens wh
 ## Scope boundary
 Implementation is intentionally isolated to `src/GPTDeskTop/UI/SecondaryScreenExperience.cs`, UI regression coverage, and this receipt. It does not call monitor, Chrome/CDP, database, development-task, instance-handoff, setup or release services and does not subscribe to action-button Click events.
 
-## Validation
-Pending exact-head GitHub Actions validation.
+## Verification receipts
+All eight established pull-request workflows completed successfully on the exact verified head `47f9e93bac4267e89de2d7f537184b8838c07299`, after refreshing the branch onto the verified PERF-006 main state:
+
+- Build GPTDeskTop #590 — Success
+- QA Release x64 #378 — Success
+- QA Crash Process Recovery #368 — Success
+- QA Hidden Chrome CDP #360 — Success
+- QA Passive Chat Wait #354 — Success
+- Development Delivery Receipts #468 — Success
+- Development Task Recovery #464 — Success
+- Development Message Reload #295 — Success
+
+An earlier validation head exposed one compile-only helper-signature typo in the new UI layer. That typo was corrected without changing intended UI semantics, and the final branch was then refreshed onto PERF-006 before the authoritative 8/8 validation above.
+
+PR #176 was squash-merged to `main` as `eaec55b3db0451ff65dee439aa799e212159531a`, and issue #174 closed as Completed.
