@@ -59,7 +59,8 @@ public sealed class ScreenExperienceRegressionTests
         Assert.Contains("registration.ToolTip?.Dispose()", source, StringComparison.Ordinal);
         Assert.Contains("control.ControlAdded +=", source, StringComparison.Ordinal);
         Assert.Contains("if (registration.ControlAddedHooked) return;", source, StringComparison.Ordinal);
-        Assert.Contains("if (registration.TextChangedHooked)", source, StringComparison.Ordinal);
+        Assert.Contains("if (!controlRegistration.TextChangedHooked)", source, StringComparison.Ordinal);
+        Assert.Contains("controlRegistration.TextChangedHooked = true;", source, StringComparison.Ordinal);
         Assert.Contains("if (registration.KeyHooked) return;", source, StringComparison.Ordinal);
         Assert.Contains("if (form.IsDisposed || form.Disposing)", source, StringComparison.Ordinal);
     }
