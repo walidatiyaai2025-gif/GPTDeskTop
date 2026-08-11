@@ -82,8 +82,9 @@ internal static class ScreenExperience
         registration.ControlAddedHooked = true;
         control.ControlAdded += (_, e) =>
         {
-            if (form.IsDisposed || form.Disposing || e.Control.IsDisposed) return;
-            EnhanceTree(form, e.Control, formRegistration);
+            var addedControl = e.Control;
+            if (form.IsDisposed || form.Disposing || addedControl is null || addedControl.IsDisposed) return;
+            EnhanceTree(form, addedControl, formRegistration);
             ApplyResponsiveLayout(form);
         };
     }
