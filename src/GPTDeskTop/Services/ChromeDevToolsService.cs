@@ -12,6 +12,84 @@ public sealed class ChromeDevToolsService
     private const int SwHide = 0;
     private const int SwShow = 5;
     private const int SwRestore = 9;
+    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 2 ? window.__gptDesktopChatStateCache.read() : null";
+    private const string ChatStateInstallExpression = """
+(() => {
+  const key = '__gptDesktopChatStateCache';
+  const version = 2;
+  const previous = window[key];
+  if (previous?.version === version && typeof previous.read === 'function') return previous.read();
+  try { previous?.observer?.disconnect?.(); } catch { }
+
+  const visible = element => {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+  const errorPattern = /message delivery timed out|something went wrong|there was an error|network error|failed to (generate|load)|unable to (generate|load)|error generating|حدث خطأ|خطأ في الشبكة|تعذر/i;
+  const findStopButton = () => {
+    const testStopButton = document.querySelector('button[data-testid="stop-button"]');
+    if (visible(testStopButton)) return testStopButton;
+    for (const button of document.querySelectorAll('button')) {
+      if (!visible(button)) continue;
+      const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`;
+      if (/stop generating|stop responding|stop|إيقاف/i.test(label)) return button;
+    }
+    return null;
+  };
+  const hasStreamingSignal = () => {
+    for (const element of document.querySelectorAll('[data-is-streaming="true"],[data-streaming="true"],.result-streaming,[aria-busy="true"]')) {
+      if (visible(element) && (element.closest('[data-message-author-role="assistant"]') || element.closest('form'))) return true;
+    }
+    return false;
+  };
+  const findErrorText = () => {
+    const selectors = ['[role="alert"]', '[aria-live="assertive"]', '[data-testid*="error"]', '[data-testid*="retry"]'];
+    for (const selector of selectors) {
+      for (const element of document.querySelectorAll(selector)) {
+        if (!visible(element)) continue;
+        const text = (element.innerText || element.textContent || '').trim();
+        if (text && errorPattern.test(text)) return text;
+      }
+    }
+    return '';
+  };
+
+  const state = {
+    version,
+    dirty: true,
+    snapshot: { assistantCount: 0, lastAssistantText: '', isGenerating: false, errorText: '' },
+    observer: null,
+    read: null
+  };
+  state.read = () => {
+    if (!state.dirty) return state.snapshot;
+    state.dirty = false;
+    const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
+    const stopButton = findStopButton();
+    const streamingSignal = hasStreamingSignal();
+    const isGenerating = !!stopButton || streamingSignal;
+    const errorText = findErrorText();
+    const last = !isGenerating && messages.length ? (messages[messages.length - 1].innerText || '').trim() : '';
+    state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText };
+    return state.snapshot;
+  };
+  state.observer = new MutationObserver(() => { state.dirty = true; });
+  const root = document.documentElement || document.body;
+  if (root) {
+    state.observer.observe(root, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['aria-busy', 'aria-label', 'title', 'disabled', 'data-is-streaming', 'data-streaming', 'data-testid', 'role']
+    });
+  }
+  window[key] = state;
+  return state.read();
+})()
+""";
     private readonly HttpClient _httpClient;
     private readonly ChromeConfig _config;
     private readonly ChromeDevToolsSessionPool _sessionPool = new();
@@ -31,33 +109,15 @@ public sealed class ChromeDevToolsService
     private async Task<bool> SetAllBrowserWindowsStateAsync(string state, CancellationToken cancellationToken) { List<ChromeTab> tabs; try { tabs = await GetTabsAsync(cancellationToken); } catch { return false; } if (tabs.Count == 0) return false; var windowIds = new HashSet<int>(); foreach (var tab in tabs) { try { var windowResult = await SendCommandAsync(tab, "Browser.getWindowForTarget", new { targetId = tab.Id }, cancellationToken); if (windowResult.TryGetProperty("windowId", out var windowIdElement)) windowIds.Add(windowIdElement.GetInt32()); } catch (Exception ex) when (ex is not OperationCanceledException) { ExceptionLogService.Log(ex, "ChromeDevToolsService.GetWindowForTarget", null, tab.Id, tab.Title); } } var changed = false; foreach (var windowId in windowIds) { try { await SendCommandAsync(tabs[0], "Browser.setWindowBounds", new { windowId, bounds = new { windowState = state } }, cancellationToken); changed = true; } catch (Exception ex) when (ex is not OperationCanceledException) { ExceptionLogService.Log(ex, $"ChromeDevToolsService.SetWindowState({state})"); } } return changed; }
     public async Task<ChatPageState> GetChatStateAsync(ChromeTab tab, CancellationToken cancellationToken = default)
     {
-        const string expression = """
-(() => {
-  const visible = element => {
-    if (!element) return false;
-    const rect = element.getBoundingClientRect();
-    const style = getComputedStyle(element);
-    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-  };
-  const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
-  const testStopButton = document.querySelector('button[data-testid="stop-button"]');
-  const stopButton = visible(testStopButton) ? testStopButton : [...document.querySelectorAll('button')].find(b => visible(b) && /stop generating|stop responding|stop|إيقاف/i.test(`${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''}`));
-  const streamingSignal = [...document.querySelectorAll('[data-is-streaming="true"],[data-streaming="true"],.result-streaming,[aria-busy="true"]')].some(element => visible(element) && (element.closest('[data-message-author-role="assistant"]') || element.closest('form')));
-  const isGenerating = !!stopButton || streamingSignal;
-  const candidates = [...document.querySelectorAll('[role="alert"]'), ...document.querySelectorAll('[aria-live="assertive"]'), ...document.querySelectorAll('[data-testid*="error"]'), ...document.querySelectorAll('[data-testid*="retry"]')];
-  const errorPattern = /message delivery timed out|something went wrong|there was an error|network error|failed to (generate|load)|unable to (generate|load)|error generating|حدث خطأ|خطأ في الشبكة|تعذر/i;
-  let errorText = '';
-  for (const element of candidates) {
-    if (!visible(element)) continue;
-    const text = (element.innerText || element.textContent || '').trim();
-    if (text && errorPattern.test(text)) { errorText = text; break; }
-  }
-  const last = !isGenerating && messages.length ? (messages[messages.length - 1].innerText || '').trim() : '';
-  return { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText };
-})()
-""";
-        var value = await EvaluateAsync(tab, expression, cancellationToken, false);
-        return new ChatPageState(value.TryGetProperty("assistantCount", out var count) ? count.GetInt32() : 0, value.TryGetProperty("lastAssistantText", out var text) ? text.GetString() ?? string.Empty : string.Empty, value.TryGetProperty("isGenerating", out var generating) && generating.GetBoolean(), value.TryGetProperty("errorText", out var error) ? error.GetString() ?? string.Empty : string.Empty);
+        var value = await EvaluateAsync(tab, ChatStateReadExpression, cancellationToken, false);
+        if (value.ValueKind == JsonValueKind.Null)
+            value = await EvaluateAsync(tab, ChatStateInstallExpression, cancellationToken, false);
+
+        return new ChatPageState(
+            value.TryGetProperty("assistantCount", out var count) ? count.GetInt32() : 0,
+            value.TryGetProperty("lastAssistantText", out var text) ? text.GetString() ?? string.Empty : string.Empty,
+            value.TryGetProperty("isGenerating", out var generating) && generating.GetBoolean(),
+            value.TryGetProperty("errorText", out var error) ? error.GetString() ?? string.Empty : string.Empty);
     }
     public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default) { var textLiteral = JsonSerializer.Serialize(message); var setEditorExpression = $$""" (() => { const text = {{textLiteral}}; const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]') || document.querySelector('[contenteditable="true"]'); if (!editor) return false; editor.focus(); if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) { const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set; setter?.call(editor, text); editor.dispatchEvent(new Event('input', { bubbles: true })); editor.dispatchEvent(new Event('change', { bubbles: true })); } else { const selection = window.getSelection(); const range = document.createRange(); range.selectNodeContents(editor); selection?.removeAllRanges(); selection?.addRange(range); document.execCommand('insertText', false, text); editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })); } return true; })() """; var editorReady = await EvaluateAsync(tab, setEditorExpression, cancellationToken, false); if (editorReady.ValueKind != JsonValueKind.True) return false; await Task.Delay(350, cancellationToken); const string clickExpression = """ (() => { const sendButton = document.querySelector('button[data-testid="send-button"]') || [...document.querySelectorAll('button')].find(b => /send|إرسال/i.test(b.getAttribute('aria-label') || '')); if (!sendButton || sendButton.disabled) return false; sendButton.click(); return true; })() """; var clicked = await EvaluateAsync(tab, clickExpression, cancellationToken, false); return clicked.ValueKind == JsonValueKind.True; }
     public async Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default)
