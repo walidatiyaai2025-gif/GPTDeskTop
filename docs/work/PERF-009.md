@@ -1,12 +1,18 @@
 # PERF-009 — Stagger multi-monitor polling phases to reduce synchronized bursts
 
-Issue: #184
+Issue: #184 — **Closed / Completed**
 
 Branch: `agent/perf-009-poll-stagger`
 
+PR: #186
+
 Baseline main: `dee81e229ddd794c0672d589d67b5ad34ec6e03e`
 
-Status: **IMPLEMENTED / VALIDATION PENDING**
+Verified PR head: `fe6bb197ee5c82e6a68d42ebd97361d9ecba0781`
+
+Squash merge to `main`: `c19a00fac45e93f7e7d69c4bacd5b0a43052b841`
+
+Status: **DONE / VERIFIED / MERGED**
 
 ## Problem
 
@@ -42,6 +48,17 @@ The deterministic distribution was also checked across monitor IDs 1–64: 61 di
 - Rotation, auto reply, handoff, model routing, saved monitor identity, PERF-006 chat cache, PERF-007 SQLite retention, and PERF-008 shared settings snapshot are preserved.
 - No schema, UI, release artifact, CDP transport, or response-detection changes.
 
-## Validation
+## Verification receipts
 
-All established PR GitHub Actions workflows must pass on the exact final PR head before merge.
+All eight established GitHub Actions workflows passed on exact final head `fe6bb197ee5c82e6a68d42ebd97361d9ecba0781`:
+
+- Build GPTDeskTop #604 — Success
+- QA Release x64 #392 — Success
+- QA Hidden Chrome CDP #374 — Success
+- QA Passive Chat Wait #368 — Success
+- QA Crash Process Recovery #382 — Success
+- Development Delivery Receipts #482 — Success
+- Development Task Recovery #478 — Success
+- Development Message Reload #309 — Success
+
+PR #186 was squash-merged to `main` as `c19a00fac45e93f7e7d69c4bacd5b0a43052b841`, and issue #184 closed as Completed.
