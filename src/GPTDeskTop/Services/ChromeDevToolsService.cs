@@ -1,8 +1,6 @@
-using System.Buffers;
 using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Text.Json;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Models;
@@ -14,20 +12,18 @@ public sealed class ChromeDevToolsService
     private const int SwHide = 0;
     private const int SwShow = 5;
     private const int SwRestore = 9;
-    private const int ReceiveBufferSize = 64 * 1024;
-    private const int MaxDevToolsMessageBytes = 2 * 1024 * 1024;
-    private static readonly TimeSpan DevToolsCommandTimeout = TimeSpan.FromSeconds(12);
     private readonly HttpClient _httpClient;
     private readonly ChromeConfig _config;
+    private readonly ChromeDevToolsSessionPool _sessionPool = new();
     private Process? _monitorChromeProcess;
     private IntPtr _lastKnownWindowHandle = IntPtr.Zero;
     public ChromeDevToolsService(HttpClient httpClient, ChromeConfig config) { _httpClient = httpClient; _config = config; }
-    public async Task<List<ChromeTab>> GetTabsAsync(CancellationToken cancellationToken = default) { using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/list", cancellationToken); response.EnsureSuccessStatusCode(); var json = await response.Content.ReadAsStringAsync(cancellationToken); using var document = JsonDocument.Parse(json); var tabs = new List<ChromeTab>(); foreach (var item in document.RootElement.EnumerateArray()) { var type = item.TryGetProperty("type", out var typeElement) ? typeElement.GetString() ?? string.Empty : string.Empty; if (!string.Equals(type, "page", StringComparison.OrdinalIgnoreCase)) continue; tabs.Add(new ChromeTab { Id = item.TryGetProperty("id", out var id) ? id.GetString() ?? string.Empty : string.Empty, Title = item.TryGetProperty("title", out var title) ? title.GetString() ?? string.Empty : string.Empty, Url = item.TryGetProperty("url", out var url) ? url.GetString() ?? string.Empty : string.Empty, Type = type, WebSocketDebuggerUrl = item.TryGetProperty("webSocketDebuggerUrl", out var ws) ? ws.GetString() ?? string.Empty : string.Empty }); } return tabs.OrderBy(t => t.Title, StringComparer.CurrentCultureIgnoreCase).ToList(); }
+    public async Task<List<ChromeTab>> GetTabsAsync(CancellationToken cancellationToken = default) { using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/list", cancellationToken); response.EnsureSuccessStatusCode(); var json = await response.Content.ReadAsStringAsync(cancellationToken); using var document = JsonDocument.Parse(json); var tabs = new List<ChromeTab>(); foreach (var item in document.RootElement.EnumerateArray()) { var type = item.TryGetProperty("type", out var typeElement) ? typeElement.GetString() ?? string.Empty : string.Empty; if (!string.Equals(type, "page", StringComparison.OrdinalIgnoreCase)) continue; tabs.Add(new ChromeTab { Id = item.TryGetProperty("id", out var id) ? id.GetString() ?? string.Empty : string.Empty, Title = item.TryGetProperty("title", out var title) ? title.GetString() ?? string.Empty : string.Empty, Url = item.TryGetProperty("url", out var url) ? url.GetString() ?? string.Empty : string.Empty, Type = type, WebSocketDebuggerUrl = item.TryGetProperty("webSocketDebuggerUrl", out var ws) ? ws.GetString() ?? string.Empty : string.Empty }); } _sessionPool.Prune(tabs); return tabs.OrderBy(t => t.Title, StringComparer.CurrentCultureIgnoreCase).ToList(); }
     public Process LaunchMonitorChrome(string? startUrl = null) { var chromePath = FindChromePath(); var profilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GPTDeskTop", "ChromeProfile"); Directory.CreateDirectory(profilePath); var url = string.IsNullOrWhiteSpace(startUrl) ? _config.StartUrl : startUrl; var arguments = $"--remote-debugging-port={_config.DebuggingPort} --user-data-dir=\"{profilePath}\" --new-window \"{url}\""; _monitorChromeProcess = Process.Start(new ProcessStartInfo { FileName = chromePath, Arguments = arguments, UseShellExecute = true }) ?? throw new InvalidOperationException("Chrome could not be started."); return _monitorChromeProcess; }
     public async Task<ChromeTab> CreateTabAsync(string url, CancellationToken cancellationToken = default) { var existing = await GetTabsAsync(cancellationToken); var controlTab = existing.FirstOrDefault() ?? throw new InvalidOperationException("Monitor Chrome has no controllable page."); var result = await SendCommandAsync(controlTab, "Target.createTarget", new { url }, cancellationToken); var targetId = result.TryGetProperty("targetId", out var id) ? id.GetString() : null; if (string.IsNullOrWhiteSpace(targetId)) throw new InvalidOperationException("Chrome did not return a target ID for the new tab."); for (var attempt = 0; attempt < 40; attempt++) { cancellationToken.ThrowIfCancellationRequested(); await Task.Delay(250, cancellationToken); var tabs = await GetTabsAsync(cancellationToken); var created = tabs.FirstOrDefault(t => string.Equals(t.Id, targetId, StringComparison.Ordinal)); if (created is not null) return created; } throw new TimeoutException("The new Chrome tab did not become ready in time."); }
     public Task<ChromeTab> CreateNewChatTabAsync(CancellationToken cancellationToken = default) => CreateTabAsync(_config.StartUrl, cancellationToken);
-    public async Task<bool> CloseTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) { try { using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/close/{Uri.EscapeDataString(tab.Id)}", cancellationToken); return response.IsSuccessStatusCode; } catch { return false; } }
-    public async Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken = default) { List<ChromeTab> tabs; try { tabs = await GetTabsAsync(cancellationToken); } catch { return; } foreach (var tab in tabs) { cancellationToken.ThrowIfCancellationRequested(); await CloseTabAsync(tab, cancellationToken); } }
+    public async Task<bool> CloseTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) { try { using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/close/{Uri.EscapeDataString(tab.Id)}", cancellationToken); return response.IsSuccessStatusCode; } catch { return false; } finally { _sessionPool.Invalidate(tab.Id); } }
+    public async Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken = default) { List<ChromeTab> tabs; try { tabs = await GetTabsAsync(cancellationToken); } catch { _sessionPool.Clear(); return; } try { foreach (var tab in tabs) { cancellationToken.ThrowIfCancellationRequested(); await CloseTabAsync(tab, cancellationToken); } } finally { _sessionPool.Clear(); } }
     public async Task<bool> TrySelectModelAsync(ChromeTab tab, string modelLabel, CancellationToken cancellationToken = default) { if (string.IsNullOrWhiteSpace(modelLabel) || string.Equals(modelLabel.Trim(), "Auto", StringComparison.OrdinalIgnoreCase)) return true; var labelLiteral = JsonSerializer.Serialize(modelLabel.Trim()); var expression = $$""" (() => { const requested = {{labelLiteral}}.trim().toLowerCase(); const normalize = value => (value || '').replace(/\s+/g, ' ').trim().toLowerCase(); const visible = element => { const r = element.getBoundingClientRect(); const s = getComputedStyle(element); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; }; const elements = [...document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"]')]; const modelButton = elements.find(e => { if (!visible(e)) return false; const label = normalize(e.getAttribute('aria-label')); const text = normalize(e.innerText || e.textContent); return /model|م\u0648\u062f\u064a\u0644|reasoning|thinking|instant/i.test(label + ' ' + text); }); if (modelButton) modelButton.click(); const items = [...document.querySelectorAll('[role="menuitem"],[role="option"],button')]; const target = items.find(e => visible(e) && normalize(e.innerText || e.textContent).includes(requested)); if (!target) return false; target.click(); return true; })() """; try { var result = await EvaluateAsync(tab, expression, cancellationToken, false); return result.ValueKind == JsonValueKind.True; } catch (Exception ex) when (ex is not OperationCanceledException) { ExceptionLogService.Log(ex, "ChromeDevToolsService.TrySelectModel", null, tab.Id, tab.Title); return false; } }
     public async Task<bool> HideMonitorChromeAsync(CancellationToken cancellationToken = default) { var changed = await SetAllBrowserWindowsStateAsync("minimized", cancellationToken); var handle = await ResolveMonitorWindowHandleAsync(cancellationToken); if (handle != IntPtr.Zero) { _lastKnownWindowHandle = handle; ShowWindow(handle, SwHide); changed = true; } return changed; }
     public async Task<bool> ShowMonitorChromeAsync(CancellationToken cancellationToken = default) { var changed = await SetAllBrowserWindowsStateAsync("normal", cancellationToken); var handle = _lastKnownWindowHandle; if (handle == IntPtr.Zero || !IsWindow(handle)) handle = await ResolveMonitorWindowHandleAsync(cancellationToken); if (handle != IntPtr.Zero) { _lastKnownWindowHandle = handle; ShowWindow(handle, SwShow); ShowWindow(handle, SwRestore); changed = true; } return changed; }
@@ -97,65 +93,8 @@ public sealed class ChromeDevToolsService
     public async Task ReloadTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) => await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
     private async Task<JsonElement> EvaluateAsync(ChromeTab tab, string expression, CancellationToken cancellationToken, bool awaitPromise) { for (var attempt = 1; attempt <= 3; attempt++) { try { return await SendCommandAsync(tab, "Runtime.evaluate", new { expression, returnByValue = true, awaitPromise, userGesture = true }, cancellationToken, true); } catch (InvalidOperationException ex) when (IsTransientPromiseCollected(ex) && attempt < 3) { await Task.Delay(120 * attempt, cancellationToken); } } throw new InvalidOperationException("Runtime.evaluate failed after transient retry attempts."); }
     private static bool IsTransientPromiseCollected(Exception ex) => ex.Message.Contains("Promise was collected", StringComparison.OrdinalIgnoreCase);
-    private static async Task<JsonElement> SendCommandAsync(ChromeTab tab, string method, object parameters, CancellationToken cancellationToken, bool extractRuntimeValue = false)
-    {
-        if (string.IsNullOrWhiteSpace(tab.WebSocketDebuggerUrl))
-            throw new InvalidOperationException("The selected tab does not expose a DevTools WebSocket URL.");
-
-        using var commandCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        commandCts.CancelAfter(DevToolsCommandTimeout);
-        var commandToken = commandCts.Token;
-
-        try
-        {
-            using var socket = new ClientWebSocket();
-            await socket.ConnectAsync(new Uri(tab.WebSocketDebuggerUrl), commandToken);
-            var request = JsonSerializer.Serialize(new { id = 1, method, @params = parameters });
-            var bytes = Encoding.UTF8.GetBytes(request);
-            await socket.SendAsync(bytes, WebSocketMessageType.Text, true, commandToken);
-
-            var buffer = ArrayPool<byte>.Shared.Rent(ReceiveBufferSize);
-            try
-            {
-                using var stream = new MemoryStream();
-                while (true)
-                {
-                    var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer, 0, ReceiveBufferSize), commandToken);
-                    if (result.MessageType == WebSocketMessageType.Close)
-                        throw new InvalidOperationException("Chrome closed the DevTools connection.");
-
-                    if (stream.Length + result.Count > MaxDevToolsMessageBytes)
-                        throw new InvalidOperationException($"Chrome DevTools message exceeded the {MaxDevToolsMessageBytes} byte safety limit.");
-
-                    stream.Write(buffer, 0, result.Count);
-                    if (!result.EndOfMessage) continue;
-
-                    var payload = Encoding.UTF8.GetString(stream.GetBuffer(), 0, checked((int)stream.Length));
-                    stream.SetLength(0);
-                    using var document = JsonDocument.Parse(payload);
-                    var root = document.RootElement;
-                    if (!root.TryGetProperty("id", out var id) || id.GetInt32() != 1) continue;
-                    if (root.TryGetProperty("error", out var error))
-                        throw new InvalidOperationException($"Chrome DevTools error: {error}");
-                    if (!extractRuntimeValue)
-                        return root.TryGetProperty("result", out var commandResult) ? commandResult.Clone() : JsonDocument.Parse("null").RootElement.Clone();
-
-                    var resultElement = root.GetProperty("result").GetProperty("result");
-                    if (resultElement.TryGetProperty("subtype", out var subtype) && subtype.GetString() == "error")
-                        throw new InvalidOperationException(resultElement.TryGetProperty("description", out var d) ? d.GetString() : "JavaScript evaluation failed.");
-                    return resultElement.TryGetProperty("value", out var value) ? value.Clone() : JsonDocument.Parse("null").RootElement.Clone();
-                }
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new TimeoutException($"Chrome DevTools command '{method}' timed out after {DevToolsCommandTimeout.TotalSeconds:0} seconds.");
-        }
-    }
+    private Task<JsonElement> SendCommandAsync(ChromeTab tab, string method, object parameters, CancellationToken cancellationToken, bool extractRuntimeValue = false)
+        => _sessionPool.SendCommandAsync(tab, method, parameters, cancellationToken, extractRuntimeValue);
     private static string FindChromePath() { var candidates = new[] { Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", "chrome.exe"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe") }; var chrome = candidates.FirstOrDefault(File.Exists); if (chrome is null) throw new FileNotFoundException("Google Chrome was not found. Install Chrome or update the configured path."); return chrome; }
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hWnd);
