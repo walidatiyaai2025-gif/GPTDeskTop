@@ -60,81 +60,33 @@ public static class FluentTheme
 
             switch (control)
             {
-                case Button button:
-                    StyleButton(button);
-                    break;
-                case DataGridView grid:
-                    StyleGrid(grid);
-                    break;
-                case GroupBox group:
-                    StyleGroupBox(group);
-                    break;
-                case TextBox box:
-                    StyleTextBox(box);
-                    break;
-                case RichTextBox rich:
-                    StyleRichTextBox(rich);
-                    break;
-                case NumericUpDown numeric:
-                    StyleNumeric(numeric);
-                    break;
-                case ComboBox combo:
-                    StyleCombo(combo);
-                    break;
-                case CheckBox check:
-                    StyleCheckBox(check);
-                    break;
-                case RadioButton radio:
-                    StyleRadioButton(radio);
-                    break;
-                case LinkLabel link:
-                    StyleLinkLabel(link);
-                    break;
-                case Label label:
-                    StyleLabel(label);
-                    break;
-                case TabControl tabs:
-                    StyleTabs(tabs);
-                    break;
-                case TabPage page:
-                    StyleTabPage(page);
-                    break;
-                case SplitContainer split:
-                    StyleSplitContainer(split);
-                    break;
-                case TableLayoutPanel table:
-                    StyleLayoutPanel(table);
-                    break;
-                case FlowLayoutPanel flow:
-                    StyleLayoutPanel(flow);
-                    break;
+                case Button button: StyleButton(button); break;
+                case DataGridView grid: StyleGrid(grid); break;
+                case GroupBox group: StyleGroupBox(group); break;
+                case TextBox box: StyleTextBox(box); break;
+                case RichTextBox rich: StyleRichTextBox(rich); break;
+                case NumericUpDown numeric: StyleNumeric(numeric); break;
+                case ComboBox combo: StyleCombo(combo); break;
+                case CheckBox check: StyleCheckBox(check); break;
+                case RadioButton radio: StyleRadioButton(radio); break;
+                case LinkLabel link: StyleLinkLabel(link); break;
+                case Label label: StyleLabel(label); break;
+                case TabControl tabs: StyleTabs(tabs); break;
+                case TabPage page: StyleTabPage(page); break;
+                case SplitContainer split: StyleSplitContainer(split); break;
+                case TableLayoutPanel table: StyleLayoutPanel(table); break;
+                case FlowLayoutPanel flow: StyleLayoutPanel(flow); break;
                 case Panel panel:
-                    if (panel.BorderStyle == BorderStyle.FixedSingle)
-                        StyleCard(panel);
-                    else if (panel.BackColor == SystemColors.Control)
-                        panel.BackColor = Background;
+                    if (panel.BorderStyle == BorderStyle.FixedSingle) StyleCard(panel);
+                    else if (panel.BackColor == SystemColors.Control) panel.BackColor = Background;
                     break;
-                case CheckedListBox checkedList:
-                    StyleListBox(checkedList);
-                    break;
-                case ListBox list:
-                    StyleListBox(list);
-                    break;
-                case ListView listView:
-                    StyleListView(listView);
-                    break;
-                case TreeView tree:
-                    StyleTreeView(tree);
-                    break;
-                case DateTimePicker picker:
-                    StyleDateTimePicker(picker);
-                    break;
-                case ProgressBar progress:
-                    StyleProgressBar(progress);
-                    break;
-                case ToolStrip toolStrip:
-                    StyleToolStrip(toolStrip);
-                    break;
+                case CheckedListBox checkedList: StyleListBox(checkedList); break;
+                case ListBox list: StyleListBox(list); break;
+                case ListView listView: StyleListView(listView); break;
+                case TreeView tree: StyleTreeView(tree); break;
+                case DateTimePicker picker: StyleDateTimePicker(picker); break;
+                case ProgressBar progress: StyleProgressBar(progress); break;
+                case ToolStrip toolStrip: StyleToolStrip(toolStrip); break;
             }
 
             if (control.HasChildren) ApplyRecursive(control.Controls);
@@ -162,20 +114,18 @@ public static class FluentTheme
         ApplyButtonColors(button, primary, danger);
         ApplyRoundedRegion(button, 8);
 
-        if (!registration.ButtonEvents)
+        if (registration.ButtonEvents) return;
+        registration.ButtonEvents = true;
+        button.EnabledChanged += (_, _) =>
         {
-            registration.ButtonEvents = true;
-            button.EnabledChanged += (_, _) =>
-            {
-                var state = GetRegistration(button);
-                ApplyButtonColors(button, state.ButtonPrimary, state.ButtonDanger);
-                button.Cursor = button.Enabled ? Cursors.Hand : Cursors.Default;
-                button.Invalidate();
-            };
-            button.GotFocus += (_, _) => button.Invalidate();
-            button.LostFocus += (_, _) => button.Invalidate();
-            button.Paint += (_, e) => DrawButtonFocusRing(button, e.Graphics);
-        }
+            var state = GetRegistration(button);
+            ApplyButtonColors(button, state.ButtonPrimary, state.ButtonDanger);
+            button.Cursor = button.Enabled ? Cursors.Hand : Cursors.Default;
+            button.Invalidate();
+        };
+        button.GotFocus += (_, _) => button.Invalidate();
+        button.LostFocus += (_, _) => button.Invalidate();
+        button.Paint += (_, e) => DrawButtonFocusRing(button, e.Graphics);
     }
 
     public static void StyleGrid(DataGridView grid)
@@ -201,64 +151,31 @@ public static class FluentTheme
         grid.DefaultCellStyle.Padding = new Padding(8, 4, 8, 4);
         grid.DefaultCellStyle.Font = BodyFont;
         grid.DefaultCellStyle.NullValue = "—";
+        grid.DefaultCellStyle.WrapMode = DataGridViewTriState.False;
         grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(251, 252, 254);
         grid.AlternatingRowsDefaultCellStyle.SelectionBackColor = AccentSubtle;
         grid.AlternatingRowsDefaultCellStyle.SelectionForeColor = Text;
         grid.RowTemplate.Height = 38;
+        grid.RowTemplate.Resizable = DataGridViewTriState.False;
         grid.ColumnHeadersHeight = 40;
         grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+        grid.ColumnHeadersDefaultCellStyle.WrapMode = DataGridViewTriState.False;
         grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
-        grid.SelectionMode = grid.SelectionMode == DataGridViewSelectionMode.CellSelect
-            ? DataGridViewSelectionMode.CellSelect
-            : DataGridViewSelectionMode.FullRowSelect;
         grid.ShowCellErrors = false;
         grid.ShowRowErrors = false;
-        grid.StandardTab = true;
     }
 
     public static Label CreateSectionTitle(string text)
-        => new()
-        {
-            Text = text,
-            Dock = DockStyle.Fill,
-            Font = SectionFont,
-            ForeColor = Text,
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true,
-            UseMnemonic = false
-        };
+        => new() { Text = text, Dock = DockStyle.Fill, Font = SectionFont, ForeColor = Text, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, UseMnemonic = false };
 
     public static Label CreateMutedLabel(string text)
-        => new()
-        {
-            Text = text,
-            Dock = DockStyle.Fill,
-            ForeColor = Muted,
-            Font = CaptionFont,
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true,
-            UseMnemonic = false
-        };
+        => new() { Text = text, Dock = DockStyle.Fill, ForeColor = Muted, Font = CaptionFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, UseMnemonic = false };
 
     public static Label CreateEyebrowLabel(string text)
-        => new()
-        {
-            Text = text.ToUpperInvariant(),
-            AutoSize = true,
-            ForeColor = MutedStrong,
-            Font = CaptionStrongFont,
-            TextAlign = ContentAlignment.MiddleLeft,
-            UseMnemonic = false
-        };
+        => new() { Text = text.ToUpperInvariant(), AutoSize = true, ForeColor = MutedStrong, Font = CaptionStrongFont, TextAlign = ContentAlignment.MiddleLeft, UseMnemonic = false };
 
     public static Panel CreateDivider()
-        => new()
-        {
-            Height = 1,
-            Dock = DockStyle.Top,
-            BackColor = Border,
-            Margin = new Padding(0, 6, 0, 6)
-        };
+        => new() { Height = 1, Dock = DockStyle.Top, BackColor = Border, Margin = new Padding(0, 6, 0, 6) };
 
     public static ContextMenuStrip CreateMenu()
     {
@@ -274,19 +191,16 @@ public static class FluentTheme
         };
 
         var registration = GetRegistration(menu);
-        if (!registration.MenuEvents)
+        if (registration.MenuEvents) return menu;
+        registration.MenuEvents = true;
+        menu.Opening += (_, _) =>
         {
-            registration.MenuEvents = true;
-            menu.Opening += (_, _) =>
+            foreach (ToolStripItem item in menu.Items)
             {
-                foreach (ToolStripItem item in menu.Items)
-                {
-                    item.Padding = item is ToolStripSeparator ? Padding.Empty : new Padding(8, 4, 8, 4);
-                    item.Margin = item is ToolStripSeparator ? new Padding(2, 4, 2, 4) : new Padding(0, 1, 0, 1);
-                }
-            };
-        }
-
+                item.Padding = item is ToolStripSeparator ? Padding.Empty : new Padding(8, 4, 8, 4);
+                item.Margin = item is ToolStripSeparator ? new Padding(2, 4, 2, 4) : new Padding(0, 1, 0, 1);
+            }
+        };
         return menu;
     }
 
@@ -305,7 +219,6 @@ public static class FluentTheme
         rich.BackColor = rich.ReadOnly ? SurfaceAlt : Surface;
         rich.ForeColor = rich.ReadOnly ? MutedStrong : Text;
         rich.Font = BodyFont;
-        rich.DetectUrls = true;
         rich.ShortcutsEnabled = true;
     }
 
@@ -348,9 +261,7 @@ public static class FluentTheme
 
     private static void StyleLabel(Label label)
     {
-        if (label.ForeColor == SystemColors.ControlText)
-            label.ForeColor = Text;
-        label.UseMnemonic = false;
+        if (label.ForeColor == SystemColors.ControlText) label.ForeColor = Text;
     }
 
     private static void StyleLinkLabel(LinkLabel link)
@@ -387,8 +298,7 @@ public static class FluentTheme
 
     private static void StyleLayoutPanel(Control panel)
     {
-        if (panel.BackColor == SystemColors.Control)
-            panel.BackColor = Background;
+        if (panel.BackColor == SystemColors.Control) panel.BackColor = Background;
     }
 
     private static void StyleGroupBox(GroupBox group)
@@ -396,8 +306,7 @@ public static class FluentTheme
         group.ForeColor = Text;
         group.Font = BodyStrongFont;
         group.Padding = EnsureMinimumPadding(group.Padding, 10);
-        if (group.BackColor == SystemColors.Control)
-            group.BackColor = Background;
+        if (group.BackColor == SystemColors.Control) group.BackColor = Background;
     }
 
     private static void StyleListBox(ListBox list)
@@ -448,7 +357,7 @@ public static class FluentTheme
     {
         progress.ForeColor = Accent;
         progress.BackColor = SurfaceAlt;
-        progress.Style = progress.Style == ProgressBarStyle.Marquee ? ProgressBarStyle.Marquee : ProgressBarStyle.Continuous;
+        if (progress.Style != ProgressBarStyle.Marquee) progress.Style = ProgressBarStyle.Continuous;
     }
 
     private static void StyleToolStrip(ToolStrip toolStrip)
@@ -469,17 +378,15 @@ public static class FluentTheme
         ApplyRoundedRegion(panel, 10);
 
         var registration = GetRegistration(panel);
-        if (!registration.CardPaint)
+        if (registration.CardPaint) return;
+        registration.CardPaint = true;
+        panel.Paint += (_, e) =>
         {
-            registration.CardPaint = true;
-            panel.Paint += (_, e) =>
-            {
-                using var path = CreateRoundedRectangle(new Rectangle(0, 0, Math.Max(1, panel.Width - 1), Math.Max(1, panel.Height - 1)), 10);
-                using var pen = new Pen(Border);
-                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                e.Graphics.DrawPath(pen, path);
-            };
-        }
+            using var path = CreateRoundedRectangle(new Rectangle(0, 0, Math.Max(1, panel.Width - 1), Math.Max(1, panel.Height - 1)), 10);
+            using var pen = new Pen(Border);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.DrawPath(pen, path);
+        };
     }
 
     private static void ApplyButtonColors(Button button, bool primary, bool danger)
@@ -514,8 +421,7 @@ public static class FluentTheme
 
     private static void DrawButtonFocusRing(Button button, Graphics graphics)
     {
-        if (!button.Focused || !button.ShowFocusCues || !button.Enabled) return;
-
+        if (!button.Focused || !button.Enabled) return;
         var bounds = new Rectangle(2, 2, Math.Max(1, button.Width - 5), Math.Max(1, button.Height - 5));
         using var path = CreateRoundedRectangle(bounds, 6);
         using var pen = new Pen(FocusRing, 1.5F);
@@ -536,21 +442,9 @@ public static class FluentTheme
         if (registration.InputEvents) return;
 
         registration.InputEvents = true;
-        control.Enter += (_, _) =>
-        {
-            var state = GetRegistration(control);
-            ApplyInputColors(control, state.InputReadOnly);
-        };
-        control.Leave += (_, _) =>
-        {
-            var state = GetRegistration(control);
-            ApplyInputColors(control, state.InputReadOnly);
-        };
-        control.EnabledChanged += (_, _) =>
-        {
-            var state = GetRegistration(control);
-            ApplyInputColors(control, state.InputReadOnly);
-        };
+        control.Enter += (_, _) => ApplyInputColors(control, GetRegistration(control).InputReadOnly);
+        control.Leave += (_, _) => ApplyInputColors(control, GetRegistration(control).InputReadOnly);
+        control.EnabledChanged += (_, _) => ApplyInputColors(control, GetRegistration(control).InputReadOnly);
     }
 
     private static void ApplyAccessibilityDefaults(Control control)
@@ -563,11 +457,7 @@ public static class FluentTheme
     }
 
     private static Padding EnsureMinimumPadding(Padding padding, int minimum)
-        => new(
-            Math.Max(minimum, padding.Left),
-            Math.Max(minimum, padding.Top),
-            Math.Max(minimum, padding.Right),
-            Math.Max(minimum, padding.Bottom));
+        => new(Math.Max(minimum, padding.Left), Math.Max(minimum, padding.Top), Math.Max(minimum, padding.Right), Math.Max(minimum, padding.Bottom));
 
     private static ThemeRegistration GetRegistration(Control control)
         => Registrations.GetValue(control, _ => new ThemeRegistration());
@@ -580,8 +470,7 @@ public static class FluentTheme
         void UpdateRegion()
         {
             if (control.Width <= 1 || control.Height <= 1) return;
-            var state = GetRegistration(control);
-            using var path = CreateRoundedRectangle(new Rectangle(0, 0, control.Width, control.Height), state.Radius);
+            using var path = CreateRoundedRectangle(new Rectangle(0, 0, control.Width, control.Height), GetRegistration(control).Radius);
             var oldRegion = control.Region;
             control.Region = new Region(path);
             oldRegion?.Dispose();
@@ -591,11 +480,6 @@ public static class FluentTheme
         if (registration.RoundedRegion) return;
         registration.RoundedRegion = true;
         control.Resize += (_, _) => UpdateRegion();
-        control.Disposed += (_, _) =>
-        {
-            control.Region?.Dispose();
-            control.Region = null;
-        };
     }
 
     private static GraphicsPath CreateRoundedRectangle(Rectangle bounds, int radius)
