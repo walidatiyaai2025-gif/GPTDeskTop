@@ -64,6 +64,71 @@ public sealed class ChromeDevToolsLongRunningStabilityRegressionTests
     }
 
     [Fact]
+    public void CdpSessionRetirementDisposesSocketOnlyAfterExclusiveGateReacquisition()
+    {
+        var source = File.ReadAllText(RepositoryPath(
+            "src", "GPTDeskTop", "Services", "ChromeDevToolsSessionPool.cs"));
+
+        Assert.Contains("private int _retired;", source, StringComparison.Ordinal);
+        Assert.Contains("private int _socketDisposed;", source, StringComparison.Ordinal);
+        Assert.Contains("Interlocked.Exchange(ref _retired, 1)", source, StringComparison.Ordinal);
+        Assert.Contains("TryDisposeSocketIfRetired();", source, StringComparison.Ordinal);
+        Assert.Contains("if (!_commandGate.Wait(0)) return;", source, StringComparison.Ordinal);
+        Assert.Contains("private void DisposeSocketUnderGate()", source, StringComparison.Ordinal);
+
+        var sendCommand = source.IndexOf(
+            "public async Task<JsonElement> SendCommandAsync(",
+            StringComparison.Ordinal);
+        var ioCatch = source.IndexOf(
+            "catch (IOException)",
+            sendCommand,
+            StringComparison.Ordinal);
+        var releaseAfterCommand = source.IndexOf(
+            "_commandGate.Release();",
+            ioCatch,
+            StringComparison.Ordinal);
+        var cleanupAfterRelease = source.IndexOf(
+            "TryDisposeSocketIfRetired();",
+            releaseAfterCommand,
+            StringComparison.Ordinal);
+        Assert.True(
+            sendCommand >= 0
+            && ioCatch > sendCommand
+            && releaseAfterCommand > ioCatch
+            && cleanupAfterRelease > releaseAfterCommand);
+
+        var cleanupHelper = source.IndexOf("private void TryDisposeSocketIfRetired()", StringComparison.Ordinal);
+        var cleanupGateAcquire = source.IndexOf("if (!_commandGate.Wait(0)) return;", cleanupHelper, StringComparison.Ordinal);
+        var guardedDispose = source.IndexOf("DisposeSocketUnderGate();", cleanupGateAcquire, StringComparison.Ordinal);
+        Assert.True(cleanupHelper >= 0 && cleanupGateAcquire > cleanupHelper && guardedDispose > cleanupGateAcquire);
+
+        Assert.Equal(
+            1,
+            source.Split("_socket.Dispose()", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public void DisposedSocketRaceIsNormalizedToRecoverableIoFailure()
+    {
+        var source = File.ReadAllText(RepositoryPath(
+            "src", "GPTDeskTop", "Services", "ChromeDevToolsSessionPool.cs"));
+
+        Assert.Contains("catch (ObjectDisposedException ex)", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "throw new IOException(\"Chrome DevTools session became unavailable during command execution.\", ex);",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains("catch (ObjectDisposedException)", source, StringComparison.Ordinal);
+
+        var method = typeof(ChatGptMonitorService).GetMethod(
+            "IsTransientChromeException",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        Assert.True((bool)method!.Invoke(null, [new IOException("retired CDP socket")])!);
+    }
+
+    [Fact]
     public void CdpCommandTimeoutRemainsARecoverableMonitorFailure()
     {
         var method = typeof(ChatGptMonitorService).GetMethod(
