@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using GPTDeskTop.Data;
 
 namespace GPTDeskTop.Services;
@@ -18,6 +19,9 @@ public static class ExceptionLogService
 
     public static async Task LogAsync(Exception exception, string source, long? monitorId = null, string? tabId = null, string? tabTitle = null)
     {
+        if (IsExpectedChromeDevToolsOfflineProbe(exception, source))
+            return;
+
         var timestamp = DateTimeOffset.Now;
         var details = $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff zzz}] Source={source}{Environment.NewLine}{exception}{Environment.NewLine}{new string('-', 100)}{Environment.NewLine}";
 
@@ -64,6 +68,22 @@ public static class ExceptionLogService
 
     public static void Log(Exception exception, string source, long? monitorId = null, string? tabId = null, string? tabTitle = null)
         => _ = LogAsync(exception, source, monitorId, tabId, tabTitle);
+
+    private static bool IsExpectedChromeDevToolsOfflineProbe(Exception exception, string source)
+    {
+        if (!string.Equals(source, "RuntimeHealthControl.ChromeProbe", StringComparison.Ordinal)
+            && !string.Equals(source, "SupportBundle.ChromeProbe", StringComparison.Ordinal))
+            return false;
+
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is SocketException socketException
+                && socketException.SocketErrorCode == SocketError.ConnectionRefused)
+                return true;
+        }
+
+        return false;
+    }
 
     public static string GetTodayLogPath()
         => Path.Combine(LogDirectory, $"exceptions-{DateTime.Now:yyyyMMdd}.log");
