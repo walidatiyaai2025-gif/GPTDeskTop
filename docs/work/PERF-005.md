@@ -1,12 +1,18 @@
 # PERF-005 — Harden CDP session retirement against concurrent socket disposal
 
-Issue: #169
+Issue: #169 — **Closed / Completed**
 
 Implementation branch: `agent/perf-005-cdp-retirement`
 
+Implementation PR: #170
+
 Baseline: `d9b687410f6c13b69254778e4d4311f990827b38`
 
-Status: **IMPLEMENTED / VALIDATION PENDING**
+Verified PR head: `c36718b8a22d41acabcf397bbdf0f754c01c86a6`
+
+Squash merge to `main`: `07d916558f98f5db1deaba1554c4c98d9bce639b`
+
+Status: **DONE / VERIFIED / MERGED**
 
 ## Problem
 
@@ -33,7 +39,7 @@ A second interleaving also had to be closed: retirement could arrive after an ac
 - PERF-003 per-target session reuse is preserved.
 - PERF-002 command timeout, caller cancellation, buffer pooling and payload bounds are preserved.
 - PERF-004 streaming payload and SQLite polling optimizations are unchanged.
-- Concurrent UI-POLISH-003 implementation and its verified-completion reconciliation are retained by basing the final PERF-005 validation head on `d9b687410f6c13b69254778e4d4311f990827b38`.
+- Concurrent UI-POLISH-003 implementation and its verified-completion reconciliation were retained in the exact final validation base.
 - Passive long-response wait, explicit-error recovery, auto reply, rotation, handoff, model routing and saved monitor identity behavior are unchanged.
 - No UI, SQLite schema, release artifact or recovery-policy changes.
 
@@ -48,8 +54,19 @@ A second interleaving also had to be closed: retirement could arrive after an ac
 - `ObjectDisposedException` normalization to transient `IOException`,
 - and `IsUsable` tolerance of disposed socket state.
 
-The first PR CI attempt compiled both the application and test project and passed 357/358 runtime tests. Its sole failure was the new source-structure assertion matching LF line endings literally on a Windows CRLF checkout. The assertion was replaced with ordered structural token checks before final validation.
+The first PR CI attempt compiled both the application and test project and passed 357/358 runtime tests. Its sole failure was the new source-structure assertion matching LF line endings literally on a Windows CRLF checkout. The assertion was replaced with ordered structural token checks before final validation; the final Build workflow then passed its Runtime automation tests and every subsequent gate.
 
-## Validation
+## Verification receipts
 
-All established pull-request GitHub Actions workflows must pass on the exact final PR head before merge.
+All eight established GitHub Actions workflows passed on the exact final PR head `c36718b8a22d41acabcf397bbdf0f754c01c86a6`:
+
+- Build GPTDeskTop #580 — Success
+- QA Release x64 #368 — Success
+- QA Hidden Chrome CDP #350 — Success
+- QA Passive Chat Wait #344 — Success
+- QA Crash Process Recovery #358 — Success
+- Development Delivery Receipts #458 — Success
+- Development Task Recovery #454 — Success
+- Development Message Reload #285 — Success
+
+PR #170 was squash-merged to `main` as `07d916558f98f5db1deaba1554c4c98d9bce639b`, and issue #169 closed as Completed.
