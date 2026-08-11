@@ -1,12 +1,15 @@
 # UI-POLISH-003 — 100 screen-level UX refinements
 
 ## Status
-IMPLEMENTED / VALIDATION PENDING
+DONE / VERIFIED / MERGED
 
 ## Tracking
-- Issue: #167
+- Issue: #167 — Closed / Completed
+- PR: #168
 - Branch: `agent/ui-polish-003-screen-experience`
 - Baseline main: `2257b03503120cc97ca363548b06e3305c9fa68c`
+- Verified PR head: `a8b27738a0e79d754318f2886d10de807b71f36b`
+- Squash merge to main: `92ef2159f24c256449fe2bce78600e4877a08339`
 
 ## Goal
 Add one hundred screen-level operator-experience refinements on top of the shared Fluent theme without changing monitoring, recovery, Chrome/CDP, SQLite, scheduling, task-engine or release semantics.
@@ -136,5 +139,18 @@ Add one hundred screen-level operator-experience refinements on top of the share
 ## Scope boundary
 The implementation lives in `src/GPTDeskTop/UI/ScreenExperience.cs` plus UI regression coverage. It does not mutate monitoring semantics, response detection, recovery, CDP transport, persistence, task scheduling, setup or release behavior.
 
-## Validation
-Pending exact-head GitHub Actions validation.
+## Verification receipts
+All eight established pull-request workflows completed successfully on the exact verified head `a8b27738a0e79d754318f2886d10de807b71f36b`:
+
+- Build GPTDeskTop #572 — Success
+- QA Release x64 #360 — Success
+- QA Crash Process Recovery #350 — Success
+- QA Hidden Chrome CDP #342 — Success
+- QA Passive Chat Wait #336 — Success
+- Development Delivery Receipts #450 — Success
+- Development Task Recovery #446 — Success
+- Development Message Reload #277 — Success
+
+The first validation attempt exposed one regression-test assertion mismatch (`registration` vs `controlRegistration`) while the application itself compiled. That source-contract assertion was corrected, the dynamic `ControlAdded` nullable warning was removed, and the exact final head then passed the full 8/8 gate set.
+
+PR #168 was squash-merged to `main` as `92ef2159f24c256449fe2bce78600e4877a08339`, and issue #167 closed as Completed.
