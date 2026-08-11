@@ -82,13 +82,10 @@ public static class FluentTheme
                 case TabControl tabs:
                     tabs.Font = BodyFont;
                     tabs.Padding = new Point(16, 7);
-                    tabs.SizeMode = TabSizeMode.Fixed;
-                    tabs.ItemSize = new Size(Math.Max(110, tabs.ItemSize.Width), 34);
                     break;
                 case TabPage page:
                     page.BackColor = Surface;
                     page.ForeColor = Text;
-                    page.Padding = new Padding(8);
                     break;
                 case SplitContainer split:
                     split.BackColor = Background;
@@ -172,8 +169,6 @@ public static class FluentTheme
         grid.ColumnHeadersHeight = 40;
         grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
         grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
-        grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-        grid.MultiSelect = false;
     }
 
     public static Label CreateSectionTitle(string text)
@@ -248,8 +243,9 @@ public static class FluentTheme
         {
             if (control.Width <= 1 || control.Height <= 1) return;
             using var path = CreateRoundedRectangle(new Rectangle(0, 0, control.Width, control.Height), radius);
-            control.Region?.Dispose();
+            var oldRegion = control.Region;
             control.Region = new Region(path);
+            oldRegion?.Dispose();
         }
 
         UpdateRegion();
@@ -258,7 +254,8 @@ public static class FluentTheme
 
     private static GraphicsPath CreateRoundedRectangle(Rectangle bounds, int radius)
     {
-        var diameter = Math.Max(2, radius * 2);
+        var effectiveRadius = Math.Max(1, Math.Min(radius, Math.Min(bounds.Width, bounds.Height) / 2));
+        var diameter = Math.Max(2, effectiveRadius * 2);
         var arc = new Rectangle(bounds.Location, new Size(diameter, diameter));
         var path = new GraphicsPath();
         path.AddArc(arc, 180, 90);
