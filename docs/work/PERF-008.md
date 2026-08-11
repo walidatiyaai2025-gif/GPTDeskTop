@@ -1,10 +1,16 @@
 # PERF-008 — Share runtime settings refresh across monitor workers
 
-Issue: #181
+Issue: #181 — **Closed / Completed**
 
 Branch: `agent/perf-008-shared-runtime-settings`
 
-Status: **IMPLEMENTED / DEPENDS ON PERF-007 MERGE**
+PR: #183
+
+Verified PR head: `9af9e0eaa45c5e9c2467323fbdfa850c87dce35f`
+
+Squash merge to `main`: `35ccea11a4d2e43f529bbe712318578ded256c83`
+
+Status: **DONE / VERIFIED / MERGED**
 
 ## Problem
 
@@ -29,8 +35,19 @@ PERF-004 reduced rotation-setting reads from every poll to every five seconds, b
 
 ## Regression coverage
 
-`MonitorHotLoopPerformanceRegressionTests` now locks the shared gate, volatile snapshot fast path, concurrent refresh, five-second expiry, and exactly one source read for each runtime setting.
+`MonitorHotLoopPerformanceRegressionTests` locks the shared gate, volatile snapshot fast path, concurrent refresh, five-second expiry, and exactly one source key for each runtime setting. The first validation attempt exposed a formatting-sensitive source assertion; the assertion was corrected to count the setting key literal rather than method-call whitespace, and the final runtime suite passed.
 
-## Validation
+## Verification receipts
 
-Rebase onto the verified PERF-007 main head, then require all established PR workflows to pass on the exact final head before merge.
+All eight established GitHub Actions workflows passed on exact final head `9af9e0eaa45c5e9c2467323fbdfa850c87dce35f`:
+
+- Build GPTDeskTop #601 — Success
+- QA Release x64 #389 — Success
+- QA Hidden Chrome CDP #371 — Success
+- QA Passive Chat Wait #365 — Success
+- QA Crash Process Recovery #379 — Success
+- Development Delivery Receipts #479 — Success
+- Development Task Recovery #475 — Success
+- Development Message Reload #306 — Success
+
+PR #183 was squash-merged to `main` as `35ccea11a4d2e43f529bbe712318578ded256c83`.
