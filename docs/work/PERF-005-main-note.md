@@ -1,1 +1,0 @@
-This file is temporary and will be removed once PERF-005 is tracked on its implementation branch.
