@@ -15,6 +15,8 @@ public sealed class ChatGptMonitorService
     private readonly object _sync = new();
     private readonly Dictionary<long, MonitorRuntime> _running = new();
     private readonly Dictionary<long, LifecycleGateEntry> _lifecycleGates = new();
+    private readonly SemaphoreSlim _runtimeSettingsRefreshGate = new(1, 1);
+    private RuntimeSettingsSnapshot? _runtimeSettingsSnapshot;
 
     public event Action<long, string>? Activity;
     public event Action? HistoryChanged;
@@ -239,13 +241,48 @@ public sealed class ChatGptMonitorService
         gateToDispose?.Dispose();
     }
 
+    private async Task<RuntimeSettingsSnapshot> GetRuntimeSettingsSnapshotAsync(CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var cached = Volatile.Read(ref _runtimeSettingsSnapshot);
+        if (cached is not null && now < cached.ExpiresUtc)
+            return cached;
+
+        await _runtimeSettingsRefreshGate.WaitAsync(cancellationToken);
+        try
+        {
+            now = DateTimeOffset.UtcNow;
+            cached = Volatile.Read(ref _runtimeSettingsSnapshot);
+            if (cached is not null && now < cached.ExpiresUtc)
+                return cached;
+
+            var rotateTask = _database.GetIntSettingAsync(
+                "RotateAfterAssistantMessages", 0, 0, 10000, cancellationToken);
+            var messageTask = _database.GetSettingAsync(
+                "MessageCountRotationStartMessage", cancellationToken);
+            await Task.WhenAll(rotateTask, messageTask);
+
+            var snapshot = new RuntimeSettingsSnapshot(
+                await rotateTask,
+                (await messageTask) ?? "كمل",
+                DateTimeOffset.UtcNow + RuntimeSettingsRefreshInterval);
+            Volatile.Write(ref _runtimeSettingsSnapshot, snapshot);
+            return snapshot;
+        }
+        finally
+        {
+            _runtimeSettingsRefreshGate.Release();
+        }
+    }
+
     private async Task MonitorLoopAsync(SavedMonitor monitor, ChromeTab tab, CancellationToken cancellationToken)
     {
         var timerSeconds = Math.Clamp(monitor.TimerSeconds, 1, 60);
         var replyDelaySeconds = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300);
-        var rotateAfterMessages = await _database.GetIntSettingAsync("RotateAfterAssistantMessages", 0, 0, 10000, cancellationToken);
-        var messageCountRotationStartMessage = await _database.GetSettingAsync("MessageCountRotationStartMessage", cancellationToken) ?? "كمل";
-        var nextRuntimeSettingsRefreshUtc = DateTimeOffset.UtcNow + RuntimeSettingsRefreshInterval;
+        var runtimeSettings = await GetRuntimeSettingsSnapshotAsync(cancellationToken);
+        var rotateAfterMessages = runtimeSettings.RotateAfterMessages;
+        var messageCountRotationStartMessage = runtimeSettings.MessageCountRotationStartMessage;
+        var nextRuntimeSettingsRefreshUtc = runtimeSettings.ExpiresUtc;
         var transientFailures = 0;
         Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Timer {timerSeconds}s | Delay {replyDelaySeconds}s | Passive long-response wait ON (elapsed time never reloads a healthy chat) | Rotation {(monitor.ConversationRotationEnabled ? "ON" : "OFF")} | Count rotation {(rotateAfterMessages > 0 ? $"{rotateAfterMessages} assistant messages" : "OFF")} | Model routing {(monitor.ModelRoutingEnabled ? "ON" : "OFF")} | Reply: {monitor.AutoReply}");
         try
@@ -274,9 +311,10 @@ public sealed class ChatGptMonitorService
                     transientFailures = 0;
                     if (DateTimeOffset.UtcNow >= nextRuntimeSettingsRefreshUtc)
                     {
-                        rotateAfterMessages = await _database.GetIntSettingAsync("RotateAfterAssistantMessages", 0, 0, 10000, cancellationToken);
-                        messageCountRotationStartMessage = await _database.GetSettingAsync("MessageCountRotationStartMessage", cancellationToken) ?? "كمل";
-                        nextRuntimeSettingsRefreshUtc = DateTimeOffset.UtcNow + RuntimeSettingsRefreshInterval;
+                        runtimeSettings = await GetRuntimeSettingsSnapshotAsync(cancellationToken);
+                        rotateAfterMessages = runtimeSettings.RotateAfterMessages;
+                        messageCountRotationStartMessage = runtimeSettings.MessageCountRotationStartMessage;
+                        nextRuntimeSettingsRefreshUtc = runtimeSettings.ExpiresUtc;
                     }
                     var messageCountThresholdReached = monitor.ConversationRotationEnabled
                         && rotateAfterMessages > 0
@@ -627,6 +665,11 @@ public sealed class ChatGptMonitorService
     private static string GetEffectiveResponse(ChatPageState state) => !string.IsNullOrWhiteSpace(state.ErrorText) ? state.ErrorText.Trim() : state.LastAssistantText.Trim();
     private static bool IsDeliveryTimeout(string text) => text.Contains("message delivery timed out", StringComparison.OrdinalIgnoreCase);
     private static bool IsConversationContextLimit(string text) { if (string.IsNullOrWhiteSpace(text)) return false; string[] markers = { "conversation is too long", "conversation is too large", "context length", "context window", "maximum context", "conversation limit", "start a new chat", "this conversation has reached", "reached the maximum length", "المحادثة طويلة جدًا", "طول المحادثة", "حد المحادثة", "ابدأ محادثة جديدة" }; return markers.Any(marker => text.Contains(marker, StringComparison.OrdinalIgnoreCase)); }
+
+    private sealed record RuntimeSettingsSnapshot(
+        int RotateAfterMessages,
+        string MessageCountRotationStartMessage,
+        DateTimeOffset ExpiresUtc);
 
     private sealed class LifecycleGateEntry
     {
