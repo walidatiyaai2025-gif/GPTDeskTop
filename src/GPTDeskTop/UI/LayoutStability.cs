@@ -314,6 +314,11 @@ public static class LayoutStability
     {
         if (form.IsDisposed || form.Disposing) return;
 
+        // Main/Settings forms already have a dedicated responsive owner in
+        // SecondaryScreenExperience. Keep generic hardening active, but do not let
+        // this fallback layer competitively rewrite their resize geometry.
+        if (HasSpecializedResponsiveOwner(form)) return;
+
         var compact = form.ClientSize.Width < Scale(form, LayoutTokens.CompactBreakpoint);
         var narrow = form.ClientSize.Width < Scale(form, LayoutTokens.NarrowBreakpoint);
 
@@ -344,6 +349,9 @@ public static class LayoutStability
             }
         }
     }
+
+    private static bool HasSpecializedResponsiveOwner(Form form)
+        => form is MainForm or SettingsForm or MonitorSettingsForm;
 
     private static bool IsSingleRowCommandFlow(FlowLayoutPanel flow)
     {

@@ -56,6 +56,20 @@ public sealed class LayoutStabilityRegressionTests
     }
 
     [Fact]
+    public void LayoutStability_DoesNotCompeteWithSpecializedResponsiveOwners()
+    {
+        var stability = ReadSource("src", "GPTDeskTop", "UI", "LayoutStability.cs");
+        var secondary = ReadSource("src", "GPTDeskTop", "UI", "SecondaryScreenExperience.cs");
+
+        Assert.Contains("if (HasSpecializedResponsiveOwner(form)) return;", stability, StringComparison.Ordinal);
+        Assert.Contains("form is MainForm or SettingsForm or MonitorSettingsForm", stability, StringComparison.Ordinal);
+        Assert.Contains("var compact = form.ClientSize.Width < Scale(form, 820)", secondary, StringComparison.Ordinal);
+        Assert.Contains("var compact = form.ClientSize.Width < Scale(form, 800)", secondary, StringComparison.Ordinal);
+        Assert.Contains("tabs.Padding = compact", secondary, StringComparison.Ordinal);
+        Assert.Contains("flow.WrapContents = compact", secondary, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LayoutStability_PreservesThePolishedDevelopmentCommandStrip()
     {
         var stability = ReadSource("src", "GPTDeskTop", "UI", "LayoutStability.cs");
