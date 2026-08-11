@@ -300,7 +300,11 @@ public sealed class ChatGptMonitorService
             var candidateText = string.Empty;
             var candidateSince = DateTimeOffset.MinValue;
             await ApplyModelRouteAsync(monitor, tab, recovery: false, contextRotation: false, cancellationToken);
-            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(timerSeconds));
+            var pollPeriod = TimeSpan.FromSeconds(timerSeconds);
+            var initialPollStagger = MonitorPollScheduler.GetInitialStagger(monitor.Id, pollPeriod);
+            if (initialPollStagger > TimeSpan.Zero)
+                await Task.Delay(initialPollStagger, cancellationToken);
+            using var timer = new PeriodicTimer(pollPeriod);
             while (await timer.WaitForNextTickAsync(cancellationToken))
             {
                 try
