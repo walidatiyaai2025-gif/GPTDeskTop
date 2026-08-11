@@ -56,8 +56,10 @@ public sealed class MainDashboardExperienceRegressionTests
         var source = Source;
 
         Assert.Contains("ApplyResponsiveLayout", source, StringComparison.Ordinal);
-        Assert.Contains("flow.WrapContents", source, StringComparison.Ordinal);
+        Assert.Contains("IsDashboardActionGroup(group)", source, StringComparison.Ordinal);
+        Assert.Contains("actionRow.WrapContents = false", source, StringComparison.Ordinal);
         Assert.Contains("form.ClientSize.Width < 1180", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var flow in Descendants(form).OfType<FlowLayoutPanel>())", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SplitterDistance =", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SetSettingAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("StartMonitor", source, StringComparison.Ordinal);
