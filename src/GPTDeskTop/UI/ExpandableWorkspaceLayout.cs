@@ -32,6 +32,7 @@ internal static class ExpandableWorkspaceLayout
     private static readonly ConditionalWeakTable<Form, FormRegistration> Forms = new();
     private static readonly ConditionalWeakTable<Control, ControlRegistration> Controls = new();
     private static readonly ConditionalWeakTable<Control, CompactOperatorRegistration> CompactOperatorControls = new();
+    private static readonly ConditionalWeakTable<Control, HostManagedRegistration> HostManagedControls = new();
 
     internal static void ApplyOpenForms()
     {
@@ -60,6 +61,20 @@ internal static class ExpandableWorkspaceLayout
         if (control.IsDisposed || control.Disposing) return;
 
         CompactOperatorControls.GetValue(control, _ => new CompactOperatorRegistration());
+        RegisterTree(control);
+        ApplyExpandableHeight(control);
+    }
+
+    /// <summary>
+    /// Releases fixed dashboard-height ownership when an expandable control is re-hosted in a
+    /// full-size window/tab. Existing resize/DPI subscriptions remain safe because they now yield
+    /// to the host instead of restoring a collapsed/expanded dashboard height.
+    /// </summary>
+    internal static void UseHostManagedHeight(Control control)
+    {
+        if (control.IsDisposed || control.Disposing) return;
+
+        HostManagedControls.GetValue(control, _ => new HostManagedRegistration());
         RegisterTree(control);
         ApplyExpandableHeight(control);
     }
@@ -108,6 +123,15 @@ internal static class ExpandableWorkspaceLayout
 
     private static void ApplyExpandableHeight(Control control)
     {
+        if (HostManagedControls.TryGetValue(control, out _))
+        {
+            if (control.MinimumSize != Size.Empty)
+                control.MinimumSize = Size.Empty;
+            if (control.MaximumSize != Size.Empty)
+                control.MaximumSize = Size.Empty;
+            return;
+        }
+
         var compact = CompactOperatorControls.TryGetValue(control, out _);
 
         switch (control)
@@ -163,6 +187,10 @@ internal static class ExpandableWorkspaceLayout
     }
 
     private sealed class CompactOperatorRegistration
+    {
+    }
+
+    private sealed class HostManagedRegistration
     {
     }
 }
