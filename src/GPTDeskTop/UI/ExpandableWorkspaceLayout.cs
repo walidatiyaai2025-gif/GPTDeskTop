@@ -87,7 +87,8 @@ internal static class ExpandableWorkspaceLayout
 
     private static void RegisterExpandable(Control control, ControlRegistration registration)
     {
-        if (registration.ExpandableHooked || !IsSupportedExpandable(control)) return;
+        if (registration.ExpandableHooked) return;
+        if (!IsSupportedExpandable(control)) return;
 
         registration.ExpandableHooked = true;
 
