@@ -30,7 +30,7 @@ public sealed class OperatorWorkspaceV2RegressionTests
         var menu = ReadSource("src", "GPTDeskTop", "UI", "CompactTopCommandMenuExperience.cs");
 
         Assert.Contains("Live Monitor & History", menu, StringComparison.Ordinal);
-        Assert.Contains("OperatorWorkspaceV2Experience.ShowLiveMonitor(form)", menu, StringComparison.Ordinal);
+        Assert.Contains("OperatorWorkspaceV2Experience.ShowLiveMonitor((MainForm)form)", menu, StringComparison.Ordinal);
         Assert.Contains("AddButtonCommand(developmentMenu, \"Messages\"", menu, StringComparison.Ordinal);
     }
 
