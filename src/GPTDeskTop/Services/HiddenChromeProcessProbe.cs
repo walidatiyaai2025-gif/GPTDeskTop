@@ -9,7 +9,7 @@ namespace GPTDeskTop.Services;
 
 /// <summary>
 /// Windows/Chrome QA probe that verifies the production CDP client continues to
-/// read a monitored page while the monitor Chrome window is hidden/minimized.
+/// read and enumerate a monitored page while the monitor Chrome window is hidden/minimized.
 /// It intentionally uses a local deterministic HTML page instead of requiring a
 /// logged-in external ChatGPT session.
 /// </summary>
@@ -83,6 +83,10 @@ internal static class HiddenChromeProcessProbe
         var successfulPolls = 0;
         var matchingPolls = 0;
         var failedPolls = 0;
+        var successfulTabEnumerations = 0;
+        var matchingTabEnumerations = 0;
+        var tabEnumerationFailures = 0;
+        var lastEnumeratedTabCount = 0;
         var lastText = string.Empty;
         var hideChanged = false;
         var showChanged = false;
@@ -97,6 +101,27 @@ internal static class HiddenChromeProcessProbe
             stopwatch.Start();
             while (stopwatch.Elapsed < TimeSpan.FromSeconds(durationSeconds))
             {
+                // Open Conversations is populated from GetTabsAsync. Keep proving that the target
+                // remains enumerable while hidden instead of validating only a previously bound CDP tab.
+                try
+                {
+                    var liveTabs = await chrome.GetTabsAsync().ConfigureAwait(false);
+                    successfulTabEnumerations++;
+                    lastEnumeratedTabCount = liveTabs.Count;
+                    var liveTab = liveTabs.FirstOrDefault(candidate =>
+                        string.Equals(candidate.Id, tab.Id, StringComparison.Ordinal)
+                        || string.Equals(candidate.Url, url, StringComparison.OrdinalIgnoreCase));
+                    if (liveTab is not null)
+                    {
+                        matchingTabEnumerations++;
+                        tab = liveTab;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    tabEnumerationFailures++;
+                }
+
                 try
                 {
                     var state = await chrome.GetChatStateAsync(tab).ConfigureAwait(false);
@@ -125,6 +150,10 @@ internal static class HiddenChromeProcessProbe
                 SuccessfulPolls = successfulPolls,
                 MatchingPolls = matchingPolls,
                 FailedPolls = failedPolls,
+                SuccessfulTabEnumerations = successfulTabEnumerations,
+                MatchingTabEnumerations = matchingTabEnumerations,
+                TabEnumerationFailures = tabEnumerationFailures,
+                LastEnumeratedTabCount = lastEnumeratedTabCount,
                 LastAssistantText = lastText,
                 DebuggingPort = port
             };
@@ -244,6 +273,10 @@ internal static class HiddenChromeProcessProbe
         public int SuccessfulPolls { get; init; }
         public int MatchingPolls { get; init; }
         public int FailedPolls { get; init; }
+        public int SuccessfulTabEnumerations { get; init; }
+        public int MatchingTabEnumerations { get; init; }
+        public int TabEnumerationFailures { get; init; }
+        public int LastEnumeratedTabCount { get; init; }
         public string LastAssistantText { get; init; } = string.Empty;
         public int DebuggingPort { get; init; }
     }
