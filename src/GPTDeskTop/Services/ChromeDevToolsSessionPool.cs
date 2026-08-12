@@ -229,7 +229,12 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
                             if (!root.TryGetProperty("id", out var id) || id.GetInt32() != commandId)
                                 continue;
                             if (root.TryGetProperty("error", out var error))
-                                throw new InvalidOperationException($"Chrome DevTools error: {error}");
+                            {
+                                var devToolsError = $"Chrome DevTools error: {error}";
+                                if (IsTargetLifecycleError(error))
+                                    throw new IOException(devToolsError);
+                                throw new InvalidOperationException(devToolsError);
+                            }
                             if (!extractRuntimeValue)
                                 return root.TryGetProperty("result", out var commandResult)
                                     ? commandResult.Clone()
@@ -318,6 +323,21 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
         {
             if (Interlocked.Exchange(ref _socketDisposed, 1) != 0) return;
             try { _socket.Dispose(); } catch { }
+        }
+
+        private static bool IsTargetLifecycleError(JsonElement error)
+        {
+            var message = error.TryGetProperty("message", out var messageElement)
+                ? messageElement.GetString() ?? string.Empty
+                : error.ToString();
+
+            return message.Contains("Inspected target navigated or closed", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("No target with given id", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("Target closed", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("Session closed", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("Execution context was destroyed", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("Cannot find context with specified id", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("page, context or browser has been closed", StringComparison.OrdinalIgnoreCase);
         }
 
         private void MarkBroken()
