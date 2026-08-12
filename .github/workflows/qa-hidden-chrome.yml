@@ -32,7 +32,7 @@ jobs:
       - name: Build application
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release --no-restore
 
-      - name: Poll and enumerate through CDP while Chrome is hidden
+      - name: Physically hide Chrome and keep CDP enumeration alive
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -50,7 +50,7 @@ jobs:
           if ($duration -lt 5) { throw 'duration_seconds must be at least 5.' }
           if ($duration -gt 900) { throw 'duration_seconds cannot exceed 900.' }
 
-          Write-Host "Running hidden Chrome CDP probe for $duration seconds."
+          Write-Host "Running native hidden Chrome CDP probe for $duration seconds."
           $probe = Start-Process -FilePath $exe -WorkingDirectory $workingDirectory -ArgumentList @('--qa-hidden-chrome-probe', $duration, $resultPath) -PassThru
           $deadline = (Get-Date).AddSeconds($duration + 120)
           while (-not $probe.HasExited) {
@@ -72,7 +72,12 @@ jobs:
           $result = Get-Content $resultPath -Raw | ConvertFrom-Json
           $minimumPolls = [math]::Max(3, [math]::Floor($duration * 0.70))
           $minimumEnumerations = [math]::Max(3, [math]::Floor($duration * 0.70))
-          if ($result.HideChanged -ne $true) { throw 'Chrome hide/minimize operation was not acknowledged by the production Chrome service.' }
+          if ($result.HideChanged -ne $true) { throw 'Chrome Hide was not acknowledged by the production Chrome service.' }
+          if ($result.ShowChanged -ne $true) { throw 'Chrome Show was not acknowledged by the production Chrome service.' }
+          if ([long]$result.NativeWindowHandle -eq 0) { throw 'Chrome did not expose a native MainWindowHandle to the physical QA probe.' }
+          if ($result.NativeWindowVisibleBeforeHide -ne $true) { throw 'Chrome native window was not visible before Hide.' }
+          if ($result.NativeWindowHiddenAfterHide -ne $true) { throw 'Production Hide did not physically hide the owned Chrome native window.' }
+          if ($result.NativeWindowVisibleAfterShow -ne $true) { throw 'Production Show did not restore the owned Chrome native window.' }
           if ([double]$result.ElapsedSeconds -lt ($duration - 1)) { throw "Probe ended too early: $($result.ElapsedSeconds)s for requested ${duration}s." }
           if ([int]$result.SuccessfulPolls -lt $minimumPolls) { throw "Too few successful hidden CDP polls: $($result.SuccessfulPolls), expected at least $minimumPolls." }
           if ([int]$result.MatchingPolls -ne [int]$result.SuccessfulPolls) { throw "Some successful polls returned unexpected assistant content: matching=$($result.MatchingPolls), successful=$($result.SuccessfulPolls)." }
@@ -83,4 +88,4 @@ jobs:
           if ([int]$result.LastEnumeratedTabCount -lt 1) { throw 'Hidden tab enumeration finished with no visible CDP targets.' }
           if ($result.LastAssistantText -ne 'hidden-cdp-probe-alive') { throw "Unexpected final assistant text: '$($result.LastAssistantText)'." }
 
-          Write-Host "Hidden Chrome CDP verified: duration=$($result.ElapsedSeconds)s, successful=$($result.SuccessfulPolls), failures=$($result.FailedPolls), enumerations=$($result.SuccessfulTabEnumerations), enumerationFailures=$($result.TabEnumerationFailures), hide=$($result.HideChanged), show=$($result.ShowChanged)."
+          Write-Host "Native hidden Chrome verified: duration=$($result.ElapsedSeconds)s, handle=$($result.NativeWindowHandle), visibleBefore=$($result.NativeWindowVisibleBeforeHide), hiddenAfter=$($result.NativeWindowHiddenAfterHide), visibleAfterShow=$($result.NativeWindowVisibleAfterShow), successful=$($result.SuccessfulPolls), failures=$($result.FailedPolls), enumerations=$($result.SuccessfulTabEnumerations), enumerationFailures=$($result.TabEnumerationFailures)."
