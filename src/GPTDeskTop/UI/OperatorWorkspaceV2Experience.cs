@@ -4,7 +4,8 @@ namespace GPTDeskTop.UI;
 
 /// <summary>
 /// GPTDeskTop 2.0 operator workspace: the main surface is reserved for open ChatGPT tabs and
-/// monitor state. Live activity/history and development details remain available on demand.
+/// monitor state. Live activity, history, runtime health and development details remain available
+/// on demand.
 /// </summary>
 internal static class OperatorWorkspaceV2Experience
 {
@@ -28,17 +29,20 @@ internal static class OperatorWorkspaceV2Experience
         if (Installations.TryGetValue(form, out _))
             return true;
 
-        // CompactTopCommandMenuExperience is the command owner. Do not hide the development
-        // dashboard until its buttons have been harvested by the menu proxy.
+        // CompactTopCommandMenuExperience is the command owner. Do not remove development or
+        // runtime-health controls from MainForm until their buttons have been harvested by the
+        // menu proxy.
         if (form.MainMenuStrip is null)
             return false;
 
         var development = Descendants(form).OfType<DevelopmentTaskDashboardControl>().FirstOrDefault();
+        var runtimeHealth = Descendants(form).OfType<RuntimeHealthControl>().FirstOrDefault();
+        var supportDiagnostics = Descendants(form).OfType<SupportDiagnosticsControl>().FirstOrDefault();
         var history = Descendants(form).OfType<HistoryWorkspaceControl>().FirstOrDefault();
         var root = form.Controls
             .OfType<TableLayoutPanel>()
             .FirstOrDefault(candidate => candidate.Dock == DockStyle.Fill && candidate.RowCount == 5 && candidate.ColumnCount == 1);
-        if (development is null || history is null || root is null || root.RowStyles.Count < 5)
+        if (development is null || runtimeHealth is null || supportDiagnostics is null || history is null || root is null || root.RowStyles.Count < 5)
             return false;
 
         var diagnostics = root.Controls
@@ -61,7 +65,13 @@ internal static class OperatorWorkspaceV2Experience
             root.RowStyles[3].Height = 0F;
 
             PrepareHistoryForOnDemand(history);
-            var liveWindow = BuildLiveMonitorWindow(form, diagnostics, history);
+            PrepareRuntimeHealthForOnDemand(runtimeHealth, supportDiagnostics);
+            var liveWindow = BuildLiveMonitorWindow(
+                form,
+                diagnostics,
+                history,
+                runtimeHealth,
+                supportDiagnostics);
             var footerStatus = BuildFooter(root, versionLabel, development);
 
             // Keep the control alive because its existing buttons remain the single command source
@@ -139,7 +149,32 @@ internal static class OperatorWorkspaceV2Experience
         }
     }
 
-    private static Form BuildLiveMonitorWindow(MainForm owner, Control diagnostics, HistoryWorkspaceControl history)
+    private static void PrepareRuntimeHealthForOnDemand(
+        RuntimeHealthControl runtimeHealth,
+        SupportDiagnosticsControl supportDiagnostics)
+    {
+        // Runtime Health used to be a permanent top-docked strip on MainForm. Keep the same
+        // control instance alive for Commands-menu proxies, but let the on-demand tab own where
+        // it is displayed. Do not change IsExpanded here: Program.cs persists that user choice.
+        ExpandableWorkspaceLayout.UseHostManagedHeight(runtimeHealth);
+        runtimeHealth.Parent?.Controls.Remove(runtimeHealth);
+        supportDiagnostics.Parent?.Controls.Remove(supportDiagnostics);
+
+        runtimeHealth.Dock = DockStyle.Top;
+        runtimeHealth.Margin = Padding.Empty;
+        runtimeHealth.MinimumSize = Size.Empty;
+        runtimeHealth.MaximumSize = Size.Empty;
+
+        supportDiagnostics.Dock = DockStyle.Top;
+        supportDiagnostics.Margin = Padding.Empty;
+    }
+
+    private static Form BuildLiveMonitorWindow(
+        MainForm owner,
+        Control diagnostics,
+        HistoryWorkspaceControl history,
+        RuntimeHealthControl runtimeHealth,
+        SupportDiagnosticsControl supportDiagnostics)
     {
         var window = new Form
         {
@@ -157,7 +192,7 @@ internal static class OperatorWorkspaceV2Experience
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
             Padding = new Point(18, 6),
-            AccessibleName = "Live monitor and stored history tabs"
+            AccessibleName = "Live monitor, stored history, and runtime health tabs"
         };
         var livePage = new TabPage("Live Activity")
         {
@@ -169,14 +204,34 @@ internal static class OperatorWorkspaceV2Experience
             BackColor = FluentTheme.Background,
             Padding = new Padding(8)
         };
+        var runtimePage = new TabPage("Runtime Health")
+        {
+            BackColor = FluentTheme.Background,
+            Padding = new Padding(8)
+        };
+        var runtimeHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = FluentTheme.Background,
+            AutoScroll = true,
+            Margin = Padding.Empty
+        };
 
         diagnostics.Dock = DockStyle.Fill;
         diagnostics.Margin = Padding.Empty;
         history.Dock = DockStyle.Fill;
+
         livePage.Controls.Add(diagnostics);
         historyPage.Controls.Add(history);
+        runtimeHost.Controls.Add(supportDiagnostics);
+        runtimeHost.Controls.Add(runtimeHealth);
+        runtimeHost.Controls.SetChildIndex(runtimeHealth, 0);
+        runtimeHost.Controls.SetChildIndex(supportDiagnostics, 1);
+        runtimePage.Controls.Add(runtimeHost);
+
         tabs.TabPages.Add(livePage);
         tabs.TabPages.Add(historyPage);
+        tabs.TabPages.Add(runtimePage);
         window.Controls.Add(tabs);
 
         FluentTheme.Apply(window);
