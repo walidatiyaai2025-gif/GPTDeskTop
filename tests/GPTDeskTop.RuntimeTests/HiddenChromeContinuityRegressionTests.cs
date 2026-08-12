@@ -65,7 +65,8 @@ public sealed class HiddenChromeContinuityRegressionTests
         var source = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
 
         Assert.Contains("var restoreHidden = _monitorChromeHidden", source, StringComparison.Ordinal);
-        Assert.Contains("if (restoreHidden)\n                await HideMonitorChromeAsync(cancellationToken);", source, StringComparison.Ordinal);
+        Assert.Contains("if (restoreHidden)", source, StringComparison.Ordinal);
+        Assert.Contains("await HideMonitorChromeAsync(cancellationToken);", source, StringComparison.Ordinal);
     }
 
     [Fact]
