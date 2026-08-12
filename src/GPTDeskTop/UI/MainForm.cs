@@ -16,6 +16,7 @@ public sealed class MainForm : Form
     private readonly Button _hideChromeButton = new() { Text = "Hide Chrome", AutoSize = true };
     private readonly Button _showChromeButton = new() { Text = "Show Chrome", AutoSize = true };
     private readonly Button _refreshTabsButton = new() { Text = "Refresh", AutoSize = true };
+    private readonly Button _newChatMonitorButton = new() { Text = "New Chat + Monitor", AutoSize = true };
     private readonly Button _addMonitorButton = new() { Text = "Add Monitor", AutoSize = true };
     private readonly Button _monitorSettingsButton = new() { Text = "Edit Monitor", AutoSize = true };
     private readonly Button _quickMonitorSettingsButton = new() { Text = "Edit Selected Monitor", AutoSize = true };
@@ -54,6 +55,7 @@ public sealed class MainForm : Form
     private bool _shutdownRequested;
     private bool _shutdownCompleted;
     private bool _ownedResourcesDisposed;
+    private bool _newChatMonitorWorkflowRunning;
 
     public MainForm(ChromeDevToolsService chrome, ChatGptMonitorService monitor, LocalDatabase database, Func<Task>? reloadNotificationSettings = null)
     {
@@ -74,6 +76,7 @@ public sealed class MainForm : Form
         ConfigureTooltips();
         FluentTheme.Apply(this);
         FluentTheme.StyleButton(_launchChromeButton, primary: true);
+        FluentTheme.StyleButton(_newChatMonitorButton, primary: true);
         FluentTheme.StyleButton(_startAllButton, primary: true);
         FluentTheme.StyleButton(_deleteMonitorButton, danger: true);
         FluentTheme.StyleButton(_quickMonitorSettingsButton, primary: true);
@@ -190,7 +193,7 @@ public sealed class MainForm : Form
             Margin = Padding.Empty
         };
         toolbar.Controls.Add(CreateActionGroup("BROWSER", _launchChromeButton, _hideChromeButton, _showChromeButton, _refreshTabsButton));
-        toolbar.Controls.Add(CreateActionGroup("MONITOR", _addMonitorButton, _monitorSettingsButton, _deleteMonitorButton));
+        toolbar.Controls.Add(CreateActionGroup("MONITOR", _newChatMonitorButton, _addMonitorButton, _monitorSettingsButton, _deleteMonitorButton));
         toolbar.Controls.Add(CreateActionGroup("RUNTIME", _startSelectedButton, _stopSelectedButton, _startAllButton, _stopAllButton));
         toolbar.Controls.Add(CreateActionGroup("APP", _settingsButton));
         return toolbar;
@@ -658,6 +661,7 @@ public sealed class MainForm : Form
         _hideChromeButton.Click += async (_, _) => await HideChromeAsync();
         _showChromeButton.Click += async (_, _) => await ShowChromeAsync();
         _refreshTabsButton.Click += async (_, _) => await RefreshTabsAsync();
+        _newChatMonitorButton.Click += async (_, _) => await CreateNewChatMonitorAsync();
         _addMonitorButton.Click += async (_, _) => await AddSelectedTabAsync();
         _monitorSettingsButton.Click += async (_, _) => await EditSelectedMonitorSettingsAsync();
         _quickMonitorSettingsButton.Click += async (_, _) => await EditSelectedMonitorSettingsAsync();
@@ -695,6 +699,7 @@ public sealed class MainForm : Form
         _toolTip.SetToolTip(_hideChromeButton, "Hide the monitor Chrome window without stopping CDP monitoring.");
         _toolTip.SetToolTip(_showChromeButton, "Show the monitor Chrome window.");
         _toolTip.SetToolTip(_refreshTabsButton, "Refresh the list of currently open ChatGPT conversation tabs. Shortcut: F5.");
+        _toolTip.SetToolTip(_newChatMonitorButton, "Create a fresh ChatGPT conversation, send an initial message, then create and start a monitor with a separate auto reply.");
         _toolTip.SetToolTip(_addMonitorButton, "Create a saved monitor from the selected open ChatGPT conversation(s). Shortcut: Ctrl+N.");
         _toolTip.SetToolTip(_monitorSettingsButton, "Edit the selected monitor. Stop a running monitor before changing its settings. Shortcut: Ctrl+E.");
         _toolTip.SetToolTip(_startAllButton, "Start every enabled saved monitor whose ChatGPT conversation is open.");
@@ -800,6 +805,53 @@ public sealed class MainForm : Form
             await RefreshTabsAsync();
         }
         catch (Exception ex) { ShowError("Chrome Launch Error", ex.Message); }
+    }
+
+    private async Task CreateNewChatMonitorAsync()
+    {
+        if (_newChatMonitorWorkflowRunning) return;
+
+        var initialMessage = await _database.GetSettingAsync("NewChatBootstrapMessage") ?? string.Empty;
+        var monitorAutoReply = await _database.GetSettingAsync("NewChatMonitorAutoReply")
+            ?? await _database.GetSettingAsync("DefaultAutoReply")
+            ?? "كمل";
+
+        if (!NewChatMonitorForm.Edit(
+                this,
+                initialMessage,
+                monitorAutoReply,
+                out var updatedInitialMessage,
+                out var updatedMonitorAutoReply))
+            return;
+
+        await _database.SetSettingAsync("NewChatBootstrapMessage", updatedInitialMessage);
+        await _database.SetSettingAsync("NewChatMonitorAutoReply", updatedMonitorAutoReply);
+
+        _newChatMonitorWorkflowRunning = true;
+        UpdateActionStates();
+        AppendActivity("New Chat + Monitor: creating a fresh ChatGPT conversation and delivering the verified initial message...");
+
+        try
+        {
+            var workflow = new NewChatMonitorWorkflowService(_chrome, _monitor, _database);
+            var result = await workflow.ExecuteAsync(updatedInitialMessage, updatedMonitorAutoReply);
+            await RefreshTabsAsync();
+            await RefreshMonitorsAsync();
+            SelectMonitorRow(result.Monitor.Id);
+            AppendActivity($"New Chat + Monitor complete: monitor #{result.Monitor.Id} is running on {result.ConversationTab.Url}.");
+        }
+        catch (Exception ex)
+        {
+            ExceptionLogService.Log(ex, "MainForm.CreateNewChatMonitor");
+            await RefreshTabsAsync();
+            await RefreshMonitorsAsync();
+            ShowError("New Chat + Monitor Error", ex.Message);
+        }
+        finally
+        {
+            _newChatMonitorWorkflowRunning = false;
+            UpdateActionStates();
+        }
     }
 
     private async Task HideChromeAsync()
@@ -1151,8 +1203,9 @@ public sealed class MainForm : Form
         var hasMonitor = _selectedMonitor is not null;
         var selectedRunning = hasMonitor && _monitor.IsMonitorRunning(_selectedMonitor!.Id);
 
-        _addMonitorButton.Enabled = hasTab;
-        _monitorSettingsButton.Enabled = hasMonitor && !selectedRunning;
+        _newChatMonitorButton.Enabled = !_newChatMonitorWorkflowRunning && !_shutdownRequested;
+        _addMonitorButton.Enabled = hasTab && !_newChatMonitorWorkflowRunning;
+        _monitorSettingsButton.Enabled = hasMonitor && !selectedRunning && !_newChatMonitorWorkflowRunning;
         _quickMonitorSettingsButton.Enabled = hasMonitor && !selectedRunning;
         _deleteMonitorButton.Enabled = hasMonitor;
         _startSelectedButton.Enabled = hasMonitor && !selectedRunning;
