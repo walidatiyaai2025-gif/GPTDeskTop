@@ -1,0 +1,46 @@
+name: RST-001 Apply Scoped Patch
+
+on:
+  push:
+    branches:
+      - agent/rst-001-resume-last-working-state
+    paths:
+      - tools/apply-rst-001.ps1
+      - .github/workflows/rst-001-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: agent/rst-001-resume-last-working-state
+          fetch-depth: 0
+
+      - name: Apply RST-001 source patch
+        shell: pwsh
+        run: ./tools/apply-rst-001.ps1
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Validate patched runtime tests
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore
+
+      - name: Commit patched source
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/GPTDeskTop/Program.cs src/GPTDeskTop/UI/MainForm.cs src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskRuntimeCoordinator.cs src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskRuntimeBinding.cs
+          if (git diff --cached --quiet) { throw 'RST-001 patch produced no source changes.' }
+          git commit -m "feat: resume last working state after restart [skip ci]"
+          git push origin HEAD:agent/rst-001-resume-last-working-state
