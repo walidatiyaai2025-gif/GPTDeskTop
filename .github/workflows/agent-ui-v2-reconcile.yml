@@ -1,0 +1,45 @@
+name: Agent UI v2 reconcile
+
+on:
+  push:
+    branches:
+      - agent/ui-live-monitor-recovery-v2
+    paths:
+      - .github/workflows/agent-ui-v2-reconcile.yml
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    if: "${{ github.event.head_commit.message == 'chore: reconcile ui v2 onto latest main' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout latest-main branch base
+        uses: actions/checkout@v4
+        with:
+          ref: agent/ui-live-monitor-recovery-v2
+          fetch-depth: 0
+
+      - name: Recover asserted patch and new files from pre-221 snapshot
+        run: |
+          git fetch origin agent/ui-live-monitor-recovery-v2-pre221
+          mkdir -p .agent src/GPTDeskTop/UI tests/GPTDeskTop.RuntimeTests
+          git show FETCH_HEAD:.agent/apply_ui_v2_patch.py > .agent/apply_ui_v2_patch.py
+          git show FETCH_HEAD:src/GPTDeskTop/UI/OperatorWorkspaceV2Experience.cs > src/GPTDeskTop/UI/OperatorWorkspaceV2Experience.cs
+          git show FETCH_HEAD:tests/GPTDeskTop.RuntimeTests/OperatorWorkspaceV2RegressionTests.cs > tests/GPTDeskTop.RuntimeTests/OperatorWorkspaceV2RegressionTests.cs
+
+      - name: Apply asserted patch to latest main
+        run: python3 .agent/apply_ui_v2_patch.py
+
+      - name: Validate reconciled diff
+        run: git diff --check
+
+      - name: Commit reconciled implementation
+        run: |
+          rm -rf .agent
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: ship dashboard-first monitoring and recovery v2"
+          git push origin HEAD:agent/ui-live-monitor-recovery-v2
