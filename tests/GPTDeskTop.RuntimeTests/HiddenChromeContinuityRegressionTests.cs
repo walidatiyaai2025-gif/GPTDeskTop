@@ -97,4 +97,23 @@ public sealed class HiddenChromeContinuityRegressionTests
         Assert.Contains("$result.LastEnumeratedTabCount", workflow, StringComparison.Ordinal);
         Assert.Contains("Open Conversations target disappeared during hidden enumeration", workflow, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void PhysicalProbeRequiresNativeVisibleHiddenVisibleTransition()
+    {
+        var probe = ReadSource("src", "GPTDeskTop", "Services", "HiddenChromeProcessProbe.cs");
+        var workflow = ReadSource(".github", "workflows", "qa-hidden-chrome.yml");
+
+        Assert.Contains("AttachOwnedMonitorProcessForProbe(chrome, process)", probe, StringComparison.Ordinal);
+        Assert.Contains("GetField(\"_monitorChromeProcess\"", probe, StringComparison.Ordinal);
+        Assert.Contains("WaitForMainWindowHandleAsync(process)", probe, StringComparison.Ordinal);
+        Assert.Contains("IsWindowVisible", probe, StringComparison.Ordinal);
+        Assert.Contains("NativeWindowVisibleBeforeHide", probe, StringComparison.Ordinal);
+        Assert.Contains("NativeWindowHiddenAfterHide", probe, StringComparison.Ordinal);
+        Assert.Contains("NativeWindowVisibleAfterShow", probe, StringComparison.Ordinal);
+        Assert.Contains("$result.NativeWindowVisibleBeforeHide", workflow, StringComparison.Ordinal);
+        Assert.Contains("$result.NativeWindowHiddenAfterHide", workflow, StringComparison.Ordinal);
+        Assert.Contains("$result.NativeWindowVisibleAfterShow", workflow, StringComparison.Ordinal);
+        Assert.Contains("Production Hide did not physically hide the owned Chrome native window", workflow, StringComparison.Ordinal);
+    }
 }
