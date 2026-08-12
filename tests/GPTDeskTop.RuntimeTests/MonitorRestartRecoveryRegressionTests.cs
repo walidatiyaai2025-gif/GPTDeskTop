@@ -79,7 +79,10 @@ public sealed class MonitorRestartRecoveryRegressionTests
         Assert.Contains("sendFollowUpWhenRecreated: true", start, StringComparison.Ordinal);
         Assert.Contains("tab = recovery.Tab", start, StringComparison.Ordinal);
         Assert.Contains("await _monitor.StartMonitorAsync(monitor, tab)", start, StringComparison.Ordinal);
-        Assert.DoesNotContain("matching tab not open.\");\n            return;", start, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "AppendActivity($\"Monitor #{monitor.Id}: matching tab not open.\");",
+            start,
+            StringComparison.Ordinal);
     }
 
     [Fact]
