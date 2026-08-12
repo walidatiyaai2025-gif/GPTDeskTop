@@ -326,20 +326,7 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
         }
 
         private static bool IsTargetLifecycleError(JsonElement error)
-        {
-            var message = error.TryGetProperty("message", out var messageElement)
-                ? messageElement.GetString() ?? string.Empty
-                : error.ToString();
-
-            return message.Contains("Inspected target navigated or closed", StringComparison.OrdinalIgnoreCase)
-                   || message.Contains("No target with given id", StringComparison.OrdinalIgnoreCase)
-                   || message.Contains("Target closed", StringComparison.OrdinalIgnoreCase)
-                   || message.Contains("Session closed", StringComparison.OrdinalIgnoreCase)
-                   || message.Contains("Execution context was destroyed", StringComparison.OrdinalIgnoreCase)
-                   || message.Contains("Cannot find context with specified id", StringComparison.OrdinalIgnoreCase)
-                   || message.Contains("Cannot find default execution context", StringComparison.OrdinalIgnoreCase)
-                   || message.Contains("page, context or browser has been closed", StringComparison.OrdinalIgnoreCase);
-        }
+            => ChromeTransportFailureClassifier.IsTargetLifecycleError(error);
 
         private void MarkBroken()
         {
