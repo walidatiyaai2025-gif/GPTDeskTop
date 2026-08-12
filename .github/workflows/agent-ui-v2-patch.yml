@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'chore: bootstrap v2 patch workflow'
+    if: "${{ github.event.head_commit.message == 'chore: bootstrap v2 patch workflow' }}"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
