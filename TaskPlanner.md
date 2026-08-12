@@ -47,11 +47,11 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 | CRASH-003 | Reopen all saved monitor tabs and send recovery message after crash | Browser / Backend | High | Done | `CrashRecoveryService.cs` |
 | CRASH-004 | Rebind saved monitors to recreated Chrome Tab IDs and restart enabled workers | Backend Engineer | High | Done | `CrashRecoveryService.cs` |
 | CRASH-005 | Provide process-level force-kill/relaunch QA probe and deterministic recovery runtime adapter | Backend / QA | High | Done | `CrashRecoveryProcessProbe.cs`, `ICrashRecoveryRuntime.cs`, crash QA workflow/tests |
-| CHR-001 | Improve Hide/Show using CDP window state plus native hide fallback | Browser Integration | High | Done | `ChromeDevToolsService.cs` |
+| CHR-001 | Initial Hide/Show lifecycle support; native-first ordering is superseded and hardened by CHR-004 | Browser Integration | High | Done | `ChromeDevToolsService.cs` |
 | CHR-002 | Close monitor tabs when application exits | Browser Integration | High | Done | Main/Chrome services |
 | CHR-004 | Prefer native Hide/Show, disable hidden-window throttling, add endpoint grace before destructive recovery and suppress expected Browser.close socket teardown | Browser / Backend | High | Done | `ChromeDevToolsService.cs`, `docs/work/CHR-004.md` |
 | CHR-005 | Keep the Open Conversations target enumerable while Chrome is hidden and fail QA if target discovery disappears | Browser / QA | High | Done | `HiddenChromeProcessProbe.cs`, `qa-hidden-chrome.yml`, `docs/work/CHR-005.md` |
-| CHR-006 | Physically verify the owned Chrome native window transitions visible -> hidden -> visible while polling and Open Conversations enumeration stay alive | Browser / QA | High | In Progress | `HiddenChromeProcessProbe.cs`, `qa-hidden-chrome.yml`, `docs/work/CHR-006.md` |
+| CHR-006 | Physically verify the owned Chrome native window transitions visible -> hidden -> visible while polling and Open Conversations enumeration stay alive | Browser / QA | High | Done | `HiddenChromeProcessProbe.cs`, `qa-hidden-chrome.yml`, `docs/work/CHR-006.md` |
 | UI-001 | Fluent/WinUI-inspired WinForms visual system | UI Developer | High | Done | `FluentTheme.cs`, forms |
 | UI-002 | Right-click menus for Open Tabs / Saved Monitors / History | UI Developer | Medium | Done | `MainForm.cs` |
 | UI-003 | Green/red runtime lamp in monitor Status column | UI Developer | Medium | Done | `HomeMetricsService.cs` |
@@ -76,12 +76,14 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 | QA-008 | Verify development task engine survives restart while Working and Cooling without duplicate MessageReady events | QA Engineer | High | Automated | Runtime automation tests |
 | QA-009 | Lock conversation-limit rotation retry behavior, new-chat-only recovery reload, and deferred recovery send semantics with regression tests | QA / Backend | High | Automated | `ChatGptRotationHandoffRegressionTests.cs` |
 | QA-010 | Source-contract regression: monitor loop contains no elapsed-time refresh trigger, generic recovery requires current structured ErrorText, and Chrome state detection never scans arbitrary body history for current errors | QA / Backend | High | Automated / Green | `ChatMonitorErrorDrivenWaitRegressionTests.cs` |
-| QA-011 | Verify the production-owned native Chrome window is truly hidden/restored while `GetTabsAsync()` and chat-state polling stay healthy | QA / Browser | High | In Progress | `HiddenChromeProcessProbe.cs`, `qa-hidden-chrome.yml` |
+| QA-011 | Verify the production-owned native Chrome window is truly hidden/restored while `GetTabsAsync()` and chat-state polling stay healthy | QA / Browser | High | Automated / Green | `HiddenChromeProcessProbe.cs`, `qa-hidden-chrome.yml` |
 
 ## CI Validation
 The current stable source baseline is `62dc7e940a0f8e0b6eff95c988bea94e3fc6818c` (stable build ID `62dc7e94`). All eight required GitHub Actions workflows passed for that exact source commit, including `QA Hidden Chrome CDP`; the stable publisher then wrote the validated self-contained Windows x64 executable into `Last release/GPTDeskTop.exe` and recorded the 8/8 receipt in `Last release/RELEASE.txt`. CHR-005 is therefore verified: Open Conversations target enumeration remains present during the hidden-window smoke while CDP page-state polling continues.
 
-QA-005 also completed successfully on the dedicated real Windows/Chrome/CDP endurance run from commit `d87fcacf`: **610.6930764 seconds**, **606 successful hidden-window CDP polls**, **0 failed polls**, `HideChanged=True`, `ShowChanged=True`, with every successful poll returning the expected monitored content. The regular push workflow remains a 30-second smoke while `workflow_dispatch` retains the 610-second endurance option. CHR-006 / QA-011 now strengthens this gate by requiring a real native-window visibility receipt in addition to polling and tab enumeration.
+CHR-006 / QA-011 was verified on PR #224: all eight established PR workflows passed, including the physical Windows/Chrome gate that requires the production-owned native window to transition `visible -> hidden -> visible` while `GetTabsAsync()` target enumeration and chat-state polling remain healthy. The PR is eligible for merge once this documentation reconciliation head is green.
+
+QA-005 also completed successfully on the dedicated real Windows/Chrome/CDP endurance run from commit `d87fcacf`: **610.6930764 seconds**, **606 successful hidden-window CDP polls**, **0 failed polls**, `HideChanged=True`, `ShowChanged=True`, with every successful poll returning the expected monitored content. The regular push workflow remains a 30-second smoke while `workflow_dispatch` retains the 610-second endurance option.
 
 MON-007 was validated on PR #87 head `98fa2d427abf3fd70a5411137d182734bc8c8925` and squash-merged to `main` as `1b4a42e062efd49f38233e5b2ea6f89067b22eda`. All eight required PR workflows were green: Build GPTDeskTop #432, QA Passive Chat Wait #196, QA Release x64 #220, QA Hidden Chrome CDP #202, QA Crash Process Recovery #210, Development Delivery Receipts #310, Development Task Recovery #306, and Development Message Reload #145. The replacement passive-wait gate keeps the legacy 30-second setting in the database but requires zero time-driven reloads, validates a 40-second generating response on the same page load, rejects historical conversation text as a current error signal, and separately requires one explicit-error-driven refresh.
 
@@ -106,7 +108,7 @@ Other validated gates include force-kill/relaunch crash recovery, persisted sche
 - Fatal crashes attempt one automatic restart without entering a restart loop.
 - When an owned Chrome native window handle is available, Hide uses native `SW_HIDE` and Show restores the same window; CDP minimize/normal is fallback-only.
 - While Chrome is native-hidden, the expected Open Conversations target remains enumerable through `GetTabsAsync()` and production CDP state polling continues for the entire probe interval.
-- Physical Chrome QA requires a real `visible -> hidden -> visible` native-window transition before CHR-006 / QA-011 can be marked complete.
+- Physical Chrome QA requires a real `visible -> hidden -> visible` native-window transition and CHR-006 / QA-011 is now automated and green.
 - Hidden Chrome does not stop production CDP polling; the completed endurance receipt remains 610.693 seconds with 606 successful polls and zero failures.
 - Saved Monitors map Running to a green bold `● Running` lamp and Stopped to a red bold `● Stopped` lamp.
 - Home displays persistent Crash Count and live/total Monitor Count cards from the shared presentation model.
