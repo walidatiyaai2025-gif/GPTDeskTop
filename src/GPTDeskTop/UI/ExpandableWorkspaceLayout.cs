@@ -161,5 +161,7 @@ internal static class ExpandableWorkspaceLayout
         internal bool ExpandableHooked { get; set; }
     }
 
-    private sealed class CompactOperatorRegistration;
+    private sealed class CompactOperatorRegistration
+    {
+    }
 }
