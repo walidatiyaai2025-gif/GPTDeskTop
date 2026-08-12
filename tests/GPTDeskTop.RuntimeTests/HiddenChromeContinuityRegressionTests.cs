@@ -78,4 +78,23 @@ public sealed class HiddenChromeContinuityRegressionTests
         Assert.Contains("current is WebSocketException or ObjectDisposedException", source, StringComparison.Ordinal);
         Assert.Contains("ExceptionLogService.Log(ex, \"ChromeDevToolsService.CloseMonitorBrowser\")", source, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void HiddenProbeContinuouslyEnumeratesTargetsUsedByOpenConversations()
+    {
+        var probe = ReadSource("src", "GPTDeskTop", "Services", "HiddenChromeProcessProbe.cs");
+        var workflow = ReadSource(".github", "workflows", "qa-hidden-chrome.yml");
+
+        Assert.Contains("await chrome.GetTabsAsync()", probe, StringComparison.Ordinal);
+        Assert.Contains("SuccessfulTabEnumerations", probe, StringComparison.Ordinal);
+        Assert.Contains("MatchingTabEnumerations", probe, StringComparison.Ordinal);
+        Assert.Contains("TabEnumerationFailures", probe, StringComparison.Ordinal);
+        Assert.Contains("LastEnumeratedTabCount", probe, StringComparison.Ordinal);
+        Assert.Contains("tab = liveTab", probe, StringComparison.Ordinal);
+        Assert.Contains("$result.SuccessfulTabEnumerations", workflow, StringComparison.Ordinal);
+        Assert.Contains("$result.MatchingTabEnumerations", workflow, StringComparison.Ordinal);
+        Assert.Contains("$result.TabEnumerationFailures", workflow, StringComparison.Ordinal);
+        Assert.Contains("$result.LastEnumeratedTabCount", workflow, StringComparison.Ordinal);
+        Assert.Contains("Open Conversations target disappeared during hidden enumeration", workflow, StringComparison.Ordinal);
+    }
 }
