@@ -1,0 +1,233 @@
+using GPTDeskTop.Data;
+using GPTDeskTop.Models;
+
+namespace GPTDeskTop.Services;
+
+public sealed record NewChatMonitorWorkflowResult(SavedMonitor Monitor, ChromeTab ConversationTab);
+
+public sealed class NewChatMonitorWorkflowService
+{
+    private readonly ChromeDevToolsService _chrome;
+    private readonly ChatGptMonitorService _monitor;
+    private readonly LocalDatabase _database;
+
+    public NewChatMonitorWorkflowService(
+        ChromeDevToolsService chrome,
+        ChatGptMonitorService monitor,
+        LocalDatabase database)
+    {
+        _chrome = chrome;
+        _monitor = monitor;
+        _database = database;
+    }
+
+    public async Task<NewChatMonitorWorkflowResult> ExecuteAsync(
+        string initialChatMessage,
+        string monitorAutoReply,
+        CancellationToken cancellationToken = default)
+    {
+        initialChatMessage = RequireMessage(initialChatMessage, "Initial Chat Message");
+        monitorAutoReply = RequireMessage(monitorAutoReply, "Monitor Auto Reply");
+
+        var restoreHiddenChrome = string.Equals(
+            await _database.GetSettingAsync("ChromeHidden", cancellationToken).ConfigureAwait(false),
+            "1",
+            StringComparison.Ordinal);
+
+        ChromeTab? openedTab = null;
+        try
+        {
+            openedTab = await CreateFreshChatTabAsync(cancellationToken).ConfigureAwait(false);
+            var sent = await SendInitialMessageVerifiedAsync(openedTab, initialChatMessage, cancellationToken).ConfigureAwait(false);
+            if (!sent)
+                throw new InvalidOperationException("ChatGPT did not produce a verified user-message receipt for the initial chat message.");
+
+            var stableTab = await ResolveStableConversationAsync(openedTab, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("The new ChatGPT target did not expose a stable conversation URL after verified delivery. No monitor was created.");
+
+            var savedMonitor = await BuildMonitorAsync(stableTab, monitorAutoReply, cancellationToken).ConfigureAwait(false);
+            var registration = await _database.RegisterMonitorIfConversationAvailableAsync(savedMonitor, cancellationToken).ConfigureAwait(false);
+            if (!registration.Created)
+                throw new InvalidOperationException($"The new conversation is already owned by saved monitor #{registration.MonitorId}. A second monitor was not created.");
+
+            savedMonitor.Id = registration.MonitorId;
+            await _database.AddLogAsync(
+                "Outbound",
+                initialChatMessage,
+                string.Empty,
+                "NewChatBootstrapSent",
+                savedMonitor.Id,
+                stableTab.Id,
+                stableTab.Title,
+                cancellationToken).ConfigureAwait(false);
+
+            await _monitor.StartMonitorAsync(savedMonitor, stableTab).ConfigureAwait(false);
+            if (!_monitor.IsMonitorRunning(savedMonitor.Id))
+                throw new InvalidOperationException($"Monitor #{savedMonitor.Id} was saved but could not be started on the verified new conversation.");
+
+            await LastWorkingStateService.SetMonitorDesiredRunningAsync(
+                _database,
+                savedMonitor.Id,
+                true,
+                cancellationToken).ConfigureAwait(false);
+
+            return new NewChatMonitorWorkflowResult(savedMonitor, stableTab);
+        }
+        finally
+        {
+            if (restoreHiddenChrome)
+            {
+                try { await _chrome.HideMonitorChromeAsync(cancellationToken).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    ExceptionLogService.Log(ex, "NewChatMonitorWorkflow.RestoreChromeVisibility");
+                }
+            }
+        }
+    }
+
+    private async Task<ChromeTab> CreateFreshChatTabAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var existingTabs = await _chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
+            if (existingTabs.Count > 0)
+                return await _chrome.CreateNewChatTabAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ExceptionLogService.Log(ex, "NewChatMonitorWorkflow.ReadChromeBeforeLaunch");
+        }
+
+        _chrome.LaunchMonitorChrome();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        Exception? lastError = null;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var tabs = await _chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
+                if (tabs.Count > 0)
+                    return await _chrome.CreateNewChatTabAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                lastError = ex;
+            }
+
+            await Task.Delay(500, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new TimeoutException($"Monitor Chrome did not become ready for a new ChatGPT conversation within 30 seconds.{(lastError is null ? string.Empty : $" Last error: {lastError.Message}")}");
+    }
+
+    private async Task<bool> SendInitialMessageVerifiedAsync(
+        ChromeTab tab,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                if (await _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken).ConfigureAwait(false))
+                    return true;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                ExceptionLogService.Log(ex, $"NewChatMonitorWorkflow.InitialSendAttempt{attempt}");
+            }
+
+            if (attempt == 1)
+            {
+                try
+                {
+                    await _chrome.ReloadTabAsync(tab, cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    ExceptionLogService.Log(ex, "NewChatMonitorWorkflow.InitialSendReload");
+                }
+            }
+            else if (attempt < 3)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        return false;
+    }
+
+    private async Task<ChromeTab?> ResolveStableConversationAsync(
+        ChromeTab openedTab,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(20);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var tabs = await _chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
+                var current = tabs.FirstOrDefault(tab => string.Equals(tab.Id, openedTab.Id, StringComparison.Ordinal));
+                if (current is not null && RuntimeHealthPresentation.IsChatGptConversationUrl(current.Url))
+                    return current;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                ExceptionLogService.Log(ex, "NewChatMonitorWorkflow.ResolveStableConversation");
+            }
+
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+        }
+
+        return null;
+    }
+
+    private async Task<SavedMonitor> BuildMonitorAsync(
+        ChromeTab stableTab,
+        string monitorAutoReply,
+        CancellationToken cancellationToken)
+    {
+        var defaultDelay = await _database.GetIntSettingAsync("DefaultMonitorDelaySeconds", 3, 0, 300, cancellationToken).ConfigureAwait(false);
+        var defaultTimer = await _database.GetIntSettingAsync("DefaultMonitorTimerSeconds", 1, 1, 60, cancellationToken).ConfigureAwait(false);
+        var rotationEnabled = string.Equals(await _database.GetSettingAsync("DefaultConversationRotationEnabled", cancellationToken).ConfigureAwait(false), "1", StringComparison.Ordinal);
+        var newChatStartMessage = await _database.GetSettingAsync("DefaultNewChatStartMessage", cancellationToken).ConfigureAwait(false) ?? "كمل";
+        var newChatDelay = await _database.GetIntSettingAsync("DefaultNewChatDelaySeconds", 30, 0, 600, cancellationToken).ConfigureAwait(false);
+        var rotationCooldown = await _database.GetIntSettingAsync("DefaultRotationCooldownSeconds", 60, 0, 3600, cancellationToken).ConfigureAwait(false);
+        var maxRotations = await _database.GetIntSettingAsync("DefaultMaxConversationRotations", 0, 0, 1000, cancellationToken).ConfigureAwait(false);
+        var modelRoutingEnabled = string.Equals(await _database.GetSettingAsync("DefaultModelRoutingEnabled", cancellationToken).ConfigureAwait(false), "1", StringComparison.Ordinal);
+        var preferredModel = await _database.GetSettingAsync("DefaultPreferredModel", cancellationToken).ConfigureAwait(false) ?? "Auto";
+        var fallbackModel = await _database.GetSettingAsync("DefaultFallbackModel", cancellationToken).ConfigureAwait(false) ?? preferredModel;
+
+        return new SavedMonitor
+        {
+            TabId = stableTab.Id,
+            Title = string.IsNullOrWhiteSpace(stableTab.Title) ? "ChatGPT conversation" : stableTab.Title,
+            Url = stableTab.Url,
+            AutoReply = monitorAutoReply,
+            ReplyDelaySeconds = defaultDelay,
+            TimerSeconds = defaultTimer,
+            Enabled = true,
+            ConversationRotationEnabled = rotationEnabled,
+            NewChatStartMessage = string.IsNullOrWhiteSpace(newChatStartMessage) ? "كمل" : newChatStartMessage,
+            NewChatDelaySeconds = newChatDelay,
+            RotationCooldownSeconds = rotationCooldown,
+            MaxConversationRotations = maxRotations,
+            ModelRoutingEnabled = modelRoutingEnabled,
+            PreferredModel = string.IsNullOrWhiteSpace(preferredModel) ? "Auto" : preferredModel,
+            FallbackModel = string.IsNullOrWhiteSpace(fallbackModel) ? "Auto" : fallbackModel
+        };
+    }
+
+    private static string RequireMessage(string value, string fieldName)
+    {
+        var message = value?.Trim() ?? string.Empty;
+        if (message.Length == 0)
+            throw new ArgumentException($"{fieldName} cannot be empty.", fieldName);
+        return message;
+    }
+}
