@@ -17,11 +17,13 @@ public sealed class LastWorkingStatePersistenceTests
             await database.InitializeAsync();
 
             await LastWorkingStateService.ReplaceDesiredMonitorIdsAsync(database, [7, 2, 7, -1, 0]);
-            Assert.Equal([2L, 7L], await LastWorkingStateService.GetDesiredMonitorIdsAsync(database));
+            var initialIds = await LastWorkingStateService.GetDesiredMonitorIdsAsync(database);
+            Assert.Equal(new long[] { 2, 7 }, initialIds);
 
             await LastWorkingStateService.SetMonitorDesiredRunningAsync(database, 4, true);
             await LastWorkingStateService.SetMonitorDesiredRunningAsync(database, 2, false);
-            Assert.Equal([4L, 7L], await LastWorkingStateService.GetDesiredMonitorIdsAsync(database));
+            var updatedIds = await LastWorkingStateService.GetDesiredMonitorIdsAsync(database);
+            Assert.Equal(new long[] { 4, 7 }, updatedIds);
 
             await LastWorkingStateService.ClearDesiredMonitorsAsync(database);
             Assert.Empty(await LastWorkingStateService.GetDesiredMonitorIdsAsync(database));
