@@ -34,10 +34,11 @@ internal static class OperatorWorkspaceV2Experience
             return false;
 
         var development = Descendants(form).OfType<DevelopmentTaskDashboardControl>().FirstOrDefault();
+        var history = Descendants(form).OfType<HistoryWorkspaceControl>().FirstOrDefault();
         var root = form.Controls
             .OfType<TableLayoutPanel>()
             .FirstOrDefault(candidate => candidate.Dock == DockStyle.Fill && candidate.RowCount == 5 && candidate.ColumnCount == 1);
-        if (development is null || root is null || root.RowStyles.Count < 5)
+        if (development is null || history is null || root is null || root.RowStyles.Count < 5)
             return false;
 
         var diagnostics = root.Controls
@@ -50,6 +51,7 @@ internal static class OperatorWorkspaceV2Experience
             return false;
 
         root.SuspendLayout();
+        form.SuspendLayout();
         try
         {
             root.Controls.Remove(diagnostics);
@@ -58,7 +60,8 @@ internal static class OperatorWorkspaceV2Experience
             root.RowStyles[3].SizeType = SizeType.Absolute;
             root.RowStyles[3].Height = 0F;
 
-            var liveWindow = BuildLiveMonitorWindow(form, diagnostics);
+            PrepareHistoryForOnDemand(history);
+            var liveWindow = BuildLiveMonitorWindow(form, diagnostics, history);
             var footerStatus = BuildFooter(root, versionLabel, development);
 
             // Keep the control alive because its existing buttons remain the single command source
@@ -79,6 +82,7 @@ internal static class OperatorWorkspaceV2Experience
         finally
         {
             root.ResumeLayout(true);
+            form.ResumeLayout(true);
         }
 
         return true;
@@ -99,7 +103,43 @@ internal static class OperatorWorkspaceV2Experience
         installation.LiveWindow.Activate();
     }
 
-    private static Form BuildLiveMonitorWindow(MainForm owner, Control diagnostics)
+    private static void PrepareHistoryForOnDemand(HistoryWorkspaceControl history)
+    {
+        // Stored History used to own a permanent 56/330px strip on MainForm. In v2 it is a
+        // full-height on-demand surface, so the tab host owns its dimensions instead.
+        ExpandableWorkspaceLayout.UseHostManagedHeight(history);
+        history.Parent?.Controls.Remove(history);
+        history.Dock = DockStyle.Fill;
+        history.Margin = Padding.Empty;
+        history.MinimumSize = Size.Empty;
+        history.MaximumSize = Size.Empty;
+
+        // Show the existing history body without mutating IsExpanded. That property is persisted
+        // by Program.cs; opening/re-hosting the on-demand window must not rewrite user settings.
+        var bodyLayout = Descendants(history)
+            .OfType<TableLayoutPanel>()
+            .FirstOrDefault(layout =>
+                layout.RowCount == 2 &&
+                layout.RowStyles.Count >= 2 &&
+                layout.RowStyles[0].SizeType == SizeType.Absolute &&
+                Math.Abs(layout.RowStyles[0].Height - 46F) < 0.1F);
+        if (bodyLayout?.Parent is { } historyBody)
+            historyBody.Visible = true;
+
+        var toggle = Descendants(history)
+            .OfType<Button>()
+            .FirstOrDefault(button => string.Equals(
+                button.AccessibleName,
+                "Expand or collapse stored history explorer",
+                StringComparison.Ordinal));
+        if (toggle is not null)
+        {
+            toggle.Visible = false;
+            toggle.TabStop = false;
+        }
+    }
+
+    private static Form BuildLiveMonitorWindow(MainForm owner, Control diagnostics, HistoryWorkspaceControl history)
     {
         var window = new Form
         {
@@ -112,9 +152,33 @@ internal static class OperatorWorkspaceV2Experience
             BackColor = FluentTheme.Background
         };
 
+        var tabs = new TabControl
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = new Point(18, 6),
+            AccessibleName = "Live monitor and stored history tabs"
+        };
+        var livePage = new TabPage("Live Activity")
+        {
+            BackColor = FluentTheme.Background,
+            Padding = new Padding(8)
+        };
+        var historyPage = new TabPage("Stored History")
+        {
+            BackColor = FluentTheme.Background,
+            Padding = new Padding(8)
+        };
+
         diagnostics.Dock = DockStyle.Fill;
         diagnostics.Margin = Padding.Empty;
-        window.Controls.Add(diagnostics);
+        history.Dock = DockStyle.Fill;
+        livePage.Controls.Add(diagnostics);
+        historyPage.Controls.Add(history);
+        tabs.TabPages.Add(livePage);
+        tabs.TabPages.Add(historyPage);
+        window.Controls.Add(tabs);
+
         FluentTheme.Apply(window);
         return window;
     }

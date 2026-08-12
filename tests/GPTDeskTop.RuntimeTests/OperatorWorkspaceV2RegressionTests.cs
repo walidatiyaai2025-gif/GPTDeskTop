@@ -25,6 +25,35 @@ public sealed class OperatorWorkspaceV2RegressionTests
     }
 
     [Fact]
+    public void StoredHistoryIsRemovedFromMainAndRehostedAsOnDemandTab()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "OperatorWorkspaceV2Experience.cs");
+
+        Assert.Contains("OfType<HistoryWorkspaceControl>()", source, StringComparison.Ordinal);
+        Assert.Contains("PrepareHistoryForOnDemand(history)", source, StringComparison.Ordinal);
+        Assert.Contains("history.Parent?.Controls.Remove(history)", source, StringComparison.Ordinal);
+        Assert.Contains("ExpandableWorkspaceLayout.UseHostManagedHeight(history)", source, StringComparison.Ordinal);
+        Assert.Contains("new TabControl", source, StringComparison.Ordinal);
+        Assert.Contains("new TabPage(\"Live Activity\")", source, StringComparison.Ordinal);
+        Assert.Contains("new TabPage(\"Stored History\")", source, StringComparison.Ordinal);
+        Assert.Contains("historyPage.Controls.Add(history)", source, StringComparison.Ordinal);
+        Assert.Contains("history.Dock = DockStyle.Fill", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RehostingHistoryDoesNotMutatePersistedExpandedState()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "OperatorWorkspaceV2Experience.cs");
+        var prepareStart = source.IndexOf("private static void PrepareHistoryForOnDemand", StringComparison.Ordinal);
+        var windowStart = source.IndexOf("private static Form BuildLiveMonitorWindow", prepareStart, StringComparison.Ordinal);
+        var prepare = source[prepareStart..windowStart];
+
+        Assert.Contains("historyBody.Visible = true", prepare, StringComparison.Ordinal);
+        Assert.Contains("toggle.Visible = false", prepare, StringComparison.Ordinal);
+        Assert.DoesNotContain("history.IsExpanded =", prepare, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CommandsMenuOpensLiveMonitorWindowAndKeepsMessagesOnDemand()
     {
         var menu = ReadSource("src", "GPTDeskTop", "UI", "CompactTopCommandMenuExperience.cs");
