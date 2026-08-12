@@ -47,7 +47,9 @@ public sealed class CompactTopCommandMenuUiRegressionTests
 
         Assert.Contains("Tag = source", source, StringComparison.Ordinal);
         Assert.Contains("InvokeButtonCommand(source)", source, StringComparison.Ordinal);
-        Assert.Contains("GetMethod(\n                \"OnClick\"", source, StringComparison.Ordinal);
+        Assert.Contains("source.GetType().GetMethod(", source, StringComparison.Ordinal);
+        Assert.Contains("\"OnClick\"", source, StringComparison.Ordinal);
+        Assert.Contains("BindingFlags.Instance | BindingFlags.NonPublic", source, StringComparison.Ordinal);
         Assert.Contains("menuItem.Enabled = source.Enabled", source, StringComparison.Ordinal);
         Assert.Contains("The existing Buttons remain the single command/event source", source, StringComparison.Ordinal);
     }
