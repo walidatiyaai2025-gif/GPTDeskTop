@@ -247,6 +247,39 @@ internal static class Program
                                     $"Instance takeover resumed {reconciliation.ResumedCount}/{reconciliation.RequestedCount} requested monitors. Incomplete outcomes: {summary}"),
                                 "Program.InstanceHandoffResumeIncomplete");
                         }
+
+                        await LastWorkingStateService.ReplaceDesiredMonitorIdsAsync(
+                            database,
+                            takeover.RunningMonitorIds);
+                    }
+                    else
+                    {
+                        var resume = await LastWorkingStateService.ResumeDesiredMonitorsAsync(
+                            chrome,
+                            monitor,
+                            database);
+                        if (resume.IncompleteCount > 0)
+                        {
+                            var summary = string.Join(
+                                "; ",
+                                resume.Outcomes
+                                    .Where(outcome => !string.Equals(outcome.Status, "Resumed", StringComparison.Ordinal))
+                                    .Select(outcome => $"{outcome.MonitorId}:{outcome.Reason}"));
+                            await ExceptionLogService.LogAsync(
+                                new InvalidOperationException(
+                                    $"Restart resume restored {resume.ResumedCount}/{resume.RequestedCount} desired monitors. Incomplete outcomes: {summary}"),
+                                "Program.LastWorkingStateResumeIncomplete");
+                        }
+                    }
+
+                    if (developmentRuntime is not null)
+                    {
+                        var developmentResumed = await developmentRuntime.ResumeIfActiveAsync();
+                        await database.SetSettingAsync(
+                            "Runtime.DevelopmentTaskAutoResumed",
+                            developmentResumed ? "1" : "0");
+                        if (developmentResumed)
+                            await database.SetSettingAsync("Runtime.DevelopmentTaskAutoResumeUtc", DateTimeOffset.UtcNow.ToString("O"));
                     }
                 }
                 catch (Exception ex)

@@ -48,6 +48,12 @@ public sealed class DevelopmentTaskRuntimeBinding : IAsyncDisposable
         return Engine.ResumeAsync(cancellationToken);
     }
 
+    public Task<bool> ResumeIfActiveAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _runtime.ResumeIfActiveAsync(cancellationToken);
+    }
+
     public Task StopAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

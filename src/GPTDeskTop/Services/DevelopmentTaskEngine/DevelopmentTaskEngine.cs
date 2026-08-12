@@ -134,6 +134,53 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
+    public async Task<bool> ResumeIfActiveAsync(CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ReloadScheduleSettings();
+            await LoadStateAsync(cancellationToken).ConfigureAwait(false);
+            if (_state.Status is not (DevelopmentTaskEngineStatus.Working or DevelopmentTaskEngineStatus.Cooling))
+            {
+                PublishState();
+                return false;
+            }
+
+            var messages = await LoadMessagesAsync(cancellationToken).ConfigureAwait(false);
+            if (messages.Count == 0) throw new InvalidOperationException("No development task messages are configured.");
+            _state.TotalMessages = messages.Count;
+            if (_state.CurrentMessageIndex >= messages.Count)
+            {
+                _state.Status = DevelopmentTaskEngineStatus.Completed;
+                await SaveStateAsync(cancellationToken).ConfigureAwait(false);
+                PublishState();
+                return false;
+            }
+
+            if (_state.Status == DevelopmentTaskEngineStatus.Working)
+            {
+                _state.WorkWindowStartedAt ??= DateTimeOffset.UtcNow;
+                _messageDeliveredThisWindow =
+                    _state.LastDeliveredMessageIndex == _state.CurrentMessageIndex - 1 &&
+                    !string.IsNullOrWhiteSpace(_state.LastDeliveredMessageFingerprint);
+            }
+            else
+            {
+                _state.CoolingStartedAt ??= DateTimeOffset.UtcNow;
+                _messageDeliveredThisWindow = false;
+            }
+
+            _state.LastError = null;
+            _lastEmittedMessageIndex = null;
+            await SaveStateAsync(cancellationToken).ConfigureAwait(false);
+            PublishState();
+            await RestartWorkerAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        finally { _gate.Release(); }
+    }
+
     public void RestorePosition(int messageIndex, int completedMessages, DevelopmentTaskEngineStatus status)
     {
         if (messageIndex < 0) throw new ArgumentOutOfRangeException(nameof(messageIndex));
