@@ -1,0 +1,1 @@
+Audit in progress: inspect startup orchestration, settings persistence, monitor persistence, development-task persistence, and saved ChatGPT binding restoration before code changes.

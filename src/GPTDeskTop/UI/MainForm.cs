@@ -977,6 +977,7 @@ public sealed class MainForm : Form
         if (MessageBox.Show(this, message, "Delete Monitor", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
         var id = monitor.Id;
         await _monitor.DeleteMonitorAsync(id);
+        await LastWorkingStateService.SetMonitorDesiredRunningAsync(_database, id, false);
         _selectedMonitor = null;
         await RefreshMonitorsAsync();
         AppendActivity($"Monitor #{id} deleted.");
@@ -990,15 +991,18 @@ public sealed class MainForm : Form
     private async Task StopSelectedMonitorAsync()
     {
         if (_selectedMonitor is null) return;
-        await _monitor.StopMonitorAsync(_selectedMonitor.Id);
+        var monitorId = _selectedMonitor.Id;
+        await _monitor.StopMonitorAsync(monitorId);
+        await LastWorkingStateService.SetMonitorDesiredRunningAsync(_database, monitorId, false);
         await RefreshMonitorsAsync();
     }
 
     private async Task StopAllAsync()
     {
         await _monitor.StopAllAsync();
+        await LastWorkingStateService.ClearDesiredMonitorsAsync(_database);
         await RefreshMonitorsAsync();
-        AppendActivity("All monitors stopped.");
+        AppendActivity("All monitors stopped. Restart auto-resume intent cleared.");
     }
 
     private async Task StartAllEnabledAsync()
@@ -1030,6 +1034,8 @@ public sealed class MainForm : Form
         }
 
         await _monitor.StartMonitorAsync(monitor, tab);
+        if (_monitor.IsMonitorRunning(monitor.Id))
+            await LastWorkingStateService.SetMonitorDesiredRunningAsync(_database, monitor.Id, true);
         await RefreshMonitorsAsync();
     }
 

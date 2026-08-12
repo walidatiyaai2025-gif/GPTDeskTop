@@ -46,6 +46,19 @@ public sealed class DevelopmentTaskRuntimeCoordinator : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
+    public async Task<bool> ResumeIfActiveAsync(CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_started) return false;
+            _started = await _engine.ResumeIfActiveAsync(cancellationToken).ConfigureAwait(false);
+            return _started;
+        }
+        finally { _gate.Release(); }
+    }
+
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
