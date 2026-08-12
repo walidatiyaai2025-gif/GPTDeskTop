@@ -64,7 +64,6 @@ public sealed class ShutdownLoadingOverlay : Panel
         card.Controls.Add(title, 0, 0);
         card.Controls.Add(_statusLabel, 0, 1);
         card.Controls.Add(progressHost, 0, 2);
-        SetRowSpan(title, 1);
         Controls.Add(card);
     }
 
