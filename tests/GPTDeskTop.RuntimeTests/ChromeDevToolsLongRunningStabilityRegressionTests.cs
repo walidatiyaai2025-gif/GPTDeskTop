@@ -59,8 +59,14 @@ public sealed class ChromeDevToolsLongRunningStabilityRegressionTests
 
         Assert.Contains("_sessionPool.Prune(tabs)", source, StringComparison.Ordinal);
         Assert.Contains("finally { _sessionPool.Invalidate(tab.Id); }", source, StringComparison.Ordinal);
-        Assert.Contains("finally { _sessionPool.Clear(); }", source, StringComparison.Ordinal);
+        Assert.Contains("_sessionPool.Clear();", source, StringComparison.Ordinal);
+        Assert.Contains("_monitorChromeProcess = null;", source, StringComparison.Ordinal);
         Assert.Contains("=> _sessionPool.SendCommandAsync(tab, method, parameters, cancellationToken, extractRuntimeValue);", source, StringComparison.Ordinal);
+
+        var shutdownStart = source.IndexOf("public async Task CloseAllMonitorTabsAsync", StringComparison.Ordinal);
+        var processReset = source.IndexOf("_monitorChromeProcess = null;", shutdownStart, StringComparison.Ordinal);
+        var poolClear = source.IndexOf("_sessionPool.Clear();", processReset, StringComparison.Ordinal);
+        Assert.True(shutdownStart >= 0 && processReset > shutdownStart && poolClear > processReset);
     }
 
     [Fact]
