@@ -11,11 +11,6 @@ namespace GPTDeskTop.UI;
 /// </summary>
 internal static class CompactTopCommandMenuExperience
 {
-    private const int CompactDevelopmentHeight = 58;
-    private const int ExpandedDevelopmentHeight = 118;
-    private const int CompactHealthHeight = 58;
-    private const int ExpandedHealthHeight = 140;
-
     private static readonly ConditionalWeakTable<Form, Installation> Installations = new();
 
     [ModuleInitializer]
@@ -56,13 +51,11 @@ internal static class CompactTopCommandMenuExperience
         CompactHealthPanel(health, sources);
 
         // The compact view is the operator-first default. Details remain available from Commands.
+        // ExpandableWorkspaceLayout is the single physical-height owner, including future DPI/size events.
         development.IsExpanded = false;
         health.IsExpanded = false;
-        ApplyDevelopmentHeight(development);
-        ApplyHealthHeight(health);
-
-        development.ExpandedChanged += (_, _) => ApplyDevelopmentHeight(development);
-        health.ExpandedChanged += (_, _) => ApplyHealthHeight(health);
+        ExpandableWorkspaceLayout.EnableCompactOperatorLayout(development);
+        ExpandableWorkspaceLayout.EnableCompactOperatorLayout(health);
 
         form.MainMenuStrip = menu;
         form.Controls.Add(menu);
@@ -259,7 +252,6 @@ internal static class CompactTopCommandMenuExperience
         CommandSources sources)
     {
         development.Padding = new Padding(0, 2, 0, 2);
-        development.MinimumSize = new Size(0, CompactDevelopmentHeight);
 
         var actionButtons = new[]
         {
@@ -281,7 +273,7 @@ internal static class CompactTopCommandMenuExperience
                 CollapseTableRow(bodyLayout, actionRow);
         }
 
-        var toggle = FindButton(development, "Collapse", "Expand");
+        var toggle = FindButton(development, "Collapse", "Details");
         if (toggle is not null)
             HideHeaderButtonAndColumn(toggle);
     }
@@ -289,7 +281,6 @@ internal static class CompactTopCommandMenuExperience
     private static void CompactHealthPanel(RuntimeHealthControl health, CommandSources sources)
     {
         health.Padding = new Padding(0, 2, 0, 2);
-        health.MinimumSize = new Size(0, CompactHealthHeight);
 
         foreach (var button in new[] { sources.HealthRefresh, sources.HealthRepair, sources.HealthRetry })
             HideHeaderButtonAndColumn(button);
@@ -323,22 +314,6 @@ internal static class CompactTopCommandMenuExperience
 
         layout.RowStyles[position.Row].SizeType = SizeType.Absolute;
         layout.RowStyles[position.Row].Height = 0;
-    }
-
-    private static void ApplyDevelopmentHeight(DevelopmentTaskDashboardControl development)
-    {
-        development.MinimumSize = new Size(0, CompactDevelopmentHeight);
-        development.Height = development.IsExpanded
-            ? ExpandedDevelopmentHeight
-            : CompactDevelopmentHeight;
-    }
-
-    private static void ApplyHealthHeight(RuntimeHealthControl health)
-    {
-        health.MinimumSize = new Size(0, CompactHealthHeight);
-        health.Height = health.IsExpanded
-            ? ExpandedHealthHeight
-            : CompactHealthHeight;
     }
 
     private static void FocusLiveActivity(Form form)
