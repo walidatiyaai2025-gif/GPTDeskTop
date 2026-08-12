@@ -30,6 +30,24 @@ public sealed class ExpandableWorkspaceDpiRegressionTests
     }
 
     [Fact]
+    public void ExpandableWorkspaceLayout_YieldsHeightOwnershipToOnDemandHost()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "ExpandableWorkspaceLayout.cs");
+        var applyStart = source.IndexOf("private static void ApplyExpandableHeight", StringComparison.Ordinal);
+        var applyHeightStart = source.IndexOf("private static void ApplyHeight", applyStart, StringComparison.Ordinal);
+        var apply = source[applyStart..applyHeightStart];
+
+        Assert.Contains("UseHostManagedHeight", source, StringComparison.Ordinal);
+        Assert.Contains("HostManagedControls", source, StringComparison.Ordinal);
+        Assert.Contains("HostManagedControls.TryGetValue(control, out _)", apply, StringComparison.Ordinal);
+        Assert.Contains("control.MinimumSize = Size.Empty", apply, StringComparison.Ordinal);
+        Assert.Contains("control.MaximumSize = Size.Empty", apply, StringComparison.Ordinal);
+        Assert.True(
+            apply.IndexOf("HostManagedControls.TryGetValue", StringComparison.Ordinal)
+            < apply.IndexOf("switch (control)", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ExpandableWorkspaceLayout_CorrectsHeightAndMinimumWithoutBusinessMutation()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "ExpandableWorkspaceLayout.cs");
