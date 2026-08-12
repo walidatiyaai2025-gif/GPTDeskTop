@@ -18,16 +18,18 @@ public sealed class ChatGptRotationHandoffRegressionTests
         var rotationStart = source.IndexOf(
             "if (monitor.ConversationRotationEnabled && IsConversationContextLimit(text))",
             StringComparison.Ordinal);
-        var deferred = source.IndexOf("\"RotationHandoffDeferred\"", rotationStart, StringComparison.Ordinal);
-        var deferredContinue = source.IndexOf("continue;", deferred, StringComparison.Ordinal);
+        var sendFailure = source.IndexOf("if (!sent)", rotationStart, StringComparison.Ordinal);
+        var deferred = source.IndexOf("\"RotationHandoffDeferred\"", sendFailure, StringComparison.Ordinal);
+        var sendFailureContinue = source.IndexOf("continue;", deferred, StringComparison.Ordinal);
 
         Assert.True(rotationStart >= 0);
-        Assert.True(deferred > rotationStart);
-        Assert.True(deferredContinue > deferred);
+        Assert.True(sendFailure > rotationStart);
+        Assert.True(deferred > sendFailure);
+        Assert.True(sendFailureContinue > deferred);
 
-        var deferredBlock = source[deferred..deferredContinue];
-        Assert.DoesNotContain("lastHandledText = string.Empty", deferredBlock, StringComparison.Ordinal);
-        Assert.Contains("automatic duplicate retry is suppressed", deferredBlock, StringComparison.OrdinalIgnoreCase);
+        var sendFailureBlock = source[sendFailure..sendFailureContinue];
+        Assert.DoesNotContain("lastHandledText = string.Empty", sendFailureBlock, StringComparison.Ordinal);
+        Assert.Contains("automatic duplicate retry is suppressed", sendFailureBlock, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(
             "rotation handoff could not be sent after waiting for the composer",
             source,
