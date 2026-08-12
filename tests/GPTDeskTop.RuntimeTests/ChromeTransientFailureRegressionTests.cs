@@ -47,6 +47,7 @@ public sealed class ChromeTransientFailureRegressionTests
     [InlineData("No target with given id found", true)]
     [InlineData("Execution context was destroyed.", true)]
     [InlineData("Cannot find context with specified id", true)]
+    [InlineData("Cannot find default execution context", true)]
     [InlineData("Invalid parameters", false)]
     public void TargetLifecycleClassifierRecognizesRecoverableCdpFailures(string message, bool expected)
     {
@@ -77,6 +78,7 @@ public sealed class ChromeTransientFailureRegressionTests
         Assert.Contains("throw new IOException(devToolsError);", source, StringComparison.Ordinal);
         Assert.Contains("throw new InvalidOperationException(devToolsError);", source, StringComparison.Ordinal);
         Assert.Contains("Inspected target navigated or closed", source, StringComparison.Ordinal);
+        Assert.Contains("Cannot find default execution context", source, StringComparison.Ordinal);
     }
 
     [Fact]
