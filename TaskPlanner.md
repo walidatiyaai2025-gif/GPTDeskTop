@@ -113,3 +113,13 @@ Other validated gates include force-kill/relaunch crash recovery, persisted sche
 - `Release | x64` builds all three solution projects without concurrent publish races and produces `Output\Setup\GPTDeskTop-Setup.exe` from Build Solution.
 - Application, publish helper and standalone Setup metadata report the same release version `1.8.0`.
 - `GPTDeskTop.sln` remains composed of exactly three supported SDK-style projects.
+
+
+## UI-V2-001 — Dashboard-first operator workspace + resilient recovery (2026-08-12)
+- **Status:** IMPLEMENTED ON BRANCH — pending PR verification/merge.
+- Main page prioritizes Open ChatGPT Conversations + Saved/Running Monitors.
+- Live Monitor & Stored History moved to an on-demand Commands window.
+- Development Plan header removed from permanent layout; compact development state is centered in the version footer and controls/messages remain in Commands.
+- Persistent connection recovery escalates: retry -> reload same conversation -> wait -> reopen same conversation target -> browser restart only after endpoint grace.
+- Explicit ChatGPT error UI creates a verified fresh chat, sends the configurable `ChatGptErrorContinuationMessage`, atomically rebinds the same Monitor ID, then closes the errored old tab.
+- Final release identity target: **2.0.0**.

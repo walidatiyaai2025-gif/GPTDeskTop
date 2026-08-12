@@ -45,6 +45,19 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
 
     public event EventHandler? ExpandedChanged;
 
+    public string FooterSummary
+    {
+        get
+        {
+            var status = _status.Text.Trim().TrimStart('●').Trim();
+            var phase = _phase.Text.Trim();
+            var countdown = _countdown.Text.Trim();
+            return string.Join(" • ", new[] { status, phase, countdown }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.Ordinal));
+        }
+    }
+
     public bool IsExpanded
     {
         get => _expanded;
