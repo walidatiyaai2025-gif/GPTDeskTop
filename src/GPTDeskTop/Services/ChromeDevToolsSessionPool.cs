@@ -337,6 +337,7 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
                    || message.Contains("Session closed", StringComparison.OrdinalIgnoreCase)
                    || message.Contains("Execution context was destroyed", StringComparison.OrdinalIgnoreCase)
                    || message.Contains("Cannot find context with specified id", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("Cannot find default execution context", StringComparison.OrdinalIgnoreCase)
                    || message.Contains("page, context or browser has been closed", StringComparison.OrdinalIgnoreCase);
         }
 
