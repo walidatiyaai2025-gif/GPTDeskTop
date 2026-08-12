@@ -134,6 +134,7 @@ internal static class CompactTopCommandMenuExperience
         browserMenu.DropDownOpening += (_, _) => SyncButtonItems(browserMenu);
 
         var monitorMenu = CreateGroup("Monitors");
+        AddButtonCommand(monitorMenu, "New Chat + Monitor", sources.NewChatMonitor);
         AddButtonCommand(monitorMenu, "Add Monitor", sources.AddMonitor);
         AddButtonCommand(monitorMenu, "Edit Monitor", sources.EditMonitor);
         AddButtonCommand(monitorMenu, "Delete Monitor", sources.DeleteMonitor);
@@ -380,6 +381,7 @@ internal static class CompactTopCommandMenuExperience
             RequiredButton(mainButtons, "Hide Chrome"),
             RequiredButton(mainButtons, "Show Chrome"),
             RequiredButton(mainButtons, "Refresh"),
+            RequiredButton(mainButtons, "New Chat + Monitor"),
             RequiredButton(mainButtons, "Add Monitor"),
             RequiredButton(mainButtons, "Edit Monitor"),
             RequiredButton(mainButtons, "Delete"),
@@ -434,6 +436,7 @@ internal static class CompactTopCommandMenuExperience
         Button HideChrome,
         Button ShowChrome,
         Button RefreshTabs,
+        Button NewChatMonitor,
         Button AddMonitor,
         Button EditMonitor,
         Button DeleteMonitor,
@@ -449,7 +452,7 @@ internal static class CompactTopCommandMenuExperience
             DevelopmentMessages, DevelopmentSchedule,
             HealthRefresh, HealthRepair, HealthRetry,
             LaunchChrome, HideChrome, ShowChrome, RefreshTabs,
-            AddMonitor, EditMonitor, DeleteMonitor,
+            NewChatMonitor, AddMonitor, EditMonitor, DeleteMonitor,
             StartSelected, StopSelected, StartAll, StopAll, Settings
         }.All(button => !ReferenceEquals(button, MissingButton.Instance));
     }
