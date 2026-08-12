@@ -32,7 +32,7 @@ jobs:
       - name: Build application
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release --no-restore
 
-      - name: Poll through CDP while Chrome is hidden
+      - name: Poll and enumerate through CDP while Chrome is hidden
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -71,11 +71,16 @@ jobs:
 
           $result = Get-Content $resultPath -Raw | ConvertFrom-Json
           $minimumPolls = [math]::Max(3, [math]::Floor($duration * 0.70))
+          $minimumEnumerations = [math]::Max(3, [math]::Floor($duration * 0.70))
           if ($result.HideChanged -ne $true) { throw 'Chrome hide/minimize operation was not acknowledged by the production Chrome service.' }
           if ([double]$result.ElapsedSeconds -lt ($duration - 1)) { throw "Probe ended too early: $($result.ElapsedSeconds)s for requested ${duration}s." }
           if ([int]$result.SuccessfulPolls -lt $minimumPolls) { throw "Too few successful hidden CDP polls: $($result.SuccessfulPolls), expected at least $minimumPolls." }
           if ([int]$result.MatchingPolls -ne [int]$result.SuccessfulPolls) { throw "Some successful polls returned unexpected assistant content: matching=$($result.MatchingPolls), successful=$($result.SuccessfulPolls)." }
           if ([int]$result.FailedPolls -gt 2) { throw "Too many hidden CDP polling failures: $($result.FailedPolls)." }
+          if ([int]$result.SuccessfulTabEnumerations -lt $minimumEnumerations) { throw "Too few successful hidden tab enumerations: $($result.SuccessfulTabEnumerations), expected at least $minimumEnumerations." }
+          if ([int]$result.MatchingTabEnumerations -ne [int]$result.SuccessfulTabEnumerations) { throw "Open Conversations target disappeared during hidden enumeration: matching=$($result.MatchingTabEnumerations), successful=$($result.SuccessfulTabEnumerations)." }
+          if ([int]$result.TabEnumerationFailures -gt 2) { throw "Too many hidden tab enumeration failures: $($result.TabEnumerationFailures)." }
+          if ([int]$result.LastEnumeratedTabCount -lt 1) { throw 'Hidden tab enumeration finished with no visible CDP targets.' }
           if ($result.LastAssistantText -ne 'hidden-cdp-probe-alive') { throw "Unexpected final assistant text: '$($result.LastAssistantText)'." }
 
-          Write-Host "Hidden Chrome CDP verified: duration=$($result.ElapsedSeconds)s, successful=$($result.SuccessfulPolls), failures=$($result.FailedPolls), hide=$($result.HideChanged), show=$($result.ShowChanged)."
+          Write-Host "Hidden Chrome CDP verified: duration=$($result.ElapsedSeconds)s, successful=$($result.SuccessfulPolls), failures=$($result.FailedPolls), enumerations=$($result.SuccessfulTabEnumerations), enumerationFailures=$($result.TabEnumerationFailures), hide=$($result.HideChanged), show=$($result.ShowChanged)."
