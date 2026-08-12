@@ -12,6 +12,7 @@ public sealed class ChromeDevToolsService
     private const int SwHide = 0;
     private const int SwShow = 5;
     private const int SwRestore = 9;
+    private const int MonitorRecoveryFailureThreshold = 4;
     private const string BrowserSessionId = "__gptdesktop_monitor_browser__";
     private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 2 ? window.__gptDesktopChatStateCache.read() : null";
     private const string ChatStateInstallExpression = """
@@ -94,6 +95,9 @@ public sealed class ChromeDevToolsService
     private readonly HttpClient _httpClient;
     private readonly ChromeConfig _config;
     private readonly ChromeDevToolsSessionPool _sessionPool = new();
+    private readonly SemaphoreSlim _monitorBrowserRecoveryGate = new(1, 1);
+    private readonly object _chatStateFailureSync = new();
+    private readonly Dictionary<string, int> _chatStateTransportFailures = new(StringComparer.Ordinal);
     private Process? _monitorChromeProcess;
     private IntPtr _lastKnownWindowHandle = IntPtr.Zero;
     public ChromeDevToolsService(HttpClient httpClient, ChromeConfig config) { _httpClient = httpClient; _config = config; }
@@ -219,6 +223,27 @@ public sealed class ChromeDevToolsService
     private async Task<bool> SetAllBrowserWindowsStateAsync(string state, CancellationToken cancellationToken) { List<ChromeTab> tabs; try { tabs = await GetTabsAsync(cancellationToken); } catch { return false; } if (tabs.Count == 0) return false; var windowIds = new HashSet<int>(); foreach (var tab in tabs) { try { var windowResult = await SendCommandAsync(tab, "Browser.getWindowForTarget", new { targetId = tab.Id }, cancellationToken); if (windowResult.TryGetProperty("windowId", out var windowIdElement)) windowIds.Add(windowIdElement.GetInt32()); } catch (Exception ex) when (ex is not OperationCanceledException) { ExceptionLogService.Log(ex, "ChromeDevToolsService.GetWindowForTarget", null, tab.Id, tab.Title); } } var changed = false; foreach (var windowId in windowIds) { try { await SendCommandAsync(tabs[0], "Browser.setWindowBounds", new { windowId, bounds = new { windowState = state } }, cancellationToken); changed = true; } catch (Exception ex) when (ex is not OperationCanceledException) { ExceptionLogService.Log(ex, $"ChromeDevToolsService.SetWindowState({state})"); } } return changed; }
     public async Task<ChatPageState> GetChatStateAsync(ChromeTab tab, CancellationToken cancellationToken = default)
     {
+        try
+        {
+            var state = await ReadChatStateCoreAsync(tab, cancellationToken);
+            ResetChatStateTransportFailures(tab);
+            return state;
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+        {
+            var failureCount = IncrementChatStateTransportFailures(tab);
+            if (failureCount < MonitorRecoveryFailureThreshold)
+                throw;
+
+            if (!await RecoverMonitorTabAsync(tab, cancellationToken))
+                throw;
+
+            ResetChatStateTransportFailures(tab);
+            return await ReadChatStateCoreAsync(tab, cancellationToken);
+        }
+    }
+    private async Task<ChatPageState> ReadChatStateCoreAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
         var value = await EvaluateAsync(tab, ChatStateReadExpression, cancellationToken, false);
         if (value.ValueKind == JsonValueKind.Null)
             value = await EvaluateAsync(tab, ChatStateInstallExpression, cancellationToken, false);
@@ -229,6 +254,123 @@ public sealed class ChromeDevToolsService
             value.TryGetProperty("isGenerating", out var generating) && generating.GetBoolean(),
             value.TryGetProperty("errorText", out var error) ? error.GetString() ?? string.Empty : string.Empty);
     }
+    private int IncrementChatStateTransportFailures(ChromeTab tab)
+    {
+        var key = GetChatStateFailureKey(tab);
+        lock (_chatStateFailureSync)
+        {
+            var next = _chatStateTransportFailures.TryGetValue(key, out var current) ? checked(current + 1) : 1;
+            _chatStateTransportFailures[key] = next;
+            return next;
+        }
+    }
+    private void ResetChatStateTransportFailures(ChromeTab tab)
+    {
+        var key = GetChatStateFailureKey(tab);
+        lock (_chatStateFailureSync) _chatStateTransportFailures.Remove(key);
+    }
+    private static string GetChatStateFailureKey(ChromeTab tab)
+        => !string.IsNullOrWhiteSpace(tab.Url) ? tab.Url : tab.Id;
+    private async Task<bool> RecoverMonitorTabAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
+            return false;
+
+        await _monitorBrowserRecoveryGate.WaitAsync(cancellationToken);
+        try
+        {
+            var replacement = await TryFindConversationTabAsync(tab.Url, cancellationToken);
+            if (replacement is not null)
+            {
+                RebindTab(tab, replacement);
+                return true;
+            }
+
+            var liveTabs = await TryGetLiveTabsAsync(cancellationToken);
+            if (liveTabs is { Count: > 0 })
+            {
+                replacement = await CreateTabAsync(tab.Url, cancellationToken);
+                RebindTab(tab, replacement);
+                return true;
+            }
+
+            // The DevTools endpoint is unavailable (or Chrome has no controllable page).
+            // Tear down only the monitor-owned browser if possible, launch a fresh instance,
+            // then reopen the exact saved conversation. No chat message is sent here.
+            await CloseAllMonitorTabsAsync(cancellationToken);
+            LaunchMonitorChrome(tab.Url);
+
+            replacement = await WaitForConversationTabAsync(tab.Url, cancellationToken);
+            if (replacement is null)
+            {
+                liveTabs = await TryGetLiveTabsAsync(cancellationToken);
+                if (liveTabs is not { Count: > 0 })
+                    return false;
+                replacement = await CreateTabAsync(tab.Url, cancellationToken);
+            }
+
+            RebindTab(tab, replacement);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            ExceptionLogService.Log(ex, "ChromeDevToolsService.AutoRecoverMonitorTab", null, tab.Id, tab.Title);
+            return false;
+        }
+        finally
+        {
+            _monitorBrowserRecoveryGate.Release();
+        }
+    }
+    private async Task<List<ChromeTab>?> TryGetLiveTabsAsync(CancellationToken cancellationToken)
+    {
+        try { return await GetTabsAsync(cancellationToken); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex)) { return null; }
+    }
+    private async Task<ChromeTab?> TryFindConversationTabAsync(string conversationUrl, CancellationToken cancellationToken)
+    {
+        var tabs = await TryGetLiveTabsAsync(cancellationToken);
+        return tabs?.FirstOrDefault(candidate =>
+            RuntimeHealthPresentation.IsChatGptConversationUrl(candidate.Url)
+            && ChatGptConversationIdentity.IsSame(conversationUrl, candidate.Url));
+    }
+    private async Task<ChromeTab?> WaitForConversationTabAsync(string conversationUrl, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var tab = await TryFindConversationTabAsync(conversationUrl, cancellationToken);
+            if (tab is not null) return tab;
+            await Task.Delay(250, cancellationToken);
+        }
+        return null;
+    }
+    private void RebindTab(ChromeTab current, ChromeTab replacement)
+    {
+        var staleId = current.Id;
+        if (!string.IsNullOrWhiteSpace(staleId) && !string.Equals(staleId, replacement.Id, StringComparison.Ordinal))
+            _sessionPool.Invalidate(staleId);
+
+        current.Id = replacement.Id;
+        current.Title = replacement.Title;
+        current.Url = replacement.Url;
+        current.Type = replacement.Type;
+        current.WebSocketDebuggerUrl = replacement.WebSocketDebuggerUrl;
+    }
+    private static bool IsRecoverableMonitorTransportException(Exception ex)
+        => ex is WebSocketException
+           || ex is IOException
+           || ex is TimeoutException
+           || ex is HttpRequestException
+           || ex.Message.Contains("Chrome closed the DevTools connection", StringComparison.OrdinalIgnoreCase)
+           || ex.Message.Contains("session was invalidated", StringComparison.OrdinalIgnoreCase)
+           || ex.Message.Contains("Inspected target navigated or closed", StringComparison.OrdinalIgnoreCase)
+           || ex.Message.Contains("connection was forcibly closed", StringComparison.OrdinalIgnoreCase);
     public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default) { var textLiteral = JsonSerializer.Serialize(message); var setEditorExpression = $$""" (() => { const text = {{textLiteral}}; const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]') || document.querySelector('[contenteditable="true"]'); if (!editor) return false; editor.focus(); if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) { const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set; setter?.call(editor, text); editor.dispatchEvent(new Event('input', { bubbles: true })); editor.dispatchEvent(new Event('change', { bubbles: true })); } else { const selection = window.getSelection(); const range = document.createRange(); range.selectNodeContents(editor); selection?.removeAllRanges(); selection?.addRange(range); document.execCommand('insertText', false, text); editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })); } return true; })() """; var editorReady = await EvaluateAsync(tab, setEditorExpression, cancellationToken, false); if (editorReady.ValueKind != JsonValueKind.True) return false; await Task.Delay(350, cancellationToken); const string clickExpression = """ (() => { const sendButton = document.querySelector('button[data-testid="send-button"]') || [...document.querySelectorAll('button')].find(b => /send|إرسال/i.test(b.getAttribute('aria-label') || '')); if (!sendButton || sendButton.disabled) return false; sendButton.click(); return true; })() """; var clicked = await EvaluateAsync(tab, clickExpression, cancellationToken, false); return clicked.ValueKind == JsonValueKind.True; }
     public async Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default)
     {
