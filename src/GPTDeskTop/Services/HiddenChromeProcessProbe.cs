@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Models;
@@ -9,7 +11,8 @@ namespace GPTDeskTop.Services;
 
 /// <summary>
 /// Windows/Chrome QA probe that verifies the production CDP client continues to
-/// read and enumerate a monitored page while the monitor Chrome window is hidden/minimized.
+/// read and enumerate a monitored page while the owned monitor Chrome window is
+/// physically hidden through the production native-window visibility path.
 /// It intentionally uses a local deterministic HTML page instead of requiring a
 /// logged-in external ChatGPT session.
 /// </summary>
@@ -17,6 +20,10 @@ internal static class HiddenChromeProcessProbe
 {
     private const string Command = "--qa-hidden-chrome-probe";
     private const string ExpectedText = "hidden-cdp-probe-alive";
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
 
     public static bool IsProbeCommand(string[] args)
         => args.Length > 0 && string.Equals(args[0], Command, StringComparison.OrdinalIgnoreCase);
@@ -90,19 +97,33 @@ internal static class HiddenChromeProcessProbe
         var lastText = string.Empty;
         var hideChanged = false;
         var showChanged = false;
+        var nativeWindowVisibleBeforeHide = false;
+        var nativeWindowHiddenAfterHide = false;
+        var nativeWindowVisibleAfterShow = false;
+        var nativeWindowHandle = IntPtr.Zero;
         var stopwatch = new Stopwatch();
 
         try
         {
             process = LaunchIsolatedChrome(probeRoot, url, port);
             var tab = await WaitForProbeTabAsync(chrome, process, url).ConfigureAwait(false);
+
+            // The deterministic QA Chrome is intentionally launched with an isolated profile, but
+            // Hide/Show must exercise the same owned-process path used by production. Register this
+            // process as the service-owned monitor process without changing production visibility code.
+            AttachOwnedMonitorProcessForProbe(chrome, process);
+            nativeWindowHandle = await WaitForMainWindowHandleAsync(process).ConfigureAwait(false);
+            nativeWindowVisibleBeforeHide = nativeWindowHandle != IntPtr.Zero && IsWindowVisible(nativeWindowHandle);
+
             hideChanged = await chrome.HideMonitorChromeAsync().ConfigureAwait(false);
+            nativeWindowHiddenAfterHide = nativeWindowHandle != IntPtr.Zero
+                && await WaitForWindowVisibilityAsync(nativeWindowHandle, expectedVisible: false).ConfigureAwait(false);
 
             stopwatch.Start();
             while (stopwatch.Elapsed < TimeSpan.FromSeconds(durationSeconds))
             {
                 // Open Conversations is populated from GetTabsAsync. Keep proving that the target
-                // remains enumerable while hidden instead of validating only a previously bound CDP tab.
+                // remains enumerable while native-hidden instead of validating only a previously bound CDP tab.
                 try
                 {
                     var liveTabs = await chrome.GetTabsAsync().ConfigureAwait(false);
@@ -139,6 +160,8 @@ internal static class HiddenChromeProcessProbe
             stopwatch.Stop();
 
             showChanged = await chrome.ShowMonitorChromeAsync().ConfigureAwait(false);
+            nativeWindowVisibleAfterShow = nativeWindowHandle != IntPtr.Zero
+                && await WaitForWindowVisibilityAsync(nativeWindowHandle, expectedVisible: true).ConfigureAwait(false);
 
             var result = new HiddenChromeProbeResult
             {
@@ -147,6 +170,10 @@ internal static class HiddenChromeProcessProbe
                 ChromeProcessId = process.Id,
                 HideChanged = hideChanged,
                 ShowChanged = showChanged,
+                NativeWindowHandle = nativeWindowHandle.ToInt64(),
+                NativeWindowVisibleBeforeHide = nativeWindowVisibleBeforeHide,
+                NativeWindowHiddenAfterHide = nativeWindowHiddenAfterHide,
+                NativeWindowVisibleAfterShow = nativeWindowVisibleAfterShow,
                 SuccessfulPolls = successfulPolls,
                 MatchingPolls = matchingPolls,
                 FailedPolls = failedPolls,
@@ -178,6 +205,41 @@ internal static class HiddenChromeProcessProbe
             catch { }
             try { Directory.Delete(probeRoot, recursive: true); } catch { }
         }
+    }
+
+    private static void AttachOwnedMonitorProcessForProbe(ChromeDevToolsService chrome, Process process)
+    {
+        var field = typeof(ChromeDevToolsService).GetField("_monitorChromeProcess", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingFieldException(typeof(ChromeDevToolsService).FullName, "_monitorChromeProcess");
+        field.SetValue(chrome, process);
+    }
+
+    private static async Task<IntPtr> WaitForMainWindowHandleAsync(Process process)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            process.Refresh();
+            if (process.HasExited)
+                throw new InvalidOperationException($"Chrome QA probe exited before a native window became available. ExitCode={process.ExitCode}.");
+            if (process.MainWindowHandle != IntPtr.Zero)
+                return process.MainWindowHandle;
+            await Task.Delay(100).ConfigureAwait(false);
+        }
+
+        throw new TimeoutException($"Chrome PID {process.Id} did not expose a native MainWindowHandle within 30 seconds.");
+    }
+
+    private static async Task<bool> WaitForWindowVisibilityAsync(IntPtr handle, bool expectedVisible)
+    {
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            if (IsWindowVisible(handle) == expectedVisible)
+                return true;
+            await Task.Delay(50).ConfigureAwait(false);
+        }
+
+        return IsWindowVisible(handle) == expectedVisible;
     }
 
     private static Process LaunchIsolatedChrome(string probeRoot, string url, int port)
@@ -270,6 +332,10 @@ internal static class HiddenChromeProcessProbe
         public int ChromeProcessId { get; init; }
         public bool HideChanged { get; init; }
         public bool ShowChanged { get; init; }
+        public long NativeWindowHandle { get; init; }
+        public bool NativeWindowVisibleBeforeHide { get; init; }
+        public bool NativeWindowHiddenAfterHide { get; init; }
+        public bool NativeWindowVisibleAfterShow { get; init; }
         public int SuccessfulPolls { get; init; }
         public int MatchingPolls { get; init; }
         public int FailedPolls { get; init; }
