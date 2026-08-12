@@ -136,3 +136,10 @@ MON-007 is complete. Continue post-1.8 maintenance by auditing the next concrete
 - Recovery must prefer the existing saved Chrome tab and Monitor ID.
 - A recreated Chrome target may update the saved target ID only after its conversation URL matches exactly.
 - Elapsed response time alone never authorizes page refresh, recovery, new-chat creation or other page mutation; generic error recovery requires current structured visible error UI.
+
+
+### 2026-08-12 — UI-V2-001 / MON-015 / REL-003
+- **UI-V2-001:** operator-first main workspace; Live Monitor/History and sent-message catalog are on demand from Commands; Development Plan header removed and useful state moved into the footer.
+- **MON-015:** transport recovery now refreshes the same conversation first, waits for readable state, then reopens the exact conversation URL before browser restart. Explicit ChatGPT error UI performs a transactional fresh-chat continuation under the same Monitor ID.
+- **REL-003:** application, setup and packaging metadata advanced to **2.0.0** after these changes.
+- Verification requirement before merge: full RuntimeTests + Release build/packaging gates green.

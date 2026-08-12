@@ -424,7 +424,49 @@ public sealed class ChatGptMonitorService
                         tab = committedRecoveryTab; lastHandledText = string.Empty; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Recovery chat is now monitored under the same Monitor ID #{monitor.Id}."); await _chrome.CloseTabAsync(oldTab, cancellationToken); continue;
                     }
                     if (isError)
-                    { Activity?.Invoke(monitor.Id, $"{prefix} Error saved. Refreshing only this tab..."); try { await _chrome.ReloadTabAsync(tab, cancellationToken); await _database.AddLogAsync("System", "Page.reload", text, "RefreshedAfterError", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke(); await Task.Delay(Math.Max(1500, _config.DelayAfterSendMilliseconds), cancellationToken); } catch (Exception refreshEx) when (refreshEx is not OperationCanceledException && !IsTransientChromeException(refreshEx)) { ExceptionLogService.Log(refreshEx, "Monitor.RefreshAfterError", monitor.Id, tab.Id, monitor.Title); await _database.AddLogAsync("System", "Page.reload", refreshEx.ToString(), "RefreshFailed", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke(); } continue; }
+                    {
+                        var recoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage", cancellationToken)
+                            ?? "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه.";
+                        Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT error saved. Opening a fresh chat and continuing under the same Monitor ID...");
+                        var oldTab = tab;
+                        var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
+                        await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken);
+                        await ApplyModelRouteAsync(monitor, newTab, recovery: true, contextRotation: false, cancellationToken);
+                        await Task.Delay(Math.Max(500, _config.DelayAfterSendMilliseconds), cancellationToken);
+                        var sent = await SendWhenReadyAsync(monitor.Id, newTab, recoveryMessage, allowRecoveryReload: true, cancellationToken);
+                        if (!sent)
+                        {
+                            Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT-error continuation was not verified. Closing the unused recovery chat and retrying later.");
+                            await _database.AddLogAsync("System", recoveryMessage, text, "ChatGptErrorRecoverySendDeferred", monitor.Id, newTab.Id, monitor.Title, cancellationToken);
+                            HistoryChanged?.Invoke();
+                            try { await _chrome.CloseTabAsync(newTab, cancellationToken); } catch (Exception closeEx) when (IsTransientChromeException(closeEx)) { Activity?.Invoke(monitor.Id, $"Deferred ChatGPT-error recovery tab close failed transiently: {closeEx.Message}"); }
+                            lastHandledText = string.Empty; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
+                            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+                            continue;
+                        }
+
+                        var committedRecoveryTab = await CommitVerifiedConversationHandoffAsync(
+                            monitor, oldTab, newTab, recoveryMessage, text,
+                            rotationTrigger: "ChatGptError",
+                            successStatus: "RecoveredFromChatGptError",
+                            outboundStatus: "ChatGptErrorContinuationSent",
+                            conflictStatus: "ChatGptErrorHandoffCommitDeferred",
+                            incrementRotationCount: false,
+                            recordRotation: false,
+                            cancellationToken);
+                        if (committedRecoveryTab is null)
+                        {
+                            lastHandledText = string.Empty; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
+                            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+                            continue;
+                        }
+
+                        tab = committedRecoveryTab;
+                        lastHandledText = string.Empty; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
+                        Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT error recovery complete. New conversation is monitored as Monitor #{monitor.Id}.");
+                        try { await _chrome.CloseTabAsync(oldTab, cancellationToken); } catch (Exception closeEx) when (IsTransientChromeException(closeEx)) { Activity?.Invoke(monitor.Id, $"Old errored chat close was deferred: {closeEx.Message}"); }
+                        continue;
+                    }
                     if (replyDelaySeconds > 0)
                     { Activity?.Invoke(monitor.Id, $"{prefix} Waiting {replyDelaySeconds}s before auto reply..."); await Task.Delay(TimeSpan.FromSeconds(replyDelaySeconds), cancellationToken); var recheck = await _chrome.GetChatStateAsync(tab, cancellationToken); var latestText = GetEffectiveResponse(recheck); if (recheck.IsGenerating || !string.Equals(latestText, text, StringComparison.Ordinal)) { await _database.AddLogAsync("System", monitor.AutoReply, latestText, "SendDelayCancelled", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke(); continue; } }
                     var autoSent = await SendWhenReadyAsync(monitor.Id, tab, monitor.AutoReply, allowRecoveryReload: false, cancellationToken); await _database.AddLogAsync("Outbound", monitor.AutoReply, string.Empty, autoSent ? "Sent" : "Failed", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke(); await Task.Delay(Math.Max(250, _config.DelayAfterSendMilliseconds), cancellationToken);

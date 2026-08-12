@@ -13,6 +13,7 @@ public sealed class SettingsForm : Form
     private readonly NumericUpDown _notificationDuration = new() { Minimum = 1, Maximum = 60, Width = 140 };
     private readonly TextBox _defaultReply = new() { Dock = DockStyle.Fill, Text = "كمل" };
     private readonly TextBox _messageCountRotationStartMessage = new() { Dock = DockStyle.Fill, Text = "كمل" };
+    private readonly TextBox _chatGptErrorRecovery = new() { Dock = DockStyle.Fill, Text = "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه." };
     private readonly TextBox _timeoutRecovery = new() { Dock = DockStyle.Fill, Text = "كمل" };
     private readonly CheckBox _soundEnabled = new() { Text = "Play sound with balloon notifications", AutoSize = true };
     private readonly ComboBox _soundType = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
@@ -134,12 +135,13 @@ public sealed class SettingsForm : Form
     private TabPage BuildRotationTab()
     {
         var page = CreateTab("Rotation & Recovery");
-        var layout = CreateSettingsLayout(9);
+        var layout = CreateSettingsLayout(10);
         AddSectionTitle(layout, 0, "Conversation continuity", "Proactively rotate chats before they become too long while preserving the same Monitor ID.");
         AddRow(layout, 2, "Rotate after assistant messages (0 = off)", _rotateAfterMessages, "0 disables proactive message-count rotation. The current visible assistant count is used.");
         AddRow(layout, 3, "Message-count new Chat start message", _messageCountRotationStartMessage, "Fixed message sent after a successful message-count rotation.");
-        AddSectionTitle(layout, 5, "Timeout recovery", "Used when ChatGPT reports a message-delivery timeout and a recovery chat is created.");
-        AddRow(layout, 7, "Recovery message", _timeoutRecovery, "Message sent to the newly-created recovery conversation.");
+        AddSectionTitle(layout, 5, "Automatic error recovery", "ChatGPT-rendered errors create a fresh conversation under the same Monitor ID; delivery timeouts keep their own recovery template.");
+        AddRow(layout, 7, "ChatGPT error continuation", _chatGptErrorRecovery, "Message sent after a ChatGPT page error forces a fresh recovery chat.");
+        AddRow(layout, 8, "Delivery-timeout recovery", _timeoutRecovery, "Message sent when ChatGPT explicitly reports a message-delivery timeout.");
         page.Controls.Add(layout);
         return page;
     }
@@ -255,7 +257,8 @@ public sealed class SettingsForm : Form
 
         ConfigureAccessible(_rotateAfterMessages, "Assistant message rotation threshold", "Number of assistant messages before proactive conversation rotation. Zero disables it.", 0);
         ConfigureAccessible(_messageCountRotationStartMessage, "Rotation start message", "Message sent in the new conversation after message-count rotation.", 1);
-        ConfigureAccessible(_timeoutRecovery, "Timeout recovery message", "Message sent to a recovery conversation after a delivery timeout.", 2);
+        ConfigureAccessible(_chatGptErrorRecovery, "ChatGPT error continuation message", "Message sent in a fresh conversation after ChatGPT renders an explicit error.", 2);
+        ConfigureAccessible(_timeoutRecovery, "Timeout recovery message", "Message sent to a recovery conversation after a delivery timeout.", 3);
 
         ConfigureAccessible(_notificationDuration, "Notification duration", "Desktop notification display duration in seconds.", 0);
         ConfigureAccessible(_soundType, "Notification sound type", "Windows sound used for desktop notifications.", 1);
@@ -353,6 +356,7 @@ public sealed class SettingsForm : Form
             _defaultTimer.Value = await _database.GetIntSettingAsync("DefaultMonitorTimerSeconds", 1, 1, 60);
             _rotateAfterMessages.Value = await _database.GetIntSettingAsync("RotateAfterAssistantMessages", 0, 0, 10000);
             _messageCountRotationStartMessage.Text = await _database.GetSettingAsync("MessageCountRotationStartMessage") ?? "كمل";
+            _chatGptErrorRecovery.Text = await _database.GetSettingAsync("ChatGptErrorContinuationMessage") ?? "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه.";
             _timeoutRecovery.Text = await _database.GetSettingAsync("TimeoutRecoveryMessage") ?? "كمل";
             _notificationDuration.Value = await _database.GetIntSettingAsync("NotificationDurationSeconds", 8, 1, 60);
             _soundEnabled.Checked = !string.Equals(await _database.GetSettingAsync("NotificationSoundEnabled"), "0", StringComparison.Ordinal);
@@ -387,6 +391,7 @@ public sealed class SettingsForm : Form
             ["DefaultMonitorTimerSeconds"] = ((int)_defaultTimer.Value).ToString(),
             ["RotateAfterAssistantMessages"] = ((int)_rotateAfterMessages.Value).ToString(),
             ["MessageCountRotationStartMessage"] = rotationStartMessage,
+            ["ChatGptErrorContinuationMessage"] = string.IsNullOrWhiteSpace(_chatGptErrorRecovery.Text) ? "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه." : _chatGptErrorRecovery.Text.Trim(),
             ["TimeoutRecoveryMessage"] = string.IsNullOrWhiteSpace(_timeoutRecovery.Text) ? "كمل" : _timeoutRecovery.Text.Trim(),
             ["NotificationDurationSeconds"] = ((int)_notificationDuration.Value).ToString(),
             ["NotificationSoundEnabled"] = _soundEnabled.Checked ? "1" : "0",

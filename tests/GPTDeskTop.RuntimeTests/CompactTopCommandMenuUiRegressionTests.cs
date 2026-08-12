@@ -23,7 +23,7 @@ public sealed class CompactTopCommandMenuUiRegressionTests
         Assert.Contains("CreateGroup(\"Monitors\")", source, StringComparison.Ordinal);
         Assert.Contains("CreateGroup(\"Runtime\")", source, StringComparison.Ordinal);
         Assert.Contains("CreateGroup(\"Application\")", source, StringComparison.Ordinal);
-        Assert.Contains("Focus Live Activity", source, StringComparison.Ordinal);
+        Assert.Contains("Live Monitor & History", source, StringComparison.Ordinal);
     }
 
     [Fact]

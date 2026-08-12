@@ -159,11 +159,11 @@ internal static class CompactTopCommandMenuExperience
         root.DropDownItems.Add(appMenu);
         root.DropDownItems.Add(new ToolStripSeparator());
 
-        var focusLog = new ToolStripMenuItem("Focus Live Activity")
+        var focusLog = new ToolStripMenuItem("Live Monitor & History")
         {
-            ToolTipText = "Move keyboard focus to the live activity/log output."
+            ToolTipText = "Open live activity and stored history only when you need them."
         };
-        focusLog.Click += (_, _) => FocusLiveActivity(form);
+        focusLog.Click += (_, _) => OperatorWorkspaceV2Experience.ShowLiveMonitor((MainForm)form);
         root.DropDownItems.Add(focusLog);
 
         strip.Items.Add(root);
