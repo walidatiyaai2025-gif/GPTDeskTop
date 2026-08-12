@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using GPTDeskTop.Services;
 
 namespace GPTDeskTop.RuntimeTests;
@@ -39,6 +40,43 @@ public sealed class ChromeTransientFailureRegressionTests
 
         Assert.True((bool)method!.Invoke(null, [transient])!);
         Assert.False((bool)method.Invoke(null, [unrelated])!);
+    }
+
+    [Theory]
+    [InlineData("Inspected target navigated or closed", true)]
+    [InlineData("No target with given id found", true)]
+    [InlineData("Execution context was destroyed.", true)]
+    [InlineData("Cannot find context with specified id", true)]
+    [InlineData("Invalid parameters", false)]
+    public void TargetLifecycleClassifierRecognizesRecoverableCdpFailures(string message, bool expected)
+    {
+        var poolType = typeof(ChromeDevToolsService).Assembly.GetType(
+            "GPTDeskTop.Services.ChromeDevToolsSessionPool");
+        var sessionType = poolType?.GetNestedType("DevToolsSession", BindingFlags.NonPublic);
+        var method = sessionType?.GetMethod(
+            "IsTargetLifecycleError",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(new
+        {
+            code = -32000,
+            message
+        }));
+
+        Assert.Equal(expected, (bool)method!.Invoke(null, [document.RootElement.Clone()])!);
+    }
+
+    [Fact]
+    public void TargetLifecycleCdpFailuresAreTranslatedToTransientIoFailures()
+    {
+        var source = File.ReadAllText(RepositoryPath(
+            "src", "GPTDeskTop", "Services", "ChromeDevToolsSessionPool.cs"));
+
+        Assert.Contains("if (IsTargetLifecycleError(error))", source, StringComparison.Ordinal);
+        Assert.Contains("throw new IOException(devToolsError);", source, StringComparison.Ordinal);
+        Assert.Contains("throw new InvalidOperationException(devToolsError);", source, StringComparison.Ordinal);
+        Assert.Contains("Inspected target navigated or closed", source, StringComparison.Ordinal);
     }
 
     [Fact]
