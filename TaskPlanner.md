@@ -57,7 +57,7 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 | UI-003 | Green/red runtime lamp in monitor Status column | UI Developer | Medium | Done | `HomeMetricsService.cs` |
 | UI-004 | Add Crash Count and Monitor Count home cards | UI Developer | Medium | Done | `HomeMetricsService.cs` |
 | UI-005 | Keep legacy no-response timeout field/schema compatibility until a dedicated settings migration removes or relabels it | UI / Backend | Low | Compatibility only | `SettingsForm.cs` |
-| UI-020 | Make `ExpandableWorkspaceLayout` the single final height owner for compact Development Plan / Runtime Health so Live Activity keeps the reclaimed vertical space | UI / QA | High | In Progress | `ExpandableWorkspaceLayout.cs`, `CompactTopCommandMenuExperience.cs`, compact UI regression tests |
+| UI-020 | Make `ExpandableWorkspaceLayout` the single final height owner for compact Development Plan / Runtime Health so Live Activity keeps the reclaimed vertical space | UI / QA | High | Done | `ExpandableWorkspaceLayout.cs`, `CompactTopCommandMenuExperience.cs`, compact UI regression tests |
 | NOT-001 | Configurable balloon duration and sound | UI / Backend | High | Done | Notification/Settings services |
 | DEV-001 | Prevent duplicate development-task workers; persist state and safely resume Working/Cooling after restart | Backend Engineer | High | Done | `DevelopmentTaskEngine.cs`, `DevelopmentTaskState.cs` |
 | DEV-002 | Add regression coverage for Cooling persistence/resume and worker lifecycle | QA / Backend | High | Done | `tests/GPTDeskTop.RuntimeTests/DevelopmentTaskEngineTests.cs` |
@@ -84,7 +84,7 @@ The current stable source baseline is `bb3aa231cb06be46fbded0c5bbaa7acc3e1a2f4d`
 
 CHR-006 / QA-011 was verified on PR #224 and again on the merged source `bb3aa231cb06be46fbded0c5bbaa7acc3e1a2f4d`: the physical Windows/Chrome gate requires the production-owned native window to transition `visible -> hidden -> visible` while `GetTabsAsync()` target enumeration and chat-state polling remain healthy.
 
-UI-020 / #225 is in progress on `agent/ui-single-height-owner`: the compact Commands-menu experience delegates final Development Plan / Runtime Health heights to `ExpandableWorkspaceLayout`, preserving 58/118 and 58/140 compact logical heights through resize/DPI events while keeping legacy non-compact heights unchanged. Merge requires the complete eight-workflow PR gate set.
+UI-020 / #225 passed all eight established PR workflows on implementation head `c9c9a212e4177e6463af9cd00989e3e01fff7c18`, including the full Build GPTDeskTop runtime suite after restoring the pre-existing explicit incremental-registration guard. The compact Commands-menu experience delegates final Development Plan / Runtime Health heights to `ExpandableWorkspaceLayout`, preserving 58/118 and 58/140 compact logical heights through resize/DPI events while keeping legacy non-compact heights unchanged. PR #226 is ready for merge after this final documentation head passes the same eight gates.
 
 QA-005 also completed successfully on the dedicated real Windows/Chrome/CDP endurance run from commit `d87fcacf`: **610.6930764 seconds**, **606 successful hidden-window CDP polls**, **0 failed polls**, `HideChanged=True`, `ShowChanged=True`, with every successful poll returning the expected monitored content. The regular push workflow remains a 30-second smoke while `workflow_dispatch` retains the 610-second endurance option.
 
