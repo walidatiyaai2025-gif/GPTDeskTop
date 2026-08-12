@@ -10,14 +10,18 @@ using GPTDeskTop.Models;
 namespace GPTDeskTop.Services;
 
 /// <summary>
-/// Legacy probe command retained for CI compatibility. The probe now verifies that
-/// elapsed time never refreshes a healthy/generating ChatGPT tab, even beyond the
-/// former 30-second watchdog threshold, while an explicit current error still causes
-/// exactly one error-driven refresh of only the affected tab.
+/// Process-level CI probe for two critical monitor guarantees:
+/// 1) elapsed time never refreshes a healthy/generating ChatGPT tab; and
+/// 2) a current structured ChatGPT error performs a verified fresh-chat continuation,
+///    atomically rebinds the same Monitor ID, and only then closes the errored tab.
 /// </summary>
 internal static class NoResponseWatchdogProcessProbe
 {
     private const string Command = "--qa-no-response-probe";
+    private const string RecoveryContinuation = "qa-error-continuation";
+    private const string SlowConversationUrl = "https://chatgpt.com/c/qa-passive-wait-slow";
+    private const string ErrorConversationUrl = "https://chatgpt.com/c/qa-passive-wait-error";
+    private const string RecoveryConversationUrl = "https://chatgpt.com/c/qa-passive-wait-recovery";
 
     public static bool IsProbeCommand(string[] args)
         => args.Length > 0 && string.Equals(args[0], Command, StringComparison.OrdinalIgnoreCase);
@@ -56,17 +60,23 @@ internal static class NoResponseWatchdogProcessProbe
         Directory.CreateDirectory(probeRoot);
         var slowPath = Path.Combine(probeRoot, "slow.html");
         var errorPath = Path.Combine(probeRoot, "error.html");
+        var recoveryPath = Path.Combine(probeRoot, "recovery.html");
         await File.WriteAllTextAsync(slowPath, SlowPage()).ConfigureAwait(false);
         await File.WriteAllTextAsync(errorPath, ErrorPage()).ConfigureAwait(false);
+        await File.WriteAllTextAsync(recoveryPath, RecoveryPage()).ConfigureAwait(false);
 
         var slowUrl = new Uri(slowPath).AbsoluteUri;
         var errorUrl = new Uri(errorPath).AbsoluteUri;
+        var recoveryUrl = new Uri(recoveryPath).AbsoluteUri;
         var port = ReserveLoopbackPort();
         var chromeConfig = new ChromeConfig
         {
             DebuggingPort = port,
             DebuggingBaseUrl = $"http://127.0.0.1:{port}",
-            StartUrl = slowUrl
+            // The production fresh-chat API opens StartUrl. In this isolated probe StartUrl is
+            // a deterministic local composer page; the identity handler presents it as a stable
+            // ChatGPT /c/{id} conversation after Target.createTarget succeeds.
+            StartUrl = recoveryUrl
         };
         var monitoringConfig = new MonitoringConfig
         {
@@ -76,14 +86,16 @@ internal static class NoResponseWatchdogProcessProbe
         };
 
         var identityHandler = new ConversationIdentityChromeListHandler();
+        identityHandler.MapPhysicalUrl(recoveryUrl, RecoveryConversationUrl);
         using var httpClient = new HttpClient(identityHandler) { Timeout = TimeSpan.FromSeconds(5) };
         var chrome = new ChromeDevToolsService(httpClient, chromeConfig);
         var database = new LocalDatabase(Path.Combine(probeRoot, "passive-wait.db"));
         await database.InitializeAsync().ConfigureAwait(false);
 
-        // Preserve the old 30-second value deliberately. The production monitor must
-        // ignore it as an intervention trigger so this probe catches any regression.
+        // Preserve the retired 30-second value deliberately. Production monitoring must ignore it
+        // as an intervention trigger so this probe catches any elapsed-time refresh regression.
         await database.SetSettingAsync("NoResponseRefreshSeconds", "30").ConfigureAwait(false);
+        await database.SetSettingAsync("ChatGptErrorContinuationMessage", RecoveryContinuation).ConfigureAwait(false);
 
         Process? chromeProcess = null;
         var monitorService = new ChatGptMonitorService(chrome, database, monitoringConfig);
@@ -99,13 +111,11 @@ internal static class NoResponseWatchdogProcessProbe
             var slowPhysicalTab = await WaitForTabAsync(chrome, chromeProcess, slowUrl).ConfigureAwait(false);
             var errorPhysicalTab = await chrome.CreateTabAsync(errorUrl).ConfigureAwait(false);
 
-            const string slowConversationUrl = "https://chatgpt.com/c/qa-passive-wait-slow";
-            const string errorConversationUrl = "https://chatgpt.com/c/qa-passive-wait-error";
-            identityHandler.Map(slowPhysicalTab.Id, slowConversationUrl);
-            identityHandler.Map(errorPhysicalTab.Id, errorConversationUrl);
+            identityHandler.Map(slowPhysicalTab.Id, SlowConversationUrl);
+            identityHandler.Map(errorPhysicalTab.Id, ErrorConversationUrl);
 
-            var slowTab = WithConversationIdentity(slowPhysicalTab, slowConversationUrl);
-            var errorTab = WithConversationIdentity(errorPhysicalTab, errorConversationUrl);
+            var slowTab = WithConversationIdentity(slowPhysicalTab, SlowConversationUrl);
+            var errorTab = WithConversationIdentity(errorPhysicalTab, ErrorConversationUrl);
 
             var slowMonitor = await SaveMonitorAsync(database, "QA slow thinking tab", slowTab).ConfigureAwait(false);
             var errorMonitor = await SaveMonitorAsync(database, "QA explicit error tab", errorTab).ConfigureAwait(false);
@@ -113,24 +123,35 @@ internal static class NoResponseWatchdogProcessProbe
             await monitorService.StartMonitorAsync(slowMonitor, slowTab).ConfigureAwait(false);
             await monitorService.StartMonitorAsync(errorMonitor, errorTab).ConfigureAwait(false);
 
-            var deadline = DateTimeOffset.UtcNow.AddSeconds(65);
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(70);
             ChatPageState? slowState = null;
-            ChatPageState? errorState = null;
+            var recoveryCompleted = false;
             while (DateTimeOffset.UtcNow < deadline)
             {
                 slowState = await chrome.GetChatStateAsync(slowTab).ConfigureAwait(false);
-                errorState = await chrome.GetChatStateAsync(errorTab).ConfigureAwait(false);
-                if (string.Equals(slowState.LastAssistantText, "slow-complete-load-1", StringComparison.Ordinal) &&
-                    string.Equals(errorState.LastAssistantText, "error-recovered-load-2", StringComparison.Ordinal))
+                string[] snapshot;
+                lock (activities) snapshot = activities.ToArray();
+                recoveryCompleted = snapshot.Any(x =>
+                    x.Contains("QA explicit error monitor", StringComparison.Ordinal)
+                    && x.Contains("ChatGPT error recovery complete", StringComparison.Ordinal));
+
+                if (string.Equals(slowState.LastAssistantText, "slow-complete-load-1", StringComparison.Ordinal)
+                    && recoveryCompleted)
                     break;
+
                 await Task.Delay(500).ConfigureAwait(false);
             }
 
             slowState ??= await chrome.GetChatStateAsync(slowTab).ConfigureAwait(false);
-            errorState ??= await chrome.GetChatStateAsync(errorTab).ConfigureAwait(false);
             await Task.Delay(1500).ConfigureAwait(false);
             var slowFinal = await chrome.GetChatStateAsync(slowTab).ConfigureAwait(false);
-            var errorFinal = await chrome.GetChatStateAsync(errorTab).ConfigureAwait(false);
+            var liveTabs = await chrome.GetTabsAsync().ConfigureAwait(false);
+            var recoveryTab = liveTabs.FirstOrDefault(tab => ChatGptConversationIdentity.IsSame(tab.Url, RecoveryConversationUrl));
+            var recoveryFinal = recoveryTab is null
+                ? null
+                : await chrome.GetChatStateAsync(recoveryTab).ConfigureAwait(false);
+            var reboundMonitor = (await database.GetSavedMonitorsAsync().ConfigureAwait(false))
+                .Single(saved => saved.Id == errorMonitor.Id);
 
             string[] activitySnapshot;
             lock (activities) activitySnapshot = activities.ToArray();
@@ -139,13 +160,30 @@ internal static class NoResponseWatchdogProcessProbe
             {
                 SlowMonitorId = slowMonitor.Id,
                 ErrorMonitorId = errorMonitor.Id,
+                ReboundErrorMonitorId = reboundMonitor.Id,
                 SlowText = slowFinal.LastAssistantText,
-                ErrorText = errorFinal.LastAssistantText,
+                RecoveryText = recoveryFinal?.LastAssistantText ?? string.Empty,
+                ReboundErrorMonitorUrl = reboundMonitor.Url,
+                ReboundErrorMonitorTabId = reboundMonitor.TabId,
+                RecoveryTabId = recoveryTab?.Id ?? string.Empty,
                 SlowIsGenerating = slowFinal.IsGenerating,
-                ErrorIsGenerating = errorFinal.IsGenerating,
-                SlowErrorRefreshActivityCount = activitySnapshot.Count(x => x.Contains("QA slow thinking monitor", StringComparison.Ordinal) && x.Contains("Error saved. Refreshing only this tab", StringComparison.Ordinal)),
-                ErrorRefreshActivityCount = activitySnapshot.Count(x => x.Contains("QA explicit error monitor", StringComparison.Ordinal) && x.Contains("Error saved. Refreshing only this tab", StringComparison.Ordinal)),
-                ElapsedTimeRefreshActivityCount = activitySnapshot.Count(x => x.Contains("No new response for", StringComparison.OrdinalIgnoreCase) || x.Contains("NoResponseRefresh", StringComparison.OrdinalIgnoreCase)),
+                RecoveryIsGenerating = recoveryFinal?.IsGenerating ?? false,
+                SlowFalseRecoveryActivityCount = activitySnapshot.Count(x =>
+                    x.Contains("QA slow thinking monitor", StringComparison.Ordinal)
+                    && x.Contains("ChatGPT error saved. Opening a fresh chat", StringComparison.Ordinal)),
+                ErrorRecoveryStartActivityCount = activitySnapshot.Count(x =>
+                    x.Contains("QA explicit error monitor", StringComparison.Ordinal)
+                    && x.Contains("ChatGPT error saved. Opening a fresh chat", StringComparison.Ordinal)),
+                ErrorRecoveryCompletedActivityCount = activitySnapshot.Count(x =>
+                    x.Contains("QA explicit error monitor", StringComparison.Ordinal)
+                    && x.Contains("ChatGPT error recovery complete", StringComparison.Ordinal)),
+                VerifiedContinuationActivityCount = activitySnapshot.Count(x =>
+                    x.Contains("Verified message accepted", StringComparison.Ordinal)),
+                ElapsedTimeRefreshActivityCount = activitySnapshot.Count(x =>
+                    x.Contains("No new response for", StringComparison.OrdinalIgnoreCase)
+                    || x.Contains("NoResponseRefresh", StringComparison.OrdinalIgnoreCase)),
+                OldErrorTabStillOpen = liveTabs.Any(tab => string.Equals(tab.Id, errorPhysicalTab.Id, StringComparison.Ordinal)),
+                RecoveryTabOpen = recoveryTab is not null,
                 SlowStillRunning = monitorService.IsMonitorRunning(slowMonitor.Id),
                 ErrorStillRunning = monitorService.IsMonitorRunning(errorMonitor.Id),
                 Activity = activitySnapshot
@@ -231,23 +269,42 @@ internal static class NoResponseWatchdogProcessProbe
 <body>
   <main data-message-author-role="assistant"></main>
   <script>
-    const key = 'gptdesktop-passive-wait-error-load-count';
-    const count = Number(sessionStorage.getItem(key) || '0') + 1;
-    sessionStorage.setItem(key, String(count));
     const target = document.querySelector('[data-message-author-role="assistant"]');
-    if (count === 1) {
-      target.textContent = 'error-wait-load-1';
-      setTimeout(() => {
-        const alert = document.createElement('div');
-        alert.setAttribute('role', 'alert');
-        alert.style.width = '360px';
-        alert.style.height = '32px';
-        alert.textContent = 'Something went wrong';
-        document.body.appendChild(alert);
-      }, 10000);
-    } else {
-      target.textContent = `error-recovered-load-${count}`;
-    }
+    target.textContent = 'error-wait-load-1';
+    setTimeout(() => {
+      const alert = document.createElement('div');
+      alert.setAttribute('role', 'alert');
+      alert.style.width = '360px';
+      alert.style.height = '32px';
+      alert.textContent = 'Something went wrong';
+      document.body.appendChild(alert);
+    }, 10000);
+  </script>
+</body>
+</html>
+""";
+
+    private static string RecoveryPage() => """
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>QA recovery chat</title></head>
+<body>
+  <main data-message-author-role="assistant">recovery-ready</main>
+  <textarea id="prompt-textarea" placeholder="Message"></textarea>
+  <button data-testid="send-button" aria-label="Send">Send</button>
+  <script>
+    const editor = document.querySelector('#prompt-textarea');
+    const send = document.querySelector('[data-testid="send-button"]');
+    send.addEventListener('click', () => {
+      const text = editor.value.trim();
+      if (!text) return;
+      const user = document.createElement('div');
+      user.setAttribute('data-message-author-role', 'user');
+      user.textContent = text;
+      document.body.appendChild(user);
+      document.querySelector('[data-message-author-role="assistant"]').textContent = `recovery-received:${text}`;
+      editor.value = '';
+    });
   </script>
 </body>
 </html>
@@ -344,6 +401,7 @@ internal static class NoResponseWatchdogProcessProbe
         };
         private readonly object _sync = new();
         private readonly Dictionary<string, string> _conversationUrls = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _physicalUrlMappings = new(StringComparer.OrdinalIgnoreCase);
 
         public ConversationIdentityChromeListHandler()
             : base(new HttpClientHandler())
@@ -354,6 +412,12 @@ internal static class NoResponseWatchdogProcessProbe
         {
             lock (_sync)
                 _conversationUrls[targetId] = conversationUrl;
+        }
+
+        public void MapPhysicalUrl(string physicalUrl, string conversationUrl)
+        {
+            lock (_sync)
+                _physicalUrlMappings[physicalUrl] = conversationUrl;
         }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -367,14 +431,28 @@ internal static class NoResponseWatchdogProcessProbe
             var tabs = JsonSerializer.Deserialize<List<ChromeTab>>(json, JsonOptions);
             if (tabs is null || tabs.Count == 0) return response;
 
-            Dictionary<string, string> mappings;
+            Dictionary<string, string> targetMappings;
+            Dictionary<string, string> physicalMappings;
             lock (_sync)
-                mappings = new Dictionary<string, string>(_conversationUrls, StringComparer.Ordinal);
+            {
+                targetMappings = new Dictionary<string, string>(_conversationUrls, StringComparer.Ordinal);
+                physicalMappings = new Dictionary<string, string>(_physicalUrlMappings, StringComparer.OrdinalIgnoreCase);
+            }
 
             foreach (var tab in tabs)
             {
-                if (mappings.TryGetValue(tab.Id, out var conversationUrl))
+                if (targetMappings.TryGetValue(tab.Id, out var conversationUrl))
+                {
                     tab.Url = conversationUrl;
+                    continue;
+                }
+
+                if (physicalMappings.TryGetValue(tab.Url, out conversationUrl))
+                {
+                    lock (_sync)
+                        _conversationUrls[tab.Id] = conversationUrl;
+                    tab.Url = conversationUrl;
+                }
             }
 
             response.Content.Dispose();
@@ -387,13 +465,21 @@ internal static class NoResponseWatchdogProcessProbe
     {
         public long SlowMonitorId { get; init; }
         public long ErrorMonitorId { get; init; }
+        public long ReboundErrorMonitorId { get; init; }
         public string SlowText { get; init; } = string.Empty;
-        public string ErrorText { get; init; } = string.Empty;
+        public string RecoveryText { get; init; } = string.Empty;
+        public string ReboundErrorMonitorUrl { get; init; } = string.Empty;
+        public string ReboundErrorMonitorTabId { get; init; } = string.Empty;
+        public string RecoveryTabId { get; init; } = string.Empty;
         public bool SlowIsGenerating { get; init; }
-        public bool ErrorIsGenerating { get; init; }
-        public int SlowErrorRefreshActivityCount { get; init; }
-        public int ErrorRefreshActivityCount { get; init; }
+        public bool RecoveryIsGenerating { get; init; }
+        public int SlowFalseRecoveryActivityCount { get; init; }
+        public int ErrorRecoveryStartActivityCount { get; init; }
+        public int ErrorRecoveryCompletedActivityCount { get; init; }
+        public int VerifiedContinuationActivityCount { get; init; }
         public int ElapsedTimeRefreshActivityCount { get; init; }
+        public bool OldErrorTabStillOpen { get; init; }
+        public bool RecoveryTabOpen { get; init; }
         public bool SlowStillRunning { get; init; }
         public bool ErrorStillRunning { get; init; }
         public string[] Activity { get; init; } = [];

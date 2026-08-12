@@ -70,7 +70,12 @@ jobs:
           $versionPath = 'Output/Setup/Version.txt'
           if (-not (Test-Path $versionPath)) { throw "Standalone setup version receipt is missing: $versionPath." }
           $version = Get-Content $versionPath -Raw
-          if ($version -notmatch 'GPTDeskTop Setup v1\.8\.0') { throw "Unexpected setup version receipt: $version" }
+          $projectPath = 'src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj'
+          [xml]$project = Get-Content $projectPath
+          $expectedVersion = [string]($project.Project.PropertyGroup.Version | Select-Object -First 1)
+          if ([string]::IsNullOrWhiteSpace($expectedVersion)) { throw "$projectPath does not define a Version." }
+          $expectedReceipt = [regex]::Escape("GPTDeskTop Setup v$expectedVersion")
+          if ($version -notmatch $expectedReceipt) { throw "Unexpected setup version receipt. Expected v$expectedVersion, got: $version" }
           Write-Host "Verified standalone setup output: $path"
           Write-Host $version
 

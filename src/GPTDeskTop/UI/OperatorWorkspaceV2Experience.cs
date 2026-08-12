@@ -1,0 +1,221 @@
+using System.Runtime.CompilerServices;
+
+namespace GPTDeskTop.UI;
+
+/// <summary>
+/// GPTDeskTop 2.0 operator workspace: the main surface is reserved for open ChatGPT tabs and
+/// monitor state. Live activity/history and development details remain available on demand.
+/// </summary>
+internal static class OperatorWorkspaceV2Experience
+{
+    private static readonly ConditionalWeakTable<MainForm, Installation> Installations = new();
+
+    [ModuleInitializer]
+    internal static void Initialize()
+        => Application.Idle += InstallOnOpenMainForms;
+
+    private static void InstallOnOpenMainForms(object? sender, EventArgs e)
+    {
+        foreach (Form form in Application.OpenForms)
+        {
+            if (form is MainForm main && !main.IsDisposed && !main.Disposing)
+                TryInstall(main);
+        }
+    }
+
+    internal static bool TryInstall(MainForm form)
+    {
+        if (Installations.TryGetValue(form, out _))
+            return true;
+
+        // CompactTopCommandMenuExperience is the command owner. Do not hide the development
+        // dashboard until its buttons have been harvested by the menu proxy.
+        if (form.MainMenuStrip is null)
+            return false;
+
+        var development = Descendants(form).OfType<DevelopmentTaskDashboardControl>().FirstOrDefault();
+        var root = form.Controls
+            .OfType<TableLayoutPanel>()
+            .FirstOrDefault(candidate => candidate.Dock == DockStyle.Fill && candidate.RowCount == 5 && candidate.ColumnCount == 1);
+        if (development is null || root is null || root.RowStyles.Count < 5)
+            return false;
+
+        var diagnostics = root.Controls
+            .Cast<Control>()
+            .FirstOrDefault(control => root.GetRow(control) == 3);
+        var versionLabel = root.Controls
+            .OfType<Label>()
+            .FirstOrDefault(label => root.GetRow(label) == 4 && label.Text.StartsWith("GPTDeskTop v", StringComparison.Ordinal));
+        if (diagnostics is null || versionLabel is null)
+            return false;
+
+        root.SuspendLayout();
+        try
+        {
+            root.Controls.Remove(diagnostics);
+            root.RowStyles[2].SizeType = SizeType.Percent;
+            root.RowStyles[2].Height = 100F;
+            root.RowStyles[3].SizeType = SizeType.Absolute;
+            root.RowStyles[3].Height = 0F;
+
+            var liveWindow = BuildLiveMonitorWindow(form, diagnostics);
+            var footerStatus = BuildFooter(root, versionLabel, development);
+
+            // Keep the control alive because its existing buttons remain the single command source
+            // used by the compact Commands menu, but remove its permanent header from the workspace.
+            development.Visible = false;
+            development.Height = 0;
+            development.MinimumSize = Size.Empty;
+
+            var refreshTimer = new System.Windows.Forms.Timer { Interval = 500 };
+            refreshTimer.Tick += (_, _) => footerStatus.Text = BuildDevelopmentFooterText(development);
+            refreshTimer.Start();
+
+            var installation = new Installation(form, liveWindow, footerStatus, refreshTimer);
+            Installations.Add(form, installation);
+            form.FormClosing += (_, _) => installation.OwnerClosing = true;
+            form.FormClosed += (_, _) => installation.Dispose();
+        }
+        finally
+        {
+            root.ResumeLayout(true);
+        }
+
+        return true;
+    }
+
+    internal static void ShowLiveMonitor(MainForm form)
+    {
+        if (!TryInstall(form) || !Installations.TryGetValue(form, out var installation))
+            return;
+
+        if (!installation.LiveWindow.Visible)
+            installation.LiveWindow.Show(form);
+
+        if (installation.LiveWindow.WindowState == FormWindowState.Minimized)
+            installation.LiveWindow.WindowState = FormWindowState.Normal;
+
+        installation.LiveWindow.BringToFront();
+        installation.LiveWindow.Activate();
+    }
+
+    private static Form BuildLiveMonitorWindow(MainForm owner, Control diagnostics)
+    {
+        var window = new Form
+        {
+            Text = "Live Monitor & History",
+            StartPosition = FormStartPosition.CenterParent,
+            ShowInTaskbar = false,
+            AutoScaleMode = AutoScaleMode.Dpi,
+            MinimumSize = new Size(920, 560),
+            ClientSize = new Size(1180, 720),
+            BackColor = FluentTheme.Background
+        };
+
+        diagnostics.Dock = DockStyle.Fill;
+        diagnostics.Margin = Padding.Empty;
+        window.Controls.Add(diagnostics);
+        FluentTheme.Apply(window);
+        return window;
+    }
+
+    private static Label BuildFooter(
+        TableLayoutPanel root,
+        Label versionLabel,
+        DevelopmentTaskDashboardControl development)
+    {
+        root.Controls.Remove(versionLabel);
+
+        var footer = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = versionLabel.BackColor
+        };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33F));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34F));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33F));
+        footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+        var footerStatus = new Label
+        {
+            Text = BuildDevelopmentFooterText(development),
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleCenter,
+            AutoEllipsis = true,
+            ForeColor = FluentTheme.Muted,
+            Font = new Font("Segoe UI Variable Text", 8.5F),
+            AccessibleName = "Development runtime status"
+        };
+
+        var leftSpacer = new Label { Dock = DockStyle.Fill };
+        versionLabel.Dock = DockStyle.Fill;
+        versionLabel.TextAlign = ContentAlignment.MiddleRight;
+
+        footer.Controls.Add(leftSpacer, 0, 0);
+        footer.Controls.Add(footerStatus, 1, 0);
+        footer.Controls.Add(versionLabel, 2, 0);
+        root.Controls.Add(footer, 0, 4);
+
+        var tip = new ToolTip();
+        tip.SetToolTip(footerStatus, "Development controls and sent-message catalog are available from ☰ Commands.");
+        footerStatus.Disposed += (_, _) => tip.Dispose();
+        return footerStatus;
+    }
+
+    private static string BuildDevelopmentFooterText(DevelopmentTaskDashboardControl development)
+    {
+        var summary = development.FooterSummary;
+        return string.IsNullOrWhiteSpace(summary) ? "Development • Ready" : $"Development • {summary}";
+    }
+
+    private static IEnumerable<Control> Descendants(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            yield return child;
+            foreach (var descendant in Descendants(child))
+                yield return descendant;
+        }
+    }
+
+    private sealed class Installation : IDisposable
+    {
+        private readonly MainForm _owner;
+        private readonly System.Windows.Forms.Timer _timer;
+
+        public Installation(MainForm owner, Form liveWindow, Label footerStatus, System.Windows.Forms.Timer timer)
+        {
+            _owner = owner;
+            LiveWindow = liveWindow;
+            FooterStatus = footerStatus;
+            _timer = timer;
+
+            LiveWindow.FormClosing += OnLiveWindowClosing;
+        }
+
+        public Form LiveWindow { get; }
+        public Label FooterStatus { get; }
+        public bool OwnerClosing { get; set; }
+
+        private void OnLiveWindowClosing(object? sender, FormClosingEventArgs e)
+        {
+            if (OwnerClosing || _owner.IsDisposed || _owner.Disposing)
+                return;
+
+            e.Cancel = true;
+            LiveWindow.Hide();
+        }
+
+        public void Dispose()
+        {
+            _timer.Stop();
+            _timer.Dispose();
+            LiveWindow.FormClosing -= OnLiveWindowClosing;
+            LiveWindow.Dispose();
+        }
+    }
+}

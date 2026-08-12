@@ -59,6 +59,7 @@ public sealed class ConfigurationBackupService
         "RotateAfterAssistantMessages",
         "MessageCountRotationStartMessage",
         "NoResponseRefreshSeconds",
+        "ChatGptErrorContinuationMessage",
         "TimeoutRecoveryMessage",
         "NotificationDurationSeconds",
         "NotificationSoundEnabled",

@@ -321,16 +321,34 @@ public sealed class ChromeDevToolsService
             var replacement = await TryFindConversationTabAsync(tab.Url, cancellationToken);
             if (replacement is not null)
             {
-                RebindTab(tab, replacement);
-                return true;
+                // First escalation level: keep the exact conversation/target, force a clean CDP
+                // session, reload it, and give ChatGPT a bounded window to restore real content.
+                if (await RefreshConversationTabAsync(replacement, cancellationToken))
+                {
+                    RebindTab(tab, replacement);
+                    return true;
+                }
+
+                // Second escalation level: the refreshed tab never became readable. Open the exact
+                // saved /c/{conversation-id} URL in a new target; close the stale target only after
+                // the replacement proves it can expose conversation state.
+                replacement = await ReopenConversationTabAsync(tab.Url, replacement, cancellationToken);
+                if (replacement is not null)
+                {
+                    RebindTab(tab, replacement);
+                    return true;
+                }
             }
 
             var liveTabs = await TryGetLiveTabsAsync(cancellationToken);
             if (liveTabs is { Count: > 0 })
             {
-                replacement = await CreateTabAsync(tab.Url, cancellationToken);
-                RebindTab(tab, replacement);
-                return true;
+                replacement = await ReopenConversationTabAsync(tab.Url, tab, cancellationToken);
+                if (replacement is not null)
+                {
+                    RebindTab(tab, replacement);
+                    return true;
+                }
             }
 
             // Do not kill a healthy hidden browser because of a short DevTools transport blip.
@@ -341,9 +359,19 @@ public sealed class ChromeDevToolsService
                 replacement = liveTabs.FirstOrDefault(candidate =>
                     RuntimeHealthPresentation.IsChatGptConversationUrl(candidate.Url)
                     && ChatGptConversationIdentity.IsSame(tab.Url, candidate.Url));
-                replacement ??= await CreateTabAsync(tab.Url, cancellationToken);
-                RebindTab(tab, replacement);
-                return true;
+
+                if (replacement is not null && await RefreshConversationTabAsync(replacement, cancellationToken))
+                {
+                    RebindTab(tab, replacement);
+                    return true;
+                }
+
+                replacement = await ReopenConversationTabAsync(tab.Url, replacement ?? tab, cancellationToken);
+                if (replacement is not null)
+                {
+                    RebindTab(tab, replacement);
+                    return true;
+                }
             }
 
             // The endpoint stayed unavailable through the grace window. Now a real browser restart
@@ -360,6 +388,9 @@ public sealed class ChromeDevToolsService
                     return false;
                 replacement = await CreateTabAsync(tab.Url, cancellationToken);
             }
+
+            if (!await WaitForReadableConversationStateAsync(replacement, cancellationToken))
+                return false;
 
             RebindTab(tab, replacement);
             if (restoreHidden)
@@ -380,6 +411,78 @@ public sealed class ChromeDevToolsService
             _monitorBrowserRecoveryGate.Release();
         }
     }
+
+    private async Task<bool> RefreshConversationTabAsync(ChromeTab conversationTab, CancellationToken cancellationToken)
+    {
+        try
+        {
+            _sessionPool.Invalidate(conversationTab.Id);
+            await ReloadTabAsync(conversationTab, cancellationToken);
+            return await WaitForReadableConversationStateAsync(conversationTab, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+        {
+            return false;
+        }
+    }
+
+    private async Task<ChromeTab?> ReopenConversationTabAsync(string conversationUrl, ChromeTab? staleTab, CancellationToken cancellationToken)
+    {
+        ChromeTab? reopened = null;
+        try
+        {
+            reopened = await CreateTabAsync(conversationUrl, cancellationToken);
+            if (!await WaitForReadableConversationStateAsync(reopened, cancellationToken))
+            {
+                await CloseTabAsync(reopened, cancellationToken);
+                return null;
+            }
+
+            if (staleTab is not null && !string.Equals(staleTab.Id, reopened.Id, StringComparison.Ordinal))
+                await CloseTabAsync(staleTab, cancellationToken);
+
+            return reopened;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            if (reopened is not null) await CloseTabAsync(reopened, CancellationToken.None);
+            throw;
+        }
+        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+        {
+            if (reopened is not null) await CloseTabAsync(reopened, CancellationToken.None);
+            return null;
+        }
+    }
+
+    private async Task<bool> WaitForReadableConversationStateAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var state = await ReadChatStateCoreAsync(tab, cancellationToken);
+                if (state.AssistantCount > 0
+                    || state.IsGenerating
+                    || !string.IsNullOrWhiteSpace(state.LastAssistantText)
+                    || !string.IsNullOrWhiteSpace(state.ErrorText))
+                    return true;
+            }
+            catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+            {
+            }
+
+            await Task.Delay(500, cancellationToken);
+        }
+
+        return false;
+    }
+
     private async Task<List<ChromeTab>?> TryGetLiveTabsAsync(CancellationToken cancellationToken)
     {
         try { return await GetTabsAsync(cancellationToken); }
