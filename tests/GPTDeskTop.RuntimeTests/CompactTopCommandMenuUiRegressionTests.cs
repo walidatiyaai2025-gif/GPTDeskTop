@@ -66,15 +66,38 @@ public sealed class CompactTopCommandMenuUiRegressionTests
     }
 
     [Fact]
-    public void CompactStatusBarsPreserveDetailsOnDemand()
+    public void CompactStatusBarsPreserveDetailsOnDemandWithOnePhysicalHeightOwner()
     {
-        var source = ReadSource("src", "GPTDeskTop", "UI", "CompactTopCommandMenuExperience.cs");
+        var compact = ReadSource("src", "GPTDeskTop", "UI", "CompactTopCommandMenuExperience.cs");
+        var layout = ReadSource("src", "GPTDeskTop", "UI", "ExpandableWorkspaceLayout.cs");
 
-        Assert.Contains("private const int CompactDevelopmentHeight = 58;", source, StringComparison.Ordinal);
-        Assert.Contains("private const int CompactHealthHeight = 58;", source, StringComparison.Ordinal);
-        Assert.Contains("development.IsExpanded ? \"Hide Details\" : \"Show Details\"", source, StringComparison.Ordinal);
-        Assert.Contains("health.IsExpanded ? \"Hide Details\" : \"Show Details\"", source, StringComparison.Ordinal);
-        Assert.Contains("development.Height = development.IsExpanded", source, StringComparison.Ordinal);
-        Assert.Contains("health.Height = health.IsExpanded", source, StringComparison.Ordinal);
+        Assert.Contains("development.IsExpanded ? \"Hide Details\" : \"Show Details\"", compact, StringComparison.Ordinal);
+        Assert.Contains("health.IsExpanded ? \"Hide Details\" : \"Show Details\"", compact, StringComparison.Ordinal);
+        Assert.Contains("ExpandableWorkspaceLayout.EnableCompactOperatorLayout(development);", compact, StringComparison.Ordinal);
+        Assert.Contains("ExpandableWorkspaceLayout.EnableCompactOperatorLayout(health);", compact, StringComparison.Ordinal);
+        Assert.DoesNotContain("CompactDevelopmentHeight", compact, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApplyDevelopmentHeight", compact, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApplyHealthHeight", compact, StringComparison.Ordinal);
+
+        Assert.Contains("private const int CompactDevelopmentCollapsedHeight = 58;", layout, StringComparison.Ordinal);
+        Assert.Contains("private const int CompactDevelopmentExpandedHeight = 118;", layout, StringComparison.Ordinal);
+        Assert.Contains("private const int CompactRuntimeHealthCollapsedHeight = 58;", layout, StringComparison.Ordinal);
+        Assert.Contains("private const int CompactRuntimeHealthExpandedHeight = 140;", layout, StringComparison.Ordinal);
+        Assert.Contains("CompactOperatorControls.TryGetValue(control, out _)", layout, StringComparison.Ordinal);
+        Assert.Contains("control.SizeChanged += (_, _) => ApplyCurrentHeight();", layout, StringComparison.Ordinal);
+        Assert.Contains("control.DpiChangedAfterParent += (_, _) => ApplyCurrentHeight();", layout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NonCompactControlsRetainLegacyExpandableHeights()
+    {
+        var layout = ReadSource("src", "GPTDeskTop", "UI", "ExpandableWorkspaceLayout.cs");
+
+        Assert.Contains("private const int DevelopmentCollapsedHeight = 72;", layout, StringComparison.Ordinal);
+        Assert.Contains("private const int DevelopmentExpandedHeight = 178;", layout, StringComparison.Ordinal);
+        Assert.Contains("private const int RuntimeHealthCollapsedHeight = 62;", layout, StringComparison.Ordinal);
+        Assert.Contains("private const int RuntimeHealthExpandedHeight = 188;", layout, StringComparison.Ordinal);
+        Assert.Contains("compact ? CompactDevelopmentCollapsedHeight : DevelopmentCollapsedHeight", layout, StringComparison.Ordinal);
+        Assert.Contains("compact ? CompactRuntimeHealthCollapsedHeight : RuntimeHealthCollapsedHeight", layout, StringComparison.Ordinal);
     }
 }

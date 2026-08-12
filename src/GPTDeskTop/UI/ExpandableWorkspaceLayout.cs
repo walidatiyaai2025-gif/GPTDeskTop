@@ -10,22 +10,28 @@ internal static class ExpandableWorkspaceLayoutBootstrap
 }
 
 /// <summary>
-/// Keeps expandable dashboard workspaces on DPI-scaled logical heights even when
-/// their legacy toggle implementations assign the original logical pixel constants.
-/// Registration is incremental: each form/control tree is visited once and late
-/// controls are registered through ControlAdded.
+/// Owns the DPI-scaled physical heights of expandable dashboard workspaces.
+/// Controls keep ownership of their expanded/collapsed state; this layout layer is the
+/// single place that translates that state into physical height, including compact operator mode.
+/// Registration is incremental: each form/control tree is visited once and late controls are
+/// registered through ControlAdded.
 /// </summary>
 internal static class ExpandableWorkspaceLayout
 {
     private const int DevelopmentCollapsedHeight = 72;
     private const int DevelopmentExpandedHeight = 178;
+    private const int CompactDevelopmentCollapsedHeight = 58;
+    private const int CompactDevelopmentExpandedHeight = 118;
     private const int RuntimeHealthCollapsedHeight = 62;
     private const int RuntimeHealthExpandedHeight = 188;
+    private const int CompactRuntimeHealthCollapsedHeight = 58;
+    private const int CompactRuntimeHealthExpandedHeight = 140;
     private const int HistoryCollapsedHeight = 56;
     private const int HistoryExpandedHeight = 330;
 
     private static readonly ConditionalWeakTable<Form, FormRegistration> Forms = new();
     private static readonly ConditionalWeakTable<Control, ControlRegistration> Controls = new();
+    private static readonly ConditionalWeakTable<Control, CompactOperatorRegistration> CompactOperatorControls = new();
 
     internal static void ApplyOpenForms()
     {
@@ -42,6 +48,20 @@ internal static class ExpandableWorkspaceLayout
         registration.Initialized = true;
 
         RegisterTree(form);
+    }
+
+    /// <summary>
+    /// Enables compact physical heights for a supported expandable operator control while keeping
+    /// legacy heights unchanged everywhere else. CompactTopCommandMenuExperience calls this after
+    /// it removes the embedded action chrome.
+    /// </summary>
+    internal static void EnableCompactOperatorLayout(Control control)
+    {
+        if (control.IsDisposed || control.Disposing) return;
+
+        CompactOperatorControls.GetValue(control, _ => new CompactOperatorRegistration());
+        RegisterTree(control);
+        ApplyExpandableHeight(control);
     }
 
     private static void RegisterTree(Control control)
@@ -68,43 +88,48 @@ internal static class ExpandableWorkspaceLayout
     private static void RegisterExpandable(Control control, ControlRegistration registration)
     {
         if (registration.ExpandableHooked) return;
-
-        Func<bool>? isExpanded = null;
-        var collapsedLogicalHeight = 0;
-        var expandedLogicalHeight = 0;
-
-        switch (control)
-        {
-            case DevelopmentTaskDashboardControl development:
-                isExpanded = () => development.IsExpanded;
-                collapsedLogicalHeight = DevelopmentCollapsedHeight;
-                expandedLogicalHeight = DevelopmentExpandedHeight;
-                break;
-            case RuntimeHealthControl runtimeHealth:
-                isExpanded = () => runtimeHealth.IsExpanded;
-                collapsedLogicalHeight = RuntimeHealthCollapsedHeight;
-                expandedLogicalHeight = RuntimeHealthExpandedHeight;
-                break;
-            case HistoryWorkspaceControl history:
-                isExpanded = () => history.IsExpanded;
-                collapsedLogicalHeight = HistoryCollapsedHeight;
-                expandedLogicalHeight = HistoryExpandedHeight;
-                break;
-            default:
-                return;
-        }
+        if (!IsSupportedExpandable(control)) return;
 
         registration.ExpandableHooked = true;
 
         void ApplyCurrentHeight()
         {
             if (control.IsDisposed || control.Disposing) return;
-            ApplyHeight(control, isExpanded(), collapsedLogicalHeight, expandedLogicalHeight);
+            ApplyExpandableHeight(control);
         }
 
         control.SizeChanged += (_, _) => ApplyCurrentHeight();
         control.DpiChangedAfterParent += (_, _) => ApplyCurrentHeight();
         ApplyCurrentHeight();
+    }
+
+    private static bool IsSupportedExpandable(Control control)
+        => control is DevelopmentTaskDashboardControl or RuntimeHealthControl or HistoryWorkspaceControl;
+
+    private static void ApplyExpandableHeight(Control control)
+    {
+        var compact = CompactOperatorControls.TryGetValue(control, out _);
+
+        switch (control)
+        {
+            case DevelopmentTaskDashboardControl development:
+                ApplyHeight(
+                    development,
+                    development.IsExpanded,
+                    compact ? CompactDevelopmentCollapsedHeight : DevelopmentCollapsedHeight,
+                    compact ? CompactDevelopmentExpandedHeight : DevelopmentExpandedHeight);
+                break;
+            case RuntimeHealthControl runtimeHealth:
+                ApplyHeight(
+                    runtimeHealth,
+                    runtimeHealth.IsExpanded,
+                    compact ? CompactRuntimeHealthCollapsedHeight : RuntimeHealthCollapsedHeight,
+                    compact ? CompactRuntimeHealthExpandedHeight : RuntimeHealthExpandedHeight);
+                break;
+            case HistoryWorkspaceControl history:
+                ApplyHeight(history, history.IsExpanded, HistoryCollapsedHeight, HistoryExpandedHeight);
+                break;
+        }
     }
 
     private static void ApplyHeight(
@@ -135,5 +160,9 @@ internal static class ExpandableWorkspaceLayout
     {
         internal bool ChildHooked { get; set; }
         internal bool ExpandableHooked { get; set; }
+    }
+
+    private sealed class CompactOperatorRegistration
+    {
     }
 }
