@@ -36,6 +36,11 @@ public sealed class DevelopmentTaskDeliveryReceiptTests
     {
         var source = File.ReadAllText(RepositoryPath("Services", "ChromeDevToolsService.cs"));
 
-        Assert.Contains("if (string.Equals(before.LastText, expected, StringComparison.Ordinal)) return true;", source, StringComparison.Ordinal);
+        // Normal verified sends retain the crash-safe already-delivered shortcut. Restart recovery
+        // can opt out with requireNewTurn=true so a repeated continuation such as "كمل" must create
+        // a new user turn instead of accepting an older identical turn as the receipt.
+        Assert.Contains("bool requireNewTurn = false", source, StringComparison.Ordinal);
+        Assert.Contains("if (!requireNewTurn && string.Equals(before.LastText, expected, StringComparison.Ordinal)) return true;", source, StringComparison.Ordinal);
+        Assert.Contains("current.Count > before.Count && string.Equals(current.LastText, expected, StringComparison.Ordinal)", source, StringComparison.Ordinal);
     }
 }

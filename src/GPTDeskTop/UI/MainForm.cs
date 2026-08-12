@@ -46,6 +46,7 @@ public sealed class MainForm : Form
     private readonly Label _tabsEmptyState = CreateEmptyState("No ChatGPT conversations are open", "Launch the monitor Chrome window or choose Refresh after opening a conversation page.");
     private readonly Label _monitorsEmptyState = CreateEmptyState("No saved monitors yet", "Select an open ChatGPT conversation and choose Add Monitor to start tracking it.");
     private readonly Label _historyEmptyState = CreateEmptyState("No stored history yet", "Inbound, outbound and recovery receipts will appear here as monitors run.");
+    private readonly ShutdownLoadingOverlay _shutdownOverlay = new();
 
     private List<ChromeTab> _tabs = new();
     private List<SavedMonitor> _monitors = new();
@@ -121,6 +122,8 @@ public sealed class MainForm : Form
         root.Controls.Add(BuildDiagnostics(), 0, 3);
         root.Controls.Add(_versionLabel, 0, 4);
         Controls.Add(root);
+        Controls.Add(_shutdownOverlay);
+        _shutdownOverlay.BringToFront();
         UpdateChromeVisibilityButtons();
         UpdateEmptyStates();
     }
@@ -1081,8 +1084,26 @@ public sealed class MainForm : Form
         }
         if (tab is null)
         {
-            AppendActivity($"Monitor #{monitor.Id}: matching tab not open.");
-            return;
+            AppendActivity($"Monitor #{monitor.Id}: matching tab not open. Reopening the saved conversation and restoring its follow-up message...");
+            try
+            {
+                var recovery = await MonitorTabRecoveryService.EnsureMonitorTabAsync(
+                    _chrome,
+                    _database,
+                    monitor,
+                    sendFollowUpWhenRecreated: true);
+                tab = recovery.Tab;
+                await RefreshTabsAsync();
+                AppendActivity(recovery.FollowUpSent
+                    ? $"Monitor #{monitor.Id}: saved conversation reopened and follow-up message sent."
+                    : $"Monitor #{monitor.Id}: saved conversation reopened. Follow-up delivery was not confirmed; monitoring will still resume.");
+            }
+            catch (Exception ex)
+            {
+                ExceptionLogService.Log(ex, "MainForm.RecoverMissingMonitorTab", monitor.Id, monitor.TabId, monitor.Title);
+                AppendActivity($"Monitor #{monitor.Id}: browser/tab recovery failed: {ex.Message}");
+                return;
+            }
         }
 
         await _monitor.StartMonitorAsync(monitor, tab);
@@ -1268,48 +1289,92 @@ public sealed class MainForm : Form
 
         _shutdownRequested = true;
         ControlBox = false;
-        Enabled = false;
-        UseWaitCursor = true;
+        UseWaitCursor = false;
         Text = $"GPTDeskTop v{GetAppVersion()} - Closing...";
+        _shutdownOverlay.ShowStatus("Preparing a safe shutdown…");
         _ = CompleteShutdownAsync();
     }
 
     private async Task CompleteShutdownAsync()
     {
-        using (var layoutTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+        try
         {
+            _shutdownOverlay.SetStatus("Saving workspace layout…");
+            using (var layoutTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+            {
+                try
+                {
+                    AppendActivity("Closing application: saving workspace layout...");
+                    await PersistOperatorLayoutAsync(layoutTimeout.Token);
+                }
+                catch (Exception ex)
+                {
+                    ExceptionLogService.Log(ex, "MainForm.PersistOperatorLayout");
+                }
+            }
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+            _shutdownOverlay.SetStatus("Saving the monitors that must resume next time…");
             try
             {
-                AppendActivity("Closing application: saving workspace layout...");
-                await PersistOperatorLayoutAsync(layoutTimeout.Token);
+                await PersistRunningMonitorIntentAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                AppendActivity("Shutdown state snapshot reached the safety timeout.");
             }
             catch (Exception ex)
             {
-                ExceptionLogService.Log(ex, "MainForm.PersistOperatorLayout");
+                ExceptionLogService.Log(ex, "MainForm.PersistRunningMonitorIntent");
+                AppendActivity($"Shutdown state snapshot warning: {ex.Message}");
             }
-        }
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        try
-        {
-            AppendActivity("Closing application: stopping monitor workers...");
-            if (_monitor.IsRunning)
-                await _monitor.StopAllAsync().WaitAsync(timeout.Token);
+            if (!timeout.IsCancellationRequested)
+            {
+                _shutdownOverlay.SetStatus("Stopping monitor workers safely…");
+                try
+                {
+                    AppendActivity("Closing application: stopping monitor workers...");
+                    if (_monitor.IsRunning)
+                        await _monitor.StopAllAsync().WaitAsync(timeout.Token);
+                }
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+                {
+                    AppendActivity("Shutdown worker stop reached the 10-second safety timeout.");
+                }
+                catch (Exception ex)
+                {
+                    ExceptionLogService.Log(ex, "MainForm.StopMonitorWorkers");
+                    AppendActivity($"Shutdown worker stop warning: {ex.Message}");
+                }
+            }
 
-            AppendActivity("Closing application: closing monitor Chrome tabs...");
-            await _chrome.CloseAllMonitorTabsAsync(timeout.Token);
-        }
-        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
-        {
-            AppendActivity("Shutdown cleanup reached the 10-second safety timeout. Continuing application exit.");
-        }
-        catch (Exception ex)
-        {
-            ExceptionLogService.Log(ex, "MainForm.GracefulShutdown");
-            AppendActivity($"Shutdown cleanup warning: {ex.Message}");
+            if (!timeout.IsCancellationRequested)
+            {
+                _shutdownOverlay.SetStatus("Closing the monitor Chrome window and tabs…");
+                try
+                {
+                    AppendActivity("Closing application: closing monitor Chrome tabs...");
+                    await _chrome.CloseAllMonitorTabsAsync(timeout.Token);
+                }
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+                {
+                    AppendActivity("Shutdown Chrome cleanup reached the 10-second safety timeout.");
+                }
+                catch (Exception ex)
+                {
+                    ExceptionLogService.Log(ex, "MainForm.CloseMonitorChrome");
+                    AppendActivity($"Shutdown Chrome cleanup warning: {ex.Message}");
+                }
+            }
+
+            if (timeout.IsCancellationRequested)
+                AppendActivity("Shutdown cleanup reached the 10-second safety timeout. Continuing application exit.");
         }
         finally
         {
+            _shutdownOverlay.SetStatus("Finalizing…");
             _shutdownCompleted = true;
             if (!IsDisposed && IsHandleCreated)
             {
@@ -1317,5 +1382,21 @@ public sealed class MainForm : Form
                 catch (InvalidOperationException) { }
             }
         }
+    }
+
+    private async Task PersistRunningMonitorIntentAsync(CancellationToken cancellationToken)
+    {
+        var savedMonitors = await _database.GetSavedMonitorsAsync(cancellationToken);
+        var runningMonitorIds = savedMonitors
+            .Where(saved => _monitor.IsMonitorRunning(saved.Id))
+            .Select(saved => saved.Id)
+            .OrderBy(id => id)
+            .ToArray();
+
+        await LastWorkingStateService.ReplaceDesiredMonitorIdsAsync(
+            _database,
+            runningMonitorIds,
+            cancellationToken);
+        AppendActivity($"Closing application: saved {runningMonitorIds.Length} running monitor(s) for automatic restart resume.");
     }
 }
