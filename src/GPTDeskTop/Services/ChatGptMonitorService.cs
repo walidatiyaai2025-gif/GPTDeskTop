@@ -368,10 +368,13 @@ public sealed class ChatGptMonitorService
                         var handoffService = new ConversationHandoffService(_database); var handoffMessage = await handoffService.BuildAsync(monitor, text, oldTab, cancellationToken); var startMessage = string.IsNullOrWhiteSpace(handoffMessage) ? (string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage) : handoffMessage; var sent = await SendWhenReadyAsync(monitor.Id, newTab, startMessage, allowRecoveryReload: true, cancellationToken);
                         if (!sent)
                         {
-                            Activity?.Invoke(monitor.Id, $"{prefix} Rotation handoff is still not accepted. Closing the unused new tab and retrying the same rotation later.");
+                            Activity?.Invoke(monitor.Id, $"{prefix} Rotation handoff was not verified. Closing the unused new tab; automatic duplicate retry is suppressed until the source response changes.");
                             await _database.AddLogAsync("System", startMessage, text, "RotationHandoffDeferred", monitor.Id, newTab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke();
                             try { await _chrome.CloseTabAsync(newTab, cancellationToken); } catch (Exception closeEx) when (IsTransientChromeException(closeEx)) { Activity?.Invoke(monitor.Id, $"Deferred rotation tab close failed transiently: {closeEx.Message}"); }
-                            lastHandledText = string.Empty; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
+                            // Keep lastHandledText equal to this terminal response. SendWhenReadyAsync already
+                            // exhausted its bounded delivery retries; re-arming the same response here would
+                            // create an unbounded new-chat / continuation-message loop.
+                            candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
                             await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
                             continue;
                         }
@@ -386,7 +389,10 @@ public sealed class ChatGptMonitorService
                             cancellationToken);
                         if (committedTab is null)
                         {
-                            lastHandledText = string.Empty; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
+                            Activity?.Invoke(monitor.Id, $"{prefix} Handoff delivery was accepted but the new conversation could not be committed. Automatic re-send is suppressed for this unchanged source response.");
+                            // The message may already exist in the new chat. Never re-arm the same source
+                            // response here, otherwise a commit/identity failure can duplicate the handoff.
+                            candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
                             await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
                             continue;
                         }

@@ -12,26 +12,52 @@ public sealed class ChatGptRotationHandoffRegressionTests
     }
 
     [Fact]
-    public void DeferredRotationKeepsOriginalChatEligibleForRetry()
+    public void DeferredContextLimitRotationDoesNotRearmUnchangedTerminalResponse()
     {
         var source = MonitorSource();
         var rotationStart = source.IndexOf(
             "if (monitor.ConversationRotationEnabled && IsConversationContextLimit(text))",
             StringComparison.Ordinal);
-        var deferred = source.IndexOf("\"RotationHandoffDeferred\"", rotationStart, StringComparison.Ordinal);
-        var resetHandledText = source.IndexOf("lastHandledText = string.Empty", deferred, StringComparison.Ordinal);
-        var successfulRotation = source.IndexOf("CommitVerifiedConversationHandoffAsync", deferred, StringComparison.Ordinal);
-        var closeOldTab = source.IndexOf("await _chrome.CloseTabAsync(oldTab", successfulRotation, StringComparison.Ordinal);
+        var sendFailure = source.IndexOf("if (!sent)", rotationStart, StringComparison.Ordinal);
+        var deferred = source.IndexOf("\"RotationHandoffDeferred\"", sendFailure, StringComparison.Ordinal);
+        var sendFailureContinue = source.IndexOf("continue;", deferred, StringComparison.Ordinal);
 
         Assert.True(rotationStart >= 0);
-        Assert.True(deferred > rotationStart);
-        Assert.True(resetHandledText > deferred);
-        Assert.True(successfulRotation > resetHandledText);
-        Assert.True(closeOldTab > successfulRotation);
+        Assert.True(sendFailure > rotationStart);
+        Assert.True(deferred > sendFailure);
+        Assert.True(sendFailureContinue > deferred);
+
+        var sendFailureBlock = source[sendFailure..sendFailureContinue];
+        Assert.DoesNotContain("lastHandledText = string.Empty", sendFailureBlock, StringComparison.Ordinal);
+        Assert.Contains("automatic duplicate retry is suppressed", sendFailureBlock, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(
             "rotation handoff could not be sent after waiting for the composer",
             source,
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ContextLimitCommitFailureDoesNotResendAcceptedHandoff()
+    {
+        var source = MonitorSource();
+        var rotationStart = source.IndexOf(
+            "if (monitor.ConversationRotationEnabled && IsConversationContextLimit(text))",
+            StringComparison.Ordinal);
+        var commitCall = source.IndexOf(
+            "var committedTab = await CommitVerifiedConversationHandoffAsync",
+            rotationStart,
+            StringComparison.Ordinal);
+        var commitFailure = source.IndexOf("if (committedTab is null)", commitCall, StringComparison.Ordinal);
+        var commitFailureContinue = source.IndexOf("continue;", commitFailure, StringComparison.Ordinal);
+
+        Assert.True(rotationStart >= 0);
+        Assert.True(commitCall > rotationStart);
+        Assert.True(commitFailure > commitCall);
+        Assert.True(commitFailureContinue > commitFailure);
+
+        var commitFailureBlock = source[commitFailure..commitFailureContinue];
+        Assert.DoesNotContain("lastHandledText = string.Empty", commitFailureBlock, StringComparison.Ordinal);
+        Assert.Contains("Automatic re-send is suppressed", commitFailureBlock, StringComparison.Ordinal);
     }
 
     [Fact]
