@@ -14,7 +14,6 @@ public static class MonitorTabRecoveryService
     private static readonly SemaphoreSlim RecoveryGate = new(1, 1);
     private static readonly TimeSpan ChromeRecoveryGracePeriod = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ConversationReadyTimeout = TimeSpan.FromSeconds(60);
-    private static readonly TimeSpan FollowUpSendTimeout = TimeSpan.FromSeconds(45);
 
     public static async Task<MonitorTabRecoveryResult> EnsureMonitorTabAsync(
         ChromeDevToolsService chrome,
@@ -240,7 +239,7 @@ public static class MonitorTabRecoveryService
         }
     }
 
-    private static async Task<bool> SendFollowUpOnceAsync(
+    private static Task<bool> SendFollowUpOnceAsync(
         ChromeDevToolsService chrome,
         ChromeTab tab,
         string message,
@@ -248,32 +247,15 @@ public static class MonitorTabRecoveryService
     {
         var followUp = message.Trim();
         if (followUp.Length == 0)
-            return false;
+            return Task.FromResult(false);
 
-        // This intentionally uses the composer click receipt rather than the generic
-        // SendChatMessageVerifiedAsync idempotency shortcut. Recovery is required to create a NEW
-        // continuation turn even when the previous user turn used the same repeated text (for
-        // example "كمل"). Stop immediately after the first successful send-button click.
-        var deadline = DateTimeOffset.UtcNow + FollowUpSendTimeout;
-        Exception? lastError = null;
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                if (await chrome.SendChatMessageAsync(tab, followUp, cancellationToken).ConfigureAwait(false))
-                    return true;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                lastError = ex;
-            }
-
-            await Task.Delay(750, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (lastError is not null)
-            ExceptionLogService.Log(lastError, "MonitorTabRecovery.SendFollowUp", null, tab.Id, tab.Title);
-        return false;
+        // Recovery must create a NEW continuation turn even when the previous user turn used the
+        // same repeated text (for example "كمل"). The verified sender keeps one baseline message
+        // count and only accepts a newly-added matching user turn as the delivery receipt.
+        return chrome.SendChatMessageVerifiedAsync(
+            tab,
+            followUp,
+            cancellationToken,
+            requireNewTurn: true);
     }
 }
