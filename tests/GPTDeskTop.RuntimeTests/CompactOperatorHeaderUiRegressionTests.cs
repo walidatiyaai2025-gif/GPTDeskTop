@@ -12,44 +12,30 @@ public sealed class CompactOperatorHeaderUiRegressionTests
     }
 
     [Fact]
-    public void CompactHeaderAppliesAfterExistingIdlePresentationPass()
+    public void LegacyBootstrapDelegatesToTheSingleDashboardHeaderOwner()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "CompactOperatorHeaderExperience.cs");
 
-        Assert.Contains("Application.Idle += ScheduleForOpenMainForms", source, StringComparison.Ordinal);
-        Assert.Contains("form.BeginInvoke(new Action(() =>", source, StringComparison.Ordinal);
-        Assert.Contains("registration.Scheduled = true", source, StringComparison.Ordinal);
-        Assert.Contains("if (registration.Applied || registration.Scheduled)", source, StringComparison.Ordinal);
+        Assert.Contains("CompactDashboardHeaderLayout.ApplyOpenForms()", source, StringComparison.Ordinal);
+        Assert.Contains("=> CompactDashboardHeaderLayout.Apply(form);", source, StringComparison.Ordinal);
+        Assert.Contains("Compatibility bootstrap retained", source, StringComparison.Ordinal);
+        Assert.Contains("exactly one DPI-aware", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void CompactHeaderReclaimsHeightWithoutDroppingLiveMetrics()
+    public void LegacyHeaderOwnerCannotRestoreFiftyEightPixelLayout()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "CompactOperatorHeaderExperience.cs");
 
-        Assert.Contains("root.RowStyles[0].Height = Scale(root, 58);", source, StringComparison.Ordinal);
-        Assert.Contains("subtitle.Visible = false", source, StringComparison.Ordinal);
-        Assert.Contains("titleBlock.RowStyles[1].Height = 0", source, StringComparison.Ordinal);
-        Assert.Contains("ContainsMetric(panel, \"Running\")", source, StringComparison.Ordinal);
-        Assert.Contains("ContainsMetric(panel, \"Monitors\")", source, StringComparison.Ordinal);
-        Assert.Contains("ContainsMetric(panel, \"Conversation tabs\")", source, StringComparison.Ordinal);
-        Assert.Contains("ContainsMetric(panel, \"Chrome window\")", source, StringComparison.Ordinal);
-        Assert.Contains("chip.MinimumSize = new Size(Scale(chip, 100), Scale(chip, 40));", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("BeginInvoke", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Scale(root, 58)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApplyCompactPresentation", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("chip.MinimumSize", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("DpiChangedAfterParent", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void CompactHeaderIsDpiAwareAndEventDriven()
-    {
-        var source = ReadSource("src", "GPTDeskTop", "UI", "CompactOperatorHeaderExperience.cs");
-
-        Assert.Contains("root.DpiChangedAfterParent +=", source, StringComparison.Ordinal);
-        Assert.Contains("Math.Max(96, control.DeviceDpi) / 96d", source, StringComparison.Ordinal);
-        Assert.Contains("ConditionalWeakTable<Form, Registration>", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("System.Threading.Timer", source, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void CompactHeaderRemainsPresentationOnly()
+    public void CompatibilityLayerRemainsPresentationOnly()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "CompactOperatorHeaderExperience.cs");
 
