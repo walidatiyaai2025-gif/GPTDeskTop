@@ -45,12 +45,43 @@ public sealed class OperatorWorkspaceV2RegressionTests
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "OperatorWorkspaceV2Experience.cs");
         var prepareStart = source.IndexOf("private static void PrepareHistoryForOnDemand", StringComparison.Ordinal);
-        var windowStart = source.IndexOf("private static Form BuildLiveMonitorWindow", prepareStart, StringComparison.Ordinal);
-        var prepare = source[prepareStart..windowStart];
+        var runtimePrepareStart = source.IndexOf("private static void PrepareRuntimeHealthForOnDemand", prepareStart, StringComparison.Ordinal);
+        var prepare = source[prepareStart..runtimePrepareStart];
 
         Assert.Contains("historyBody.Visible = true", prepare, StringComparison.Ordinal);
         Assert.Contains("toggle.Visible = false", prepare, StringComparison.Ordinal);
         Assert.DoesNotContain("history.IsExpanded =", prepare, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RuntimeHealthAndSupportDiagnosticsAreRemovedFromMainAndRehostedOnDemand()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "OperatorWorkspaceV2Experience.cs");
+
+        Assert.Contains("OfType<RuntimeHealthControl>()", source, StringComparison.Ordinal);
+        Assert.Contains("OfType<SupportDiagnosticsControl>()", source, StringComparison.Ordinal);
+        Assert.Contains("PrepareRuntimeHealthForOnDemand(runtimeHealth, supportDiagnostics)", source, StringComparison.Ordinal);
+        Assert.Contains("ExpandableWorkspaceLayout.UseHostManagedHeight(runtimeHealth)", source, StringComparison.Ordinal);
+        Assert.Contains("runtimeHealth.Parent?.Controls.Remove(runtimeHealth)", source, StringComparison.Ordinal);
+        Assert.Contains("supportDiagnostics.Parent?.Controls.Remove(supportDiagnostics)", source, StringComparison.Ordinal);
+        Assert.Contains("new TabPage(\"Runtime Health\")", source, StringComparison.Ordinal);
+        Assert.Contains("runtimeHost.Controls.Add(runtimeHealth)", source, StringComparison.Ordinal);
+        Assert.Contains("runtimeHost.Controls.Add(supportDiagnostics)", source, StringComparison.Ordinal);
+        Assert.Contains("tabs.TabPages.Add(runtimePage)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RehostingRuntimeHealthDoesNotMutatePersistedExpandedState()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "OperatorWorkspaceV2Experience.cs");
+        var prepareStart = source.IndexOf("private static void PrepareRuntimeHealthForOnDemand", StringComparison.Ordinal);
+        var windowStart = source.IndexOf("private static Form BuildLiveMonitorWindow", prepareStart, StringComparison.Ordinal);
+        var prepare = source[prepareStart..windowStart];
+
+        Assert.Contains("runtimeHealth.Dock = DockStyle.Top", prepare, StringComparison.Ordinal);
+        Assert.Contains("supportDiagnostics.Dock = DockStyle.Top", prepare, StringComparison.Ordinal);
+        Assert.DoesNotContain("runtimeHealth.IsExpanded =", prepare, StringComparison.Ordinal);
+        Assert.DoesNotContain("supportDiagnostics.Visible =", prepare, StringComparison.Ordinal);
     }
 
     [Fact]
