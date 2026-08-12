@@ -1,0 +1,71 @@
+namespace GPTDeskTop.RuntimeTests;
+
+public sealed class CompactDashboardHeaderUiRegressionTests
+{
+    private static string ReadSource(params string[] parts)
+    {
+        var path = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..",
+            Path.Combine(parts)));
+        return File.ReadAllText(path);
+    }
+
+    [Fact]
+    public void CompactHeaderRunsAfterDashboardMakeoverAndOwnsFinalHeight()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "CompactDashboardHeaderLayout.cs");
+
+        Assert.Contains("MainDashboardExperience.Apply(form);", source, StringComparison.Ordinal);
+        Assert.Contains("private const int HeaderLogicalHeight = 56;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Root.RowStyles[0].SizeType = SizeType.Absolute;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Root.RowStyles[0].Height = Scale(parts.Root, HeaderLogicalHeight);", source, StringComparison.Ordinal);
+        Assert.Contains("form.DpiChanged += (_, _) => ApplyPhysicalLayout(registration);", source, StringComparison.Ordinal);
+        Assert.Contains("Final layout owner for the compact main-dashboard status header", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SubtitleConsumesNoVisualRowButPurposeRemainsAccessible()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "CompactDashboardHeaderLayout.cs");
+
+        Assert.Contains("private const string HeaderGuidance = \"ChatGPT monitoring, recovery and conversation automation\";", source, StringComparison.Ordinal);
+        Assert.Contains("parts.TitleBlock.RowStyles[1].SizeType = SizeType.Absolute;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.TitleBlock.RowStyles[1].Height = 0;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Subtitle.Visible = false;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Header.AccessibleDescription = HeaderGuidance", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Title.AccessibleDescription = HeaderGuidance", source, StringComparison.Ordinal);
+        Assert.Contains("SetToolTip(parts.Title, HeaderGuidance", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FourMetricChipsStayVisibleInCompactFortyPixelStatusStrip()
+    {
+        var compact = ReadSource("src", "GPTDeskTop", "UI", "CompactDashboardHeaderLayout.cs");
+        var main = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
+
+        Assert.Contains("private const int MetricLogicalWidth = 108;", compact, StringComparison.Ordinal);
+        Assert.Contains("private const int MetricLogicalHeight = 40;", compact, StringComparison.Ordinal);
+        Assert.Contains("if (chips.Length != 4)", compact, StringComparison.Ordinal);
+        Assert.Contains("chip.Height = Scale(chip, MetricLogicalHeight);", compact, StringComparison.Ordinal);
+        Assert.Contains("chip.MinimumSize = new Size(Scale(chip, MetricLogicalWidth), Scale(chip, MetricLogicalHeight));", compact, StringComparison.Ordinal);
+
+        Assert.Contains("CreateMetricChip(\"Running\", _runningMetricValue)", main, StringComparison.Ordinal);
+        Assert.Contains("CreateMetricChip(\"Monitors\", _monitorsMetricValue)", main, StringComparison.Ordinal);
+        Assert.Contains("CreateMetricChip(\"Conversation tabs\", _tabsMetricValue)", main, StringComparison.Ordinal);
+        Assert.Contains("CreateMetricChip(\"Chrome window\", _chromeMetricValue)", main, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CompactHeaderReturnsRootPaddingSpaceToWorkspace()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "CompactDashboardHeaderLayout.cs");
+
+        Assert.Contains("private const int RootVerticalPadding = 10;", source, StringComparison.Ordinal);
+        Assert.Contains("private const int HeaderVerticalPadding = 5;", source, StringComparison.Ordinal);
+        Assert.Contains("private const int HeaderBottomMargin = 6;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Root.Padding = new Padding(rootHorizontal, rootVertical, rootHorizontal, rootVertical);", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Header.Padding = new Padding(", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Header.Margin = new Padding(0, 0, 0, Scale(parts.Header, HeaderBottomMargin));", source, StringComparison.Ordinal);
+    }
+}
