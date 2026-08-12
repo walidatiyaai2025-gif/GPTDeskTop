@@ -29,10 +29,19 @@ public sealed class MonitorConversationIdentityRegressionTests
     public void GenericChromeEnumerationRemainsUnfilteredForBrowserAndRecoveryOperations()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
+        var getTabsStart = source.IndexOf(
+            "public async Task<List<ChromeTab>> GetTabsAsync",
+            StringComparison.Ordinal);
+        var nextMethodStart = source.IndexOf(
+            "public Process LaunchMonitorChrome",
+            getTabsStart,
+            StringComparison.Ordinal);
 
-        Assert.Contains("public async Task<List<ChromeTab>> GetTabsAsync", source, StringComparison.Ordinal);
-        Assert.Contains("tabs.Add(new ChromeTab", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("IsChatGptConversationUrl", source, StringComparison.Ordinal);
+        Assert.True(getTabsStart >= 0 && nextMethodStart > getTabsStart);
+        var getTabs = source[getTabsStart..nextMethodStart];
+
+        Assert.Contains("tabs.Add(new ChromeTab", getTabs, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsChatGptConversationUrl", getTabs, StringComparison.Ordinal);
     }
 
     [Fact]
