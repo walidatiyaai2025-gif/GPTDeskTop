@@ -58,7 +58,7 @@ Maintain GPTDeskTop as a persistent .NET 8 multi-tab ChatGPT monitor with indepe
 | UI-004 | Add Crash Count and Monitor Count home cards | UI Developer | Medium | Done | `HomeMetricsService.cs` |
 | UI-005 | Keep legacy no-response timeout field/schema compatibility until a dedicated settings migration removes or relabels it | UI / Backend | Low | Compatibility only | `SettingsForm.cs` |
 | UI-020 | Make `ExpandableWorkspaceLayout` the single final height owner for compact Development Plan / Runtime Health so Live Activity keeps the reclaimed vertical space | UI / QA | High | Done | `ExpandableWorkspaceLayout.cs`, `CompactTopCommandMenuExperience.cs`, compact UI regression tests |
-| UI-021 | Compact the main dashboard hero into a 56px single-line status strip, preserve all four live metrics and keep the purpose text in accessibility/tooltips so Live Activity receives the reclaimed fixed space | UI / QA | High | In Progress | `CompactDashboardHeaderLayout.cs`, compact header regression tests, `docs/work/UI-021.md` |
+| UI-021 | Compact the main dashboard hero into a 56px single-line status strip, preserve all four live metrics and keep the purpose text in accessibility/tooltips so Live Activity receives the reclaimed fixed space | UI / QA | High | Done | `CompactDashboardHeaderLayout.cs`, compact header regression tests, `docs/work/UI-021.md` |
 | NOT-001 | Configurable balloon duration and sound | UI / Backend | High | Done | Notification/Settings services |
 | DEV-001 | Prevent duplicate development-task workers; persist state and safely resume Working/Cooling after restart | Backend Engineer | High | Done | `DevelopmentTaskEngine.cs`, `DevelopmentTaskState.cs` |
 | DEV-002 | Add regression coverage for Cooling persistence/resume and worker lifecycle | QA / Backend | High | Done | `tests/GPTDeskTop.RuntimeTests/DevelopmentTaskEngineTests.cs` |
@@ -87,7 +87,7 @@ CHR-006 / QA-011 is verified: the physical Windows/Chrome gate requires the prod
 
 UI-020 / #225 is merged and stable. The compact Commands-menu experience delegates final Development Plan / Runtime Health heights to `ExpandableWorkspaceLayout`, preserving 58/118 and 58/140 compact logical heights through resize/DPI events while keeping legacy non-compact heights unchanged.
 
-UI-021 / #227 is in progress on `agent/ui-compact-status-header`: `CompactDashboardHeaderLayout` applies after `MainDashboardExperience`, reduces the final status header to 56 logical px, removes the subtitle from visual layout while retaining its semantic guidance, and keeps all four live metric chips at 108 x 40 logical px. Merge requires the complete eight-workflow PR gate set.
+UI-021 / #227 passed all eight established PR workflows on implementation head `efb875fc7ca428ac98e25dffa67410cdf2296dc2`: `CompactDashboardHeaderLayout` applies after `MainDashboardExperience`, reduces the final status header to 56 logical px, removes the subtitle from visual layout while retaining its semantic guidance, and keeps all four live metric chips at 108 x 40 logical px. PR #228 is ready for merge after this final documentation head passes the same eight gates.
 
 QA-005 also completed successfully on the dedicated real Windows/Chrome/CDP endurance run from commit `d87fcacf`: **610.6930764 seconds**, **606 successful hidden-window CDP polls**, **0 failed polls**, `HideChanged=True`, `ShowChanged=True`, with every successful poll returning the expected monitored content. The regular push workflow remains a 30-second smoke while `workflow_dispatch` retains the 610-second endurance option.
 
