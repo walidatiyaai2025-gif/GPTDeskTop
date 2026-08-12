@@ -71,14 +71,20 @@ public sealed class ChromeTransientFailureRegressionTests
     [Fact]
     public void TargetLifecycleCdpFailuresAreTranslatedToTransientIoFailures()
     {
-        var source = File.ReadAllText(RepositoryPath(
+        var sessionPoolSource = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChromeDevToolsSessionPool.cs"));
+        var classifierSource = File.ReadAllText(RepositoryPath(
+            "src", "GPTDeskTop", "Services", "ChromeTransportFailureClassifier.cs"));
 
-        Assert.Contains("if (IsTargetLifecycleError(error))", source, StringComparison.Ordinal);
-        Assert.Contains("throw new IOException(devToolsError);", source, StringComparison.Ordinal);
-        Assert.Contains("throw new InvalidOperationException(devToolsError);", source, StringComparison.Ordinal);
-        Assert.Contains("Inspected target navigated or closed", source, StringComparison.Ordinal);
-        Assert.Contains("Cannot find default execution context", source, StringComparison.Ordinal);
+        Assert.Contains("if (IsTargetLifecycleError(error))", sessionPoolSource, StringComparison.Ordinal);
+        Assert.Contains("throw new IOException(devToolsError);", sessionPoolSource, StringComparison.Ordinal);
+        Assert.Contains("throw new InvalidOperationException(devToolsError);", sessionPoolSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "=> ChromeTransportFailureClassifier.IsTargetLifecycleError(error);",
+            sessionPoolSource,
+            StringComparison.Ordinal);
+        Assert.Contains("Inspected target navigated or closed", classifierSource, StringComparison.Ordinal);
+        Assert.Contains("Cannot find default execution context", classifierSource, StringComparison.Ordinal);
     }
 
     [Fact]
