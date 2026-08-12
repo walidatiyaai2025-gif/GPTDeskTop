@@ -4,6 +4,7 @@ using GPTDeskTop.Services;
 
 namespace GPTDeskTop.RuntimeTests;
 
+// Locks down browser/tab recreation, restart continuation, and non-freezing shutdown behavior.
 public sealed class MonitorRestartRecoveryRegressionTests
 {
     [Fact]
