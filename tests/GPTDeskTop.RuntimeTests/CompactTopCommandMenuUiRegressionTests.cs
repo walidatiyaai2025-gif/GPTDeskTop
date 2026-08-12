@@ -41,6 +41,17 @@ public sealed class CompactTopCommandMenuUiRegressionTests
     }
 
     [Fact]
+    public void HiddenMonitorToolbarActionsRemainReachableFromCommandsMenu()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "CompactTopCommandMenuExperience.cs");
+
+        Assert.Contains("AddButtonCommand(monitorMenu, \"New Chat + Monitor\", sources.NewChatMonitor);", source, StringComparison.Ordinal);
+        Assert.Contains("RequiredButton(mainButtons, \"New Chat + Monitor\")", source, StringComparison.Ordinal);
+        Assert.Contains("Button NewChatMonitor,", source, StringComparison.Ordinal);
+        Assert.Contains("NewChatMonitor, AddMonitor, EditMonitor, DeleteMonitor", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MenuCommandsKeepExistingButtonsAsSingleBehaviorOwner()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "CompactTopCommandMenuExperience.cs");
