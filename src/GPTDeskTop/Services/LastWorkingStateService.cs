@@ -1,6 +1,5 @@
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
-using GPTDeskTop.Services.DevelopmentTaskEngine;
 
 namespace GPTDeskTop.Services;
 
@@ -137,33 +136,13 @@ public static class LastWorkingStateService
             resumable.Add(savedMonitor);
         }
 
-        // Invalid/deleted/disabled monitors are intentionally pruned. Valid desired monitors
-        // remain persisted even if Chrome is temporarily unavailable so a later restart can retry.
-        await ReplaceDesiredMonitorIdsAsync(database, resumable.Select(saved => saved.Id), cancellationToken).ConfigureAwait(false);
-        if (resumable.Count == 0)
-            return new LastWorkingStateResumeResult(outcomes.OrderBy(outcome => outcome.MonitorId).ToArray());
-
-        List<ChromeTab>? tabs = await TryGetTabsAsync(chrome, cancellationToken).ConfigureAwait(false);
-        if (tabs is null)
-        {
-            try
-            {
-                chrome.LaunchMonitorChrome(resumable[0].Url);
-            }
-            catch (Exception ex)
-            {
-                ExceptionLogService.Log(ex, "LastWorkingState.LaunchMonitorChrome");
-            }
-            tabs = await WaitForTabsAsync(chrome, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (tabs is null)
-        {
-            outcomes.AddRange(resumable.Select(saved =>
-                new LastWorkingStateResumeOutcome(saved.Id, "Incomplete", "ChromeUnavailable")));
-            await PersistResumeDiagnosticsAsync(database, outcomes, cancellationToken).ConfigureAwait(false);
-            return new LastWorkingStateResumeResult(outcomes.OrderBy(outcome => outcome.MonitorId).ToArray());
-        }
+        // Invalid/deleted/disabled monitors are intentionally pruned. Valid desired monitors remain
+        // persisted even when Chrome is currently closed; each one below can recreate its exact
+        // conversation tab and continue after an application restart.
+        await ReplaceDesiredMonitorIdsAsync(
+            database,
+            resumable.Select(saved => saved.Id),
+            cancellationToken).ConfigureAwait(false);
 
         foreach (var savedMonitor in resumable)
         {
@@ -176,21 +155,27 @@ public static class LastWorkingStateService
                     continue;
                 }
 
-                var resolution = SavedMonitorTabResolver.Resolve(savedMonitor, tabs);
-                var tab = resolution.Tab;
-                if (tab is null)
+                var recovery = await MonitorTabRecoveryService.EnsureMonitorTabAsync(
+                    chrome,
+                    database,
+                    savedMonitor,
+                    sendFollowUpWhenRecreated: true,
+                    cancellationToken).ConfigureAwait(false);
+
+                await monitorService.StartMonitorAsync(savedMonitor, recovery.Tab).ConfigureAwait(false);
+                if (monitorService.IsMonitorRunning(savedMonitor.Id))
                 {
-                    tab = await chrome.CreateTabAsync(savedMonitor.Url, cancellationToken).ConfigureAwait(false);
-                    tabs = await WaitForTabsAsync(chrome, cancellationToken).ConfigureAwait(false) ?? tabs;
-                    tab = SavedMonitorTabResolver.Resolve(savedMonitor, tabs).Tab ?? tab;
+                    var reason = !recovery.Recreated
+                        ? "PersistedWorkingState"
+                        : recovery.FollowUpSent
+                            ? "RecreatedTabAndFollowUpSent"
+                            : "RecreatedTabFollowUpFailed";
+                    outcomes.Add(new LastWorkingStateResumeOutcome(savedMonitor.Id, "Resumed", reason));
                 }
-
-                await monitorService.StartMonitorAsync(savedMonitor, tab).ConfigureAwait(false);
-                outcomes.Add(monitorService.IsMonitorRunning(savedMonitor.Id)
-                    ? new LastWorkingStateResumeOutcome(savedMonitor.Id, "Resumed", "PersistedWorkingState")
-                    : new LastWorkingStateResumeOutcome(savedMonitor.Id, "Incomplete", "NotRunningAfterStart"));
-
-                tabs = await TryGetTabsAsync(chrome, cancellationToken).ConfigureAwait(false) ?? tabs;
+                else
+                {
+                    outcomes.Add(new LastWorkingStateResumeOutcome(savedMonitor.Id, "Incomplete", "NotRunningAfterStart"));
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -199,9 +184,15 @@ public static class LastWorkingStateService
             }
         }
 
-        if (string.Equals(await database.GetSettingAsync("ChromeHidden", cancellationToken).ConfigureAwait(false), "1", StringComparison.Ordinal))
+        if (string.Equals(
+                await database.GetSettingAsync("ChromeHidden", cancellationToken).ConfigureAwait(false),
+                "1",
+                StringComparison.Ordinal))
         {
-            try { await chrome.HideMonitorChromeAsync(cancellationToken).ConfigureAwait(false); }
+            try
+            {
+                await chrome.HideMonitorChromeAsync(cancellationToken).ConfigureAwait(false);
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 ExceptionLogService.Log(ex, "LastWorkingState.RestoreChromeVisibility");
@@ -210,45 +201,6 @@ public static class LastWorkingStateService
 
         await PersistResumeDiagnosticsAsync(database, outcomes, cancellationToken).ConfigureAwait(false);
         return new LastWorkingStateResumeResult(outcomes.OrderBy(outcome => outcome.MonitorId).ToArray());
-    }
-
-    private static async Task<List<ChromeTab>?> TryGetTabsAsync(
-        ChromeDevToolsService chrome,
-        CancellationToken cancellationToken)
-    {
-        try { return await chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            ExceptionLogService.Log(ex, "LastWorkingState.ReadChromeTabs");
-            return null;
-        }
-    }
-
-    private static async Task<List<ChromeTab>?> WaitForTabsAsync(
-        ChromeDevToolsService chrome,
-        CancellationToken cancellationToken)
-    {
-        Exception? lastError = null;
-        for (var attempt = 1; attempt <= 30; attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                var tabs = await chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
-                if (tabs.Count > 0) return tabs;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                lastError = ex;
-            }
-
-            if (attempt < 30)
-                await Task.Delay(250, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (lastError is not null)
-            ExceptionLogService.Log(lastError, "LastWorkingState.WaitForChrome");
-        return null;
     }
 
     private static async Task PersistResumeDiagnosticsAsync(
