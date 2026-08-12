@@ -22,14 +22,18 @@ public sealed class ChatMonitorErrorDrivenWaitRegressionTests
     }
 
     [Fact]
-    public void OnlyCurrentStructuredErrorsDriveGenericRecovery()
+    public void OnlyCurrentStructuredErrorsDriveGenericFreshChatRecovery()
     {
         var source = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
 
         Assert.Contains("var isError = !string.IsNullOrWhiteSpace(state.ErrorText)", source, StringComparison.Ordinal);
         Assert.Contains("isError && IsDeliveryTimeout(text)", source, StringComparison.Ordinal);
-        Assert.Contains("Error saved. Refreshing only this tab", source, StringComparison.Ordinal);
+        Assert.Contains("ChatGptErrorContinuationMessage", source, StringComparison.Ordinal);
+        Assert.Contains("ChatGPT error saved. Opening a fresh chat and continuing under the same Monitor ID", source, StringComparison.Ordinal);
+        Assert.Contains("rotationTrigger: \"ChatGptError\"", source, StringComparison.Ordinal);
+        Assert.Contains("successStatus: \"RecoveredFromChatGptError\"", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Error saved. Refreshing only this tab", source, StringComparison.Ordinal);
         Assert.Contains("IsConversationContextLimit(text)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("IsErrorResponse", source, StringComparison.Ordinal);
     }
