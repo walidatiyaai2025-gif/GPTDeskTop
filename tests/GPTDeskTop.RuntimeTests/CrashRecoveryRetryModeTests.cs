@@ -46,6 +46,91 @@ public sealed class CrashRecoveryRetryModeTests
     }
 
     [Fact]
+    public async Task FreshCrashResetWaitsForDevToolsEndpointAndIgnoresAbortedCloseSession()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var database = new LocalDatabase(Path.Combine(root, "appdata.db"));
+            await database.InitializeAsync();
+            var monitor = await SaveMonitorAsync(
+                database,
+                "cold-start",
+                "https://chatgpt.com/c/cold-start",
+                "cold-start-tab");
+            await database.SetSettingAsync("CrashRecoveryPending", "1");
+            await database.SetSettingAsync("CrashRecovery.RecoveryId", "cold-start-incident");
+            await database.SetSettingAsync("TimeoutRecoveryMessage", "recover");
+
+            var runtime = new FakeRuntime(
+                [Tab("cold-start-tab", monitor.Url)],
+                (_, _) => true,
+                transientGetTabsFailures: 2,
+                closeThrowsTransient: true);
+
+            await CrashRecoveryService.RecoverIfPendingAsync(
+                runtime,
+                database,
+                CrashRecoveryMode.FreshCrashReset);
+
+            Assert.Equal(1, runtime.StopAllCount);
+            Assert.Equal(1, runtime.CloseAllCount);
+            Assert.Equal(1, runtime.LaunchCount);
+            Assert.Equal(monitor.Url, runtime.LaunchedUrl);
+            Assert.Equal(3, runtime.GetTabsCalls);
+            Assert.Single(runtime.Deliveries);
+            Assert.Single(runtime.StartedMonitors);
+            Assert.Equal("0", await database.GetSettingAsync("CrashRecoveryPending"));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
+    public async Task PendingRetryLaunchesChromeWhenDevToolsEndpointIsRefusedAndThenContinues()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var database = new LocalDatabase(Path.Combine(root, "appdata.db"));
+            await database.InitializeAsync();
+            var monitor = await SaveMonitorAsync(
+                database,
+                "retry-cold-start",
+                "https://chatgpt.com/c/retry-cold-start",
+                "retry-cold-start-tab");
+            await database.SetSettingAsync("CrashRecoveryPending", "1");
+            await database.SetSettingAsync("CrashRecovery.RecoveryId", "retry-cold-start-incident");
+            await database.SetSettingAsync("TimeoutRecoveryMessage", "recover");
+
+            var runtime = new FakeRuntime(
+                [Tab("retry-cold-start-tab", monitor.Url)],
+                (_, _) => true,
+                transientGetTabsFailures: 1);
+
+            await CrashRecoveryService.RecoverIfPendingAsync(
+                runtime,
+                database,
+                CrashRecoveryMode.PendingRetry);
+
+            Assert.Equal(0, runtime.StopAllCount);
+            Assert.Equal(0, runtime.CloseAllCount);
+            Assert.Equal(1, runtime.LaunchCount);
+            Assert.Equal(monitor.Url, runtime.LaunchedUrl);
+            Assert.Equal(2, runtime.GetTabsCalls);
+            Assert.Single(runtime.Deliveries);
+            Assert.Single(runtime.StartedMonitors);
+            Assert.Equal("0", await database.GetSettingAsync("CrashRecoveryPending"));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
     public async Task CleanPendingRetryReusesVerifiedTabWithoutGlobalTeardownOrResend()
     {
         var root = CreateRoot();
@@ -200,17 +285,25 @@ public sealed class CrashRecoveryRetryModeTests
     {
         private readonly IReadOnlyList<ChromeTab> _tabs;
         private readonly Func<ChromeTab, string, bool> _send;
+        private readonly int _transientGetTabsFailures;
+        private readonly bool _closeThrowsTransient;
 
         public FakeRuntime(
             IReadOnlyList<ChromeTab> tabs,
-            Func<ChromeTab, string, bool> send)
+            Func<ChromeTab, string, bool> send,
+            int transientGetTabsFailures = 0,
+            bool closeThrowsTransient = false)
         {
             _tabs = tabs;
             _send = send;
+            _transientGetTabsFailures = transientGetTabsFailures;
+            _closeThrowsTransient = closeThrowsTransient;
         }
 
         public int StopAllCount { get; private set; }
         public int CloseAllCount { get; private set; }
+        public int LaunchCount { get; private set; }
+        public int GetTabsCalls { get; private set; }
         public string? LaunchedUrl { get; private set; }
         public List<string> CreatedUrls { get; } = [];
         public List<(string TabId, string Message)> Deliveries { get; } = [];
@@ -225,13 +318,25 @@ public sealed class CrashRecoveryRetryModeTests
         public Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken)
         {
             CloseAllCount++;
+            if (_closeThrowsTransient)
+                throw new IOException("Chrome DevTools session is not open (state: Aborted).");
             return Task.CompletedTask;
         }
 
-        public void LaunchMonitorChrome(string? startUrl) => LaunchedUrl = startUrl;
+        public void LaunchMonitorChrome(string? startUrl)
+        {
+            LaunchCount++;
+            LaunchedUrl = startUrl;
+        }
 
         public Task<IReadOnlyList<ChromeTab>> GetTabsAsync(CancellationToken cancellationToken)
-            => Task.FromResult(_tabs);
+        {
+            GetTabsCalls++;
+            if (GetTabsCalls <= _transientGetTabsFailures)
+                throw new HttpRequestException(
+                    "No connection could be made because the target machine actively refused it. (127.0.0.1:9222)");
+            return Task.FromResult(_tabs);
+        }
 
         public Task<ChromeTab> CreateTabAsync(string url, CancellationToken cancellationToken)
         {
