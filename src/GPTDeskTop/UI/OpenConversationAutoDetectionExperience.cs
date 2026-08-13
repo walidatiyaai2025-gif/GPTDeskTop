@@ -148,7 +148,7 @@ internal static class OpenConversationAutoDetectionExperience
                 // A slow/unavailable CDP endpoint is transient. Keep the last visible list and retry
                 // on the next interval instead of blanking Open Conversations or generating noise.
             }
-            catch (Exception ex) when (ChromeTransportFailureClassifier.IsRecoverable(ex))
+            catch (Exception ex) when (ChromeTransportFailureClassifier.IsTransient(ex))
             {
                 // Browser target/session churn is expected during navigation and recovery. The next
                 // scan will reconcile the grid once Chrome is readable again.
@@ -175,7 +175,7 @@ internal static class OpenConversationAutoDetectionExperience
             }
             catch (TargetInvocationException ex) when (ex.InnerException is not null)
             {
-                throw ex.InnerException;
+                throw new InvalidOperationException("Open-conversation refresh failed.", ex.InnerException);
             }
         }
 
