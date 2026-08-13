@@ -1,0 +1,35 @@
+name: Agent UI Brand Diagnose 3
+on:
+  push:
+    branches: [ agent/icon-newchat-wide-monitors ]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/icon-newchat-wide-monitors
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Surface exact test failure
+        shell: pwsh
+        run: |
+          dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true | Out-Null
+          $lines = & dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release -p:EnableWindowsTargeting=true --no-restore --logger "console;verbosity=detailed" 2>&1 | ForEach-Object { $_.ToString() }
+          $i = 0
+          $picked = New-Object System.Collections.Generic.List[string]
+          while ($i -lt $lines.Count) {
+            if ($lines[$i] -match 'Failed |\[FAIL\]|Error Message:|Assert\.|Expected:|Actual:') {
+              $start = [Math]::Max(0,$i-3); $end=[Math]::Min($lines.Count-1,$i+8)
+              for($j=$start;$j -le $end;$j++){ $picked.Add($lines[$j]) }
+            }
+            $i++
+          }
+          if($picked.Count -eq 0){ $picked.AddRange([string[]]($lines | Select-Object -Last 100)) }
+          $m=(($picked | Select-Object -First 100)-join ' | ').Replace('%','%25').Replace("`r",'').Replace("`n",'%0A')
+          if($m.Length -gt 14000){$m=$m.Substring(0,14000)}
+          Write-Host "::error title=UI-BRAND exact failure::$m"
+          exit 0
