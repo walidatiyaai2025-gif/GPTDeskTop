@@ -37,7 +37,7 @@ public sealed class ResponsiveUiRegressionTests
         var source = ReadMainForm();
         Assert.Contains("private readonly SplitContainer _workspaceSplit", source, StringComparison.Ordinal);
         Assert.Contains("private readonly SplitContainer _diagnosticsSplit", source, StringComparison.Ordinal);
-        Assert.Contains("SetSplitRatio(_workspaceSplit, 0.42)", source, StringComparison.Ordinal);
+        Assert.Contains("SetSplitRatio(_workspaceSplit, 0.28)", source, StringComparison.Ordinal);
         Assert.Contains("ClampResponsiveSplitters", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SplitterDistance = 620", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SplitterDistance = 650", source, StringComparison.Ordinal);

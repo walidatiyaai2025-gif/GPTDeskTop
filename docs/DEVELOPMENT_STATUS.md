@@ -150,3 +150,10 @@ MON-007 is complete. Continue post-1.8 maintenance by auditing the next concrete
 - Fix: the final close now runs synchronously on the UI thread instead of being stranded behind a `BeginInvoke`, and a 20-second process watchdog guarantees termination if any teardown handler stalls.
 - Safety: normal workspace/monitor/Chrome cleanup still runs first; the watchdog is disposed during a successful normal close.
 - Regression: `ShutdownFinalizationRegressionTests` locks direct-close and bounded-exit behavior.
+
+
+## UI-BRAND-001 — Branded wide Saved Monitors + first-message CDP rebind
+- Status: Done / CI pending.
+- Uses the supplied GPTDeskTop artwork as the application/setup icon and tray/window icon.
+- Saved Monitors defaults to about 72% of the primary workspace (roughly 2.6x the Open Conversations pane) and Auto Reply is hidden from the dashboard grid/card while remaining editable in monitor settings.
+- New Chat + Monitor now rebinds refreshed CDP target metadata after navigation and verifies the already-sent bootstrap message on the stable `/c/{id}` conversation before failing; no duplicate bootstrap send is created.
