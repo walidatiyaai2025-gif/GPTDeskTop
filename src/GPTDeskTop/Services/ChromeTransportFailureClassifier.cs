@@ -36,6 +36,7 @@ internal static class ChromeTransportFailureClassifier
         "connection was forcibly closed",
         "forcibly closed by the remote host",
         "remote party closed the WebSocket connection without completing the close handshake",
+        "when status code '101' was expected",
         "unable to connect",
         "connection refused",
         "actively refused",
