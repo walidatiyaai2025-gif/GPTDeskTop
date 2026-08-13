@@ -3,30 +3,28 @@ on:
   push:
     branches: [ agent/icon-newchat-wide-monitors ]
 permissions:
-  contents: write
+  contents: read
 jobs:
   diagnose:
-    if: "!contains(github.event.head_commit.message, '[agent-diagnostic]')"
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/icon-newchat-wide-monitors
-          fetch-depth: 0
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-      - name: Capture runtime test output
+      - name: Capture runtime test failure as annotation
         shell: pwsh
         run: |
-          New-Item -ItemType Directory diagnostics -Force | Out-Null
-          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release -p:EnableWindowsTargeting=true --no-restore *>&1 | Tee-Object diagnostics/ui-brand-runtime-test.txt
+          dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true | Out-Null
+          $lines = & dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release -p:EnableWindowsTargeting=true --no-restore 2>&1 | ForEach-Object { $_.ToString() }
+          $text = ($lines -join "`n")
+          $failureLines = $lines | Where-Object { $_ -match 'error CS|Failed |Error Message|Assert\.|Expected|Actual|Build FAILED|error MSB' }
+          if ($failureLines.Count -eq 0) { $failureLines = $lines | Select-Object -Last 60 }
+          $message = (($failureLines | Select-Object -First 40) -join ' | ')
+          if ([string]::IsNullOrWhiteSpace($message)) { $message = $text.Substring(0, [Math]::Min(3500, $text.Length)) }
+          $message = $message.Replace('%','%25').Replace("`r",'').Replace("`n",'%0A')
+          if ($message.Length -gt 7000) { $message = $message.Substring(0,7000) }
+          Write-Host "::error title=UI-BRAND runtime-test diagnostic::$message"
           exit 0
-      - name: Commit diagnostic log
-        shell: pwsh
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add diagnostics/ui-brand-runtime-test.txt
-          git commit -m 'chore: capture UI brand test diagnostics [agent-diagnostic]'
-          git push origin HEAD:agent/icon-newchat-wide-monitors
