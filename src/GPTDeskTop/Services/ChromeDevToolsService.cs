@@ -556,7 +556,102 @@ public sealed class ChromeDevToolsService
         return ex.Message.Contains("Chrome closed the DevTools connection", StringComparison.OrdinalIgnoreCase)
                || ex.Message.Contains("connection was forcibly closed", StringComparison.OrdinalIgnoreCase);
     }
-    public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default) { var textLiteral = JsonSerializer.Serialize(message); var setEditorExpression = $$""" (() => { const text = {{textLiteral}}; const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]') || document.querySelector('[contenteditable="true"]'); if (!editor) return false; editor.focus(); if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) { const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set; setter?.call(editor, text); editor.dispatchEvent(new Event('input', { bubbles: true })); editor.dispatchEvent(new Event('change', { bubbles: true })); } else { const selection = window.getSelection(); const range = document.createRange(); range.selectNodeContents(editor); selection?.removeAllRanges(); selection?.addRange(range); document.execCommand('insertText', false, text); editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })); } return true; })() """; var editorReady = await EvaluateAsync(tab, setEditorExpression, cancellationToken, false); if (editorReady.ValueKind != JsonValueKind.True) return false; await Task.Delay(350, cancellationToken); const string clickExpression = """ (() => { const sendButton = document.querySelector('button[data-testid="send-button"]') || [...document.querySelectorAll('button')].find(b => /send|إرسال/i.test(b.getAttribute('aria-label') || '')); if (!sendButton || sendButton.disabled) return false; sendButton.click(); return true; })() """; var clicked = await EvaluateAsync(tab, clickExpression, cancellationToken, false); return clicked.ValueKind == JsonValueKind.True; }
+    public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default)
+    {
+        var textLiteral = JsonSerializer.Serialize(message);
+        var setEditorExpression = $$"""
+        (() => {
+          const text = {{textLiteral}};
+          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]') || document.querySelector('[contenteditable="true"]');
+          if (!editor) return false;
+          editor.focus();
+          if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
+            const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set;
+            setter?.call(editor, text);
+            editor.dispatchEvent(new Event('input', { bubbles: true }));
+            editor.dispatchEvent(new Event('change', { bubbles: true }));
+          } else {
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(editor);
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+            document.execCommand('insertText', false, text);
+            editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+          }
+          return true;
+        })()
+        """;
+
+        var editorReady = await EvaluateAsync(tab, setEditorExpression, cancellationToken, false);
+        if (editorReady.ValueKind != JsonValueKind.True) return false;
+        await Task.Delay(350, cancellationToken);
+
+        const string submitExpression = """
+        (() => {
+          const visible = element => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+          };
+          const sendButton = document.querySelector('button[data-testid="send-button"]') ||
+            [...document.querySelectorAll('button')].find(button => {
+              if (!visible(button)) return false;
+              const label = button.getAttribute('aria-label') || '';
+              return /^(send|send message|إرسال|إرسال الرسالة)$/i.test(label.trim());
+            });
+          if (sendButton && !sendButton.disabled && visible(sendButton)) {
+            sendButton.click();
+            return { clicked: true, fallbackReady: false };
+          }
+
+          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]') || document.querySelector('[contenteditable="true"]');
+          if (!editor) return { clicked: false, fallbackReady: false };
+          editor.focus();
+          const editorText = editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
+            ? editor.value
+            : (editor.innerText || editor.textContent || '');
+          if (!editorText.trim()) return { clicked: false, fallbackReady: false };
+
+          const stopButton = document.querySelector('button[data-testid="stop-button"]');
+          return { clicked: false, fallbackReady: !visible(stopButton) };
+        })()
+        """;
+
+        var submitState = await EvaluateAsync(tab, submitExpression, cancellationToken, false);
+        var clicked = submitState.TryGetProperty("clicked", out var clickedElement) && clickedElement.GetBoolean();
+        if (clicked) return true;
+
+        var fallbackReady = submitState.TryGetProperty("fallbackReady", out var fallbackElement) && fallbackElement.GetBoolean();
+        if (!fallbackReady) return false;
+
+        await SendCommandAsync(
+            tab,
+            "Input.dispatchKeyEvent",
+            new
+            {
+                type = "rawKeyDown",
+                key = "Enter",
+                code = "Enter",
+                windowsVirtualKeyCode = 13,
+                nativeVirtualKeyCode = 13
+            },
+            cancellationToken);
+        await SendCommandAsync(
+            tab,
+            "Input.dispatchKeyEvent",
+            new
+            {
+                type = "keyUp",
+                key = "Enter",
+                code = "Enter",
+                windowsVirtualKeyCode = 13,
+                nativeVirtualKeyCode = 13
+            },
+            cancellationToken);
+        return true;
+    }
     public async Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default, bool requireNewTurn = false)
     {
         var expected = message.Trim();
