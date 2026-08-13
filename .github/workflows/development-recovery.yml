@@ -2,10 +2,15 @@ name: Development Task Recovery
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, agent/fix-cdp-outbound-recovery ]
+    paths:
+      - .github/workflows/development-recovery.yml
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   recovery:
@@ -13,15 +18,192 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+      - name: Apply focused monitor patch on recovery branch
+        if: github.ref_name == 'agent/fix-cdp-outbound-recovery'
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path("src/GPTDeskTop/Services/ChatGptMonitorService.cs")
+          source = path.read_text(encoding="utf-8")
+
+          def replace_once(old: str, new: str, label: str) -> None:
+              global source
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
+              source = source.replace(old, new, 1)
+
+          replace_once(
+              "        var transientFailures = 0;\n        Activity?.Invoke",
+              "        var transientFailures = 0;\n        PendingAutoReply? pendingAutoReply = null;\n        Activity?.Invoke",
+              "pending outbound state")
+
+          replace_once(
+              "                    var state = await _chrome.GetChatStateAsync(tab, cancellationToken);\n                    var text = GetEffectiveResponse(state);\n                    transientFailures = 0;\n                    if (DateTimeOffset.UtcNow >= nextRuntimeSettingsRefreshUtc)",
+              "                    var state = await _chrome.GetChatStateAsync(tab, cancellationToken);\n                    var text = GetEffectiveResponse(state);\n                    var recoveredFromTransient = transientFailures > 0;\n                    transientFailures = 0;\n                    if (recoveredFromTransient)\n                        await CleanupRecoveredConversationTabsAsync(monitor.Id, tab, cancellationToken);\n                    if (DateTimeOffset.UtcNow >= nextRuntimeSettingsRefreshUtc)",
+              "post-CDP recovery cleanup")
+
+          pending_block = r'''                    var messageCountRotationDue = messageCountThresholdReached && rotationSlotAvailable;
+
+                    if (pendingAutoReply is not null)
+                    {
+                        if (!string.IsNullOrWhiteSpace(state.ErrorText))
+                        {
+                            Activity?.Invoke(monitor.Id, $"{prefix} Deferred auto reply encountered a ChatGPT error; handing control back to normal error recovery.");
+                            pendingAutoReply = null;
+                        }
+                        else if (state.IsGenerating)
+                        {
+                            // The uncertain send may already have been accepted. Never issue a
+                            // second copy while ChatGPT is actively producing the next response.
+                            continue;
+                        }
+                        else
+                        {
+                            var conversationAdvanced = state.AssistantCount > pendingAutoReply.AssistantCount
+                                || (!string.IsNullOrWhiteSpace(text)
+                                    && !string.Equals(text, pendingAutoReply.SourceText, StringComparison.Ordinal));
+                            if (conversationAdvanced)
+                            {
+                                Activity?.Invoke(monitor.Id, $"{prefix} Conversation advanced after an uncertain outbound; duplicate retry suppressed.");
+                                await _database.AddLogAsync("System", pendingAutoReply.Message, text, "DeferredOutboundResolvedByConversationAdvance", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+                                HistoryChanged?.Invoke();
+                                pendingAutoReply = null;
+                            }
+                            else if (string.IsNullOrWhiteSpace(text) || DateTimeOffset.UtcNow < pendingAutoReply.RetryNotBeforeUtc)
+                            {
+                                continue;
+                            }
+                            else
+                            {
+                                Activity?.Invoke(monitor.Id, $"{prefix} Retrying deferred auto reply after CDP/page state is readable again...");
+                                var recoveredSend = await SendWhenReadyAsync(
+                                    monitor.Id,
+                                    tab,
+                                    pendingAutoReply.Message,
+                                    allowRecoveryReload: false,
+                                    cancellationToken,
+                                    requireNewTurn: true);
+                                if (recoveredSend)
+                                {
+                                    await _database.AddLogAsync("Outbound", pendingAutoReply.Message, string.Empty, "SentAfterRecovery", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+                                    HistoryChanged?.Invoke();
+                                    pendingAutoReply = null;
+                                    await Task.Delay(Math.Max(250, _config.DelayAfterSendMilliseconds), cancellationToken);
+                                    continue;
+                                }
+
+                                pendingAutoReply = pendingAutoReply with { RetryNotBeforeUtc = DateTimeOffset.UtcNow.AddSeconds(10) };
+                                Activity?.Invoke(monitor.Id, $"{prefix} Deferred auto reply is still unverified; keeping it pending instead of marking it Failed.");
+                                continue;
+                            }
+                        }
+                    }
+
+                    // A slow/unchanged/empty response is a passive wait state.'''
+          replace_once(
+              "                    var messageCountRotationDue = messageCountThresholdReached && rotationSlotAvailable;\n\n                    // A slow/unchanged/empty response is a passive wait state.",
+              pending_block,
+              "pending retry gate")
+
+          old_auto = '                    var autoSent = await SendWhenReadyAsync(monitor.Id, tab, monitor.AutoReply, allowRecoveryReload: false, cancellationToken); await _database.AddLogAsync("Outbound", monitor.AutoReply, string.Empty, autoSent ? "Sent" : "Failed", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke(); await Task.Delay(Math.Max(250, _config.DelayAfterSendMilliseconds), cancellationToken);'
+          new_auto = r'''                    var autoSent = await SendWhenReadyAsync(monitor.Id, tab, monitor.AutoReply, allowRecoveryReload: false, cancellationToken, requireNewTurn: true);
+                    if (autoSent)
+                    {
+                        await _database.AddLogAsync("Outbound", monitor.AutoReply, string.Empty, "Sent", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+                    }
+                    else
+                    {
+                        pendingAutoReply = new PendingAutoReply(text, state.AssistantCount, monitor.AutoReply, DateTimeOffset.UtcNow.AddSeconds(10));
+                        await _database.AddLogAsync("Outbound", monitor.AutoReply, string.Empty, "Deferred", monitor.Id, tab.Id, monitor.Title, cancellationToken);
+                        Activity?.Invoke(monitor.Id, $"{prefix} Auto reply receipt is uncertain. Keeping this outbound pending until CDP/page state is readable; it is not marked Failed.");
+                    }
+                    HistoryChanged?.Invoke();
+                    await Task.Delay(Math.Max(250, _config.DelayAfterSendMilliseconds), cancellationToken);'''
+          replace_once(old_auto, new_auto, "normal auto reply deferral")
+
+          cleanup_method = r'''
+    private async Task CleanupRecoveredConversationTabsAsync(long monitorId, ChromeTab currentTab, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var liveTabs = await _chrome.GetTabsAsync(cancellationToken);
+            var duplicates = liveTabs
+                .Where(candidate => !string.Equals(candidate.Id, currentTab.Id, StringComparison.Ordinal)
+                    && RuntimeHealthPresentation.IsChatGptConversationUrl(candidate.Url)
+                    && ChatGptConversationIdentity.IsSame(currentTab.Url, candidate.Url))
+                .ToList();
+
+            foreach (var duplicate in duplicates)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (await _chrome.CloseTabAsync(duplicate, cancellationToken))
+                    Activity?.Invoke(monitorId, $"Closed stale duplicate ChatGPT target {duplicate.Id} after CDP recovery.");
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsTransientChromeException(ex) || ex is HttpRequestException)
+        {
+            Activity?.Invoke(monitorId, $"Duplicate-tab cleanup deferred after CDP recovery: {ex.GetType().Name}.");
+        }
+    }
+
+'''
+          replace_once(
+              "\n    private async Task<ChromeTab?> CommitVerifiedConversationHandoffAsync(",
+              cleanup_method + "    private async Task<ChromeTab?> CommitVerifiedConversationHandoffAsync(",
+              "duplicate tab cleanup helper")
+
+          replace_once(
+              "    private async Task<bool> SendWhenReadyAsync(long monitorId, ChromeTab tab, string message, bool allowRecoveryReload, CancellationToken cancellationToken)",
+              "    private async Task<bool> SendWhenReadyAsync(long monitorId, ChromeTab tab, string message, bool allowRecoveryReload, CancellationToken cancellationToken, bool requireNewTurn = false)",
+              "verified send signature")
+
+          replace_once(
+              '                if (await _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken)) { Activity?.Invoke(monitorId, $"Verified message accepted on attempt {attempt}."); return true; }\n                Activity?.Invoke(monitorId, $"Verified composer delivery attempt {attempt} did not produce a user-message receipt.");',
+              '                if (await _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken, requireNewTurn)) { Activity?.Invoke(monitorId, $"Verified message accepted on attempt {attempt}."); return true; }\n                Activity?.Invoke(monitorId, $"Verified composer delivery attempt {attempt} did not produce a user-message receipt.");\n                if (requireNewTurn)\n                {\n                    Activity?.Invoke(monitorId, "New-turn receipt remains uncertain; deferring before any second send attempt to prevent a duplicate message.");\n                    return false;\n                }',
+              "new-turn receipt contract")
+
+          replace_once(
+              '            catch (Exception ex) when (IsTransientChromeException(ex)) { Activity?.Invoke(monitorId, $"Verified composer send retry {attempt}: {ex.GetType().Name}."); }',
+              '            catch (Exception ex) when (IsTransientChromeException(ex))\n            {\n                Activity?.Invoke(monitorId, $"Verified composer send retry {attempt}: {ex.GetType().Name}.");\n                if (requireNewTurn)\n                    return false;\n            }',
+              "new-turn transient deferral")
+
+          replace_once(
+              "    private sealed record RuntimeSettingsSnapshot(\n        int RotateAfterMessages,\n        string MessageCountRotationStartMessage,\n        DateTimeOffset ExpiresUtc);\n\n    private sealed class LifecycleGateEntry",
+              "    private sealed record RuntimeSettingsSnapshot(\n        int RotateAfterMessages,\n        string MessageCountRotationStartMessage,\n        DateTimeOffset ExpiresUtc);\n\n    private sealed record PendingAutoReply(\n        string SourceText,\n        int AssistantCount,\n        string Message,\n        DateTimeOffset RetryNotBeforeUtc);\n\n    private sealed class LifecycleGateEntry",
+              "pending record")
+
+          path.write_text(source, encoding="utf-8")
+          '@ | python -
       - name: Restore runtime tests
         run: dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
-      - name: Run restart recovery tests
-        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true --filter FullyQualifiedName~DevelopmentTaskRecoveryTests
+      - name: Run runtime tests
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
+      - name: Commit focused monitor fix
+        if: github.ref_name == 'agent/fix-cdp-outbound-recovery'
+        shell: pwsh
+        run: |
+          git config user.name "GPTDeskTop Fix Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/GPTDeskTop/Services/ChatGptMonitorService.cs tests/GPTDeskTop.RuntimeTests/DeferredOutboundRecoveryRegressionTests.cs
+          if (git diff --cached --quiet) { throw 'Focused monitor patch produced no source changes.' }
+          git commit -m "fix(monitor): defer uncertain outbound across CDP recovery"
+          git push origin HEAD:agent/fix-cdp-outbound-recovery
       - name: Validate recovery contract
+        if: github.ref_name == 'main'
         shell: pwsh
         run: |
           $recovery = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskRecoveryService.cs -Raw
