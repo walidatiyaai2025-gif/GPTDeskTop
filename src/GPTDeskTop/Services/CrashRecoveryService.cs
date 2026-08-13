@@ -11,6 +11,8 @@ public enum CrashRecoveryMode
 
 public static class CrashRecoveryService
 {
+    private const int ChromeStartupProbeAttempts = 12;
+    private static readonly TimeSpan ChromeStartupProbeDelay = TimeSpan.FromSeconds(1);
     private static readonly SemaphoreSlim RecoveryGate = new(1, 1);
 
     public static Task RecoverIfPendingAsync(
@@ -108,15 +110,27 @@ public static class CrashRecoveryService
             if (mode == CrashRecoveryMode.FreshCrashReset)
             {
                 await runtime.StopAllMonitorsAsync();
-                await runtime.CloseAllMonitorTabsAsync(cancellationToken);
+                try
+                {
+                    await runtime.CloseAllMonitorTabsAsync(cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException
+                                           && ChromeTransportFailureClassifier.IsTransient(ex))
+                {
+                    // A dead or aborted CDP session leaves nothing reliable to close.
+                    // Fresh recovery must continue by creating a new browser transport.
+                }
 
                 if (firstValidMonitor is not null)
                 {
                     await runtime.DelayAsync(TimeSpan.FromMilliseconds(700), cancellationToken);
                     runtime.LaunchMonitorChrome(firstValidMonitor.Url);
-                    await runtime.DelayAsync(TimeSpan.FromMilliseconds(2200), cancellationToken);
 
-                    var currentTabs = await runtime.GetTabsAsync(cancellationToken);
+                    var currentTabs = await GetTabsWithChromeStartupRecoveryAsync(
+                        runtime,
+                        firstValidMonitor.Url,
+                        launchOnFirstTransient: false,
+                        cancellationToken);
                     availableTabs.AddRange(currentTabs);
                     firstTab = currentTabs.FirstOrDefault(t =>
                         ChatGptConversationIdentity.IsSame(t.Url, firstValidMonitor.Url));
@@ -130,7 +144,11 @@ public static class CrashRecoveryService
             }
             else if (firstValidMonitor is not null)
             {
-                var currentTabs = await runtime.GetTabsAsync(cancellationToken);
+                var currentTabs = await GetTabsWithChromeStartupRecoveryAsync(
+                    runtime,
+                    firstValidMonitor.Url,
+                    launchOnFirstTransient: true,
+                    cancellationToken);
                 availableTabs.AddRange(currentTabs.Where(tab =>
                     RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url)));
             }
@@ -299,6 +317,42 @@ public static class CrashRecoveryService
             ExceptionLogService.Log(ex, "CrashRecoveryService.RecoverIfPendingAsync");
             await database.AddLogAsync("System", "CrashRecovery", ex.ToString(), "CrashRecoveryFailed", cancellationToken: cancellationToken);
         }
+    }
+
+    private static async Task<IReadOnlyList<ChromeTab>> GetTabsWithChromeStartupRecoveryAsync(
+        ICrashRecoveryRuntime runtime,
+        string startUrl,
+        bool launchOnFirstTransient,
+        CancellationToken cancellationToken)
+    {
+        var launchAttempted = !launchOnFirstTransient;
+        Exception? lastTransient = null;
+
+        for (var attempt = 1; attempt <= ChromeStartupProbeAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                return await runtime.GetTabsAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException
+                                       && ChromeTransportFailureClassifier.IsTransient(ex))
+            {
+                lastTransient = ex;
+                if (!launchAttempted)
+                {
+                    runtime.LaunchMonitorChrome(startUrl);
+                    launchAttempted = true;
+                }
+
+                if (attempt < ChromeStartupProbeAttempts)
+                    await runtime.DelayAsync(ChromeStartupProbeDelay, cancellationToken);
+            }
+        }
+
+        throw new IOException(
+            $"Chrome DevTools endpoint did not become available after {ChromeStartupProbeAttempts} crash-recovery probes.",
+            lastTransient);
     }
 
     private static ChromeTab? ResolveReusableTab(
