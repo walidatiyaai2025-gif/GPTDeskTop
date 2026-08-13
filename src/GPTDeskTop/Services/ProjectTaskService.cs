@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
 
@@ -13,7 +15,13 @@ public sealed class ProjectTaskService
         var state = await RequireProjectAsync(projectId, ct);
         if (state.Tasks.Any(t => string.Equals(t.TaskId, taskId, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"Task '{taskId}' already exists.");
+
+        var fingerprint = CreateFingerprint(projectId, title);
+        if (state.Tasks.Any(t => t.VerificationEvidence.Contains("fingerprint:" + fingerprint, StringComparer.Ordinal)))
+            throw new InvalidOperationException("An equivalent task already exists for this project.");
+
         var task = new ProjectTaskState { TaskId = taskId.Trim(), Title = title.Trim(), Priority = priority.Trim(), Status = ProjectTaskStatus.Ready };
+        task.VerificationEvidence.Add("fingerprint:" + fingerprint);
         state.Tasks.Add(task);
         await _store.SaveAsync(state, ct);
         return task;
@@ -28,6 +36,12 @@ public sealed class ProjectTaskService
         if (status == ProjectTaskStatus.Completed) task.CompletedAt = DateTimeOffset.UtcNow;
         task.BlockedReason = status == ProjectTaskStatus.Blocked ? blockedReason?.Trim() ?? "Blocked" : string.Empty;
         await _store.SaveAsync(state, ct);
+    }
+
+    private static string CreateFingerprint(string projectId, string title)
+    {
+        var normalized = $"{projectId.Trim().ToLowerInvariant()}|{title.Trim().ToLowerInvariant()}";
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized))).ToLowerInvariant();
     }
 
     private async Task<ProjectState> RequireProjectAsync(string projectId, CancellationToken ct) =>
