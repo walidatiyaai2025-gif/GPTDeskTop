@@ -42,7 +42,8 @@ public sealed class CrashRecoveryRetryModeRegressionTests
         Assert.Contains("CloseAllMonitorTabsAsync", freshBlock, StringComparison.Ordinal);
         Assert.DoesNotContain("StopAllMonitorsAsync", retryBlock, StringComparison.Ordinal);
         Assert.DoesNotContain("CloseAllMonitorTabsAsync", retryBlock, StringComparison.Ordinal);
-        Assert.Contains("GetTabsAsync", retryBlock, StringComparison.Ordinal);
+        Assert.Contains("GetTabsWithChromeStartupRecoveryAsync", retryBlock, StringComparison.Ordinal);
+        Assert.Contains("launchOnFirstTransient: true", retryBlock, StringComparison.Ordinal);
     }
 
     [Fact]
