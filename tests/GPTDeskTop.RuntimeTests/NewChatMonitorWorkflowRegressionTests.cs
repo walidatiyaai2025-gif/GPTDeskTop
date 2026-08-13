@@ -79,7 +79,7 @@ public sealed class NewChatMonitorWorkflowRegressionTests
         var source = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "Services", "NewChatMonitorWorkflowService.cs"));
 
         Assert.Contains(
-            "The initial ChatGPT message could not be verified after automatic Chrome/CDP recovery.",
+            "The initial ChatGPT message could not be verified after stable-conversation recovery.",
             source,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
