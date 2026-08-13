@@ -447,7 +447,7 @@ public sealed class MainForm : Form
             }
 
             var workspaceRaw = await _database.GetSettingAsync("Ui.Main.WorkspaceSplitRatio");
-            if (!TryApplyStoredSplitRatio(_workspaceSplit, workspaceRaw) || GetSplitRatio(_workspaceSplit) > 0.34)
+            if (!TryApplyStoredSplitRatio(_workspaceSplit, workspaceRaw) || (_workspaceSplit.Width > 0 && (double)_workspaceSplit.SplitterDistance / _workspaceSplit.Width > 0.34))
                 SetSplitRatio(_workspaceSplit, 0.28);
             var diagnosticsRaw = await _database.GetSettingAsync("Ui.Main.DiagnosticsSplitRatio");
             if (!TryApplyStoredSplitRatio(_diagnosticsSplit, diagnosticsRaw))
