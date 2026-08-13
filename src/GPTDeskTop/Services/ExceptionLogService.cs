@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using GPTDeskTop.Data;
 
@@ -6,6 +7,8 @@ namespace GPTDeskTop.Services;
 public static class ExceptionLogService
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
+    private static readonly ConcurrentDictionary<string, DateTimeOffset> LastRepeatedTransportLogUtc = new(StringComparer.Ordinal);
+    private static readonly TimeSpan RepeatedTransportLogInterval = TimeSpan.FromSeconds(30);
     private static LocalDatabase? _database;
     private static readonly string LogDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
 
@@ -20,6 +23,8 @@ public static class ExceptionLogService
     public static async Task LogAsync(Exception exception, string source, long? monitorId = null, string? tabId = null, string? tabTitle = null)
     {
         if (IsExpectedChromeDevToolsOfflineProbe(exception, source))
+            return;
+        if (IsRepeatedMonitorTransportException(exception, source, monitorId))
             return;
 
         var timestamp = DateTimeOffset.Now;
@@ -68,6 +73,29 @@ public static class ExceptionLogService
 
     public static void Log(Exception exception, string source, long? monitorId = null, string? tabId = null, string? tabTitle = null)
         => _ = LogAsync(exception, source, monitorId, tabId, tabTitle);
+
+    private static bool IsRepeatedMonitorTransportException(Exception exception, string source, long? monitorId)
+    {
+        if (!string.Equals(source, "ChatGptMonitorService.MonitorLoop", StringComparison.Ordinal)
+            || exception is not HttpRequestException)
+            return false;
+
+        var key = $"{source}|{monitorId?.ToString() ?? "-"}|{exception.GetType().FullName}";
+        var now = DateTimeOffset.UtcNow;
+        if (!LastRepeatedTransportLogUtc.TryGetValue(key, out var previous))
+        {
+            LastRepeatedTransportLogUtc[key] = now;
+            return false;
+        }
+
+        if (now - previous >= RepeatedTransportLogInterval)
+        {
+            LastRepeatedTransportLogUtc[key] = now;
+            return false;
+        }
+
+        return true;
+    }
 
     private static bool IsExpectedChromeDevToolsOfflineProbe(Exception exception, string source)
     {
