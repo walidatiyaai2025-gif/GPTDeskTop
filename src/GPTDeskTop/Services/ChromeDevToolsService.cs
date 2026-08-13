@@ -555,33 +555,80 @@ public sealed class ChromeDevToolsService
     public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default) { var textLiteral = JsonSerializer.Serialize(message); var setEditorExpression = $$""" (() => { const text = {{textLiteral}}; const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]') || document.querySelector('[contenteditable="true"]'); if (!editor) return false; editor.focus(); if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) { const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set; setter?.call(editor, text); editor.dispatchEvent(new Event('input', { bubbles: true })); editor.dispatchEvent(new Event('change', { bubbles: true })); } else { const selection = window.getSelection(); const range = document.createRange(); range.selectNodeContents(editor); selection?.removeAllRanges(); selection?.addRange(range); document.execCommand('insertText', false, text); editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })); } return true; })() """; var editorReady = await EvaluateAsync(tab, setEditorExpression, cancellationToken, false); if (editorReady.ValueKind != JsonValueKind.True) return false; await Task.Delay(350, cancellationToken); const string clickExpression = """ (() => { const sendButton = document.querySelector('button[data-testid="send-button"]') || [...document.querySelectorAll('button')].find(b => /send|إرسال/i.test(b.getAttribute('aria-label') || '')); if (!sendButton || sendButton.disabled) return false; sendButton.click(); return true; })() """; var clicked = await EvaluateAsync(tab, clickExpression, cancellationToken, false); return clicked.ValueKind == JsonValueKind.True; }
     public async Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default, bool requireNewTurn = false)
     {
-        var expected = message.Trim(); if (expected.Length == 0) return false;
-        var before = await GetUserMessageSnapshotAsync(tab, cancellationToken);
-        if (!requireNewTurn && string.Equals(before.LastText, expected, StringComparison.Ordinal)) return true;
+        var expected = message.Trim();
+        if (expected.Length == 0) return false;
+
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
-        var attempt = 0;
+        var before = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+        while (!before.Success && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(250, cancellationToken);
+            before = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+        }
+
+        if (!before.Success) return false;
+        if (!requireNewTurn && string.Equals(before.LastText, expected, StringComparison.Ordinal)) return true;
+
         while (DateTimeOffset.UtcNow < deadline)
         {
-            cancellationToken.ThrowIfCancellationRequested(); attempt++;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var current = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+            if (!current.Success)
+            {
+                await Task.Delay(250, cancellationToken);
+                continue;
+            }
+
+            if (current.Count > before.Count && string.Equals(current.LastText, expected, StringComparison.Ordinal))
+                return true;
+
             try
             {
-                var current = await GetUserMessageSnapshotAsync(tab, cancellationToken);
-                if (current.Count > before.Count && string.Equals(current.LastText, expected, StringComparison.Ordinal)) return true;
-                if (!await SendChatMessageAsync(tab, message, cancellationToken)) { await Task.Delay(500, cancellationToken); continue; }
+                if (!await SendChatMessageAsync(tab, message, cancellationToken))
+                {
+                    await Task.Delay(500, cancellationToken);
+                    continue;
+                }
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+            {
+                // Runtime.evaluate can time out after the page already handled the click. Retire the
+                // broken transport and verify the DOM on the next pass before attempting another send.
+                _sessionPool.Invalidate(tab.Id);
+                await Task.Delay(250, cancellationToken);
+                continue;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 ExceptionLogService.Log(ex, "ChromeDevToolsService.SendChatMessageVerified", null, tab.Id, tab.Title);
             }
+
             await Task.Delay(300, cancellationToken);
-            try
-            {
-                var after = await GetUserMessageSnapshotAsync(tab, cancellationToken);
-                if (after.Count > before.Count && string.Equals(after.LastText, expected, StringComparison.Ordinal)) return true;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException) { ExceptionLogService.Log(ex, "ChromeDevToolsService.VerifySend", null, tab.Id, tab.Title); }
+            var after = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+            if (after.Success && after.Count > before.Count && string.Equals(after.LastText, expected, StringComparison.Ordinal))
+                return true;
         }
         return false;
+    }
+    private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var snapshot = await GetUserMessageSnapshotAsync(tab, cancellationToken);
+            return (true, snapshot.Count, snapshot.LastText);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+        {
+            // A timed-out CDP command marks its session broken. Explicit invalidation guarantees the
+            // next verification uses a fresh session without treating the transient as a crash log.
+            _sessionPool.Invalidate(tab.Id);
+            return (false, 0, string.Empty);
+        }
     }
     private async Task<(int Count, string LastText)> GetUserMessageSnapshotAsync(ChromeTab tab, CancellationToken cancellationToken) { const string expression = """ (() => { const messages = [...document.querySelectorAll('[data-message-author-role="user"]')]; const last = messages.length ? (messages[messages.length - 1].innerText || messages[messages.length - 1].textContent || '').trim() : ''; return { count: messages.length, lastText: last }; })() """; var value = await EvaluateAsync(tab, expression, cancellationToken, false); var count = value.TryGetProperty("count", out var c) ? c.GetInt32() : 0; var last = value.TryGetProperty("lastText", out var t) ? t.GetString() ?? string.Empty : string.Empty; return (count, last); }
     public async Task ReloadTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) => await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
