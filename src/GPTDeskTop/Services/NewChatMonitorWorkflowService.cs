@@ -40,7 +40,7 @@ public sealed class NewChatMonitorWorkflowService
             openedTab = await CreateFreshChatTabAsync(cancellationToken).ConfigureAwait(false);
             var sent = await SendInitialMessageVerifiedAsync(openedTab, initialChatMessage, cancellationToken).ConfigureAwait(false);
             if (!sent)
-                throw new InvalidOperationException("ChatGPT did not produce a verified user-message receipt for the initial chat message.");
+                throw new InvalidOperationException("The initial ChatGPT message could not be verified after automatic Chrome/CDP recovery. No monitor was created; retry New Chat + Monitor.");
 
             var stableTab = await ResolveStableConversationAsync(openedTab, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("The new ChatGPT target did not expose a stable conversation URL after verified delivery. No monitor was created.");
@@ -94,6 +94,10 @@ public sealed class NewChatMonitorWorkflowService
             if (existingTabs.Count > 0)
                 return await _chrome.CreateNewChatTabAsync(cancellationToken).ConfigureAwait(false);
         }
+        catch (Exception ex) when (ex is not OperationCanceledException && ChromeTransportFailureClassifier.IsTransient(ex))
+        {
+            // A stale DevTools endpoint/session is expected to recover below after the dedicated browser is ensured.
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             ExceptionLogService.Log(ex, "NewChatMonitorWorkflow.ReadChromeBeforeLaunch");
@@ -135,6 +139,11 @@ public sealed class NewChatMonitorWorkflowService
                 if (await _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken).ConfigureAwait(false))
                     return true;
             }
+            catch (Exception ex) when (ex is not OperationCanceledException && ChromeTransportFailureClassifier.IsTransient(ex))
+            {
+                // Verified send retires broken sessions and re-checks the DOM before a resend.
+                // Treat remaining transient transport failures as recovery state, not crash diagnostics.
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 ExceptionLogService.Log(ex, $"NewChatMonitorWorkflow.InitialSendAttempt{attempt}");
@@ -146,6 +155,10 @@ public sealed class NewChatMonitorWorkflowService
                 {
                     await _chrome.ReloadTabAsync(tab, cancellationToken).ConfigureAwait(false);
                     await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException && ChromeTransportFailureClassifier.IsTransient(ex))
+                {
+                    // Reload may race a navigation or a retired target session. The next verified-send attempt rebinds it.
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -175,6 +188,10 @@ public sealed class NewChatMonitorWorkflowService
                 var current = tabs.FirstOrDefault(tab => string.Equals(tab.Id, openedTab.Id, StringComparison.Ordinal));
                 if (current is not null && RuntimeHealthPresentation.IsChatGptConversationUrl(current.Url))
                     return current;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && ChromeTransportFailureClassifier.IsTransient(ex))
+            {
+                // Navigation/CDP churn while the new chat receives its /c/{id} identity is recoverable.
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
