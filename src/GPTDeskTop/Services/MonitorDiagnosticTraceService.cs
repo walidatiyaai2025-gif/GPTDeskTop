@@ -147,8 +147,8 @@ public sealed class MonitorDiagnosticTraceService : IDisposable
             targetFound,
             pageState?.AssistantCount,
             pageState?.IsGenerating,
-            pageState is null ? null : !string.IsNullOrWhiteSpace(pageState.Value.LastAssistantText),
-            pageState is null ? null : !string.IsNullOrWhiteSpace(pageState.Value.ErrorText),
+            pageState is null ? null : !string.IsNullOrWhiteSpace(pageState.LastAssistantText),
+            pageState is null ? null : !string.IsNullOrWhiteSpace(pageState.ErrorText),
             SafeFailureType(failureType));
 
     private async Task RunAsync(CancellationToken cancellationToken)
@@ -183,12 +183,7 @@ public sealed class MonitorDiagnosticTraceService : IDisposable
 
             try
             {
-                using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                var delay = Task.Delay(SampleInterval, delayCts.Token);
-                var wake = _wake.WaitAsync(cancellationToken);
-                var completed = await Task.WhenAny(delay, wake).ConfigureAwait(false);
-                if (completed == wake) delayCts.Cancel();
-                await completed.ConfigureAwait(false);
+                await _wake.WaitAsync(SampleInterval, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
