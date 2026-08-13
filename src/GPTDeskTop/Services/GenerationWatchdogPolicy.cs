@@ -7,4 +7,7 @@ public sealed class GenerationWatchdogPolicy
     public int MaxStopRecoveryAttempts { get; init; } = 1;
     public int MaxSameChatRecoveries { get; init; } = 1;
     public int ToolLoopCycleThreshold { get; init; } = 3;
+
+    public TimeSpan EffectiveIdle(DateTimeOffset lastProgressAt, DateTimeOffset now, TimeSpan pausedDuration)
+        => TimeSpan.FromTicks(Math.Max(0, (now - lastProgressAt - pausedDuration).Ticks));
 }
