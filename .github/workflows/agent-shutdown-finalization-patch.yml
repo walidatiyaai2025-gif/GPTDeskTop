@@ -168,7 +168,7 @@ jobs:
 
       - name: Run runtime regression tests
         shell: pwsh
-        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore:$false
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release
 
       - name: Commit production fix
         shell: pwsh
