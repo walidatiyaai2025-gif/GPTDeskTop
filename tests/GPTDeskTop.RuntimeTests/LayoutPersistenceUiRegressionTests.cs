@@ -36,7 +36,7 @@ public sealed class LayoutPersistenceUiRegressionTests
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
         Assert.Contains("ratio is < 0.15 or > 0.85", source, StringComparison.Ordinal);
-        Assert.Contains("SetSplitRatio(_workspaceSplit, 0.42)", source, StringComparison.Ordinal);
+        Assert.Contains("SetSplitRatio(_workspaceSplit, 0.28)", source, StringComparison.Ordinal);
         Assert.Contains("SetSplitRatio(_diagnosticsSplit, 0.48)", source, StringComparison.Ordinal);
     }
 
