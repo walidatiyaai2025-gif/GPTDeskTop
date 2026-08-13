@@ -16,11 +16,11 @@ public sealed class ChromeDevToolsService
     private const int MonitorRecoveryEndpointGraceAttempts = 8;
     private const int MonitorRecoveryEndpointGraceDelayMs = 250;
     private const string BrowserSessionId = "__gptdesktop_monitor_browser__";
-    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 2 ? window.__gptDesktopChatStateCache.read() : null";
+    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 3 ? window.__gptDesktopChatStateCache.read() : null";
     private const string ChatStateInstallExpression = """
 (() => {
   const key = '__gptDesktopChatStateCache';
-  const version = 2;
+  const version = 3;
   const previous = window[key];
   if (previous?.version === version && typeof previous.read === 'function') return previous.read();
   try { previous?.observer?.disconnect?.(); } catch { }
@@ -38,13 +38,16 @@ public sealed class ChromeDevToolsService
     for (const button of document.querySelectorAll('button')) {
       if (!visible(button)) continue;
       const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`;
-      if (/stop generating|stop responding|stop|إيقاف/i.test(label)) return button;
+      if (/stop generating|stop responding|إيقاف الإنشاء|إيقاف الرد/i.test(label)) return button;
     }
     return null;
   };
-  const hasStreamingSignal = () => {
-    for (const element of document.querySelectorAll('[data-is-streaming="true"],[data-streaming="true"],.result-streaming,[aria-busy="true"]')) {
-      if (visible(element) && (element.closest('[data-message-author-role="assistant"]') || element.closest('form'))) return true;
+  const hasStreamingSignal = lastAssistant => {
+    if (!lastAssistant) return false;
+    const explicitStreamingSelector = '[data-is-streaming="true"],[data-streaming="true"],.result-streaming';
+    if (lastAssistant.matches(explicitStreamingSelector) && visible(lastAssistant)) return true;
+    for (const element of lastAssistant.querySelectorAll(explicitStreamingSelector)) {
+      if (visible(element)) return true;
     }
     return false;
   };
@@ -71,11 +74,12 @@ public sealed class ChromeDevToolsService
     if (!state.dirty) return state.snapshot;
     state.dirty = false;
     const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
+    const lastAssistant = messages.length ? messages[messages.length - 1] : null;
     const stopButton = findStopButton();
-    const streamingSignal = hasStreamingSignal();
+    const streamingSignal = hasStreamingSignal(lastAssistant);
     const isGenerating = !!stopButton || streamingSignal;
     const errorText = findErrorText();
-    const last = !isGenerating && messages.length ? (messages[messages.length - 1].innerText || '').trim() : '';
+    const last = !isGenerating && lastAssistant ? (lastAssistant.innerText || '').trim() : '';
     state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText };
     return state.snapshot;
   };
@@ -87,7 +91,7 @@ public sealed class ChromeDevToolsService
       childList: true,
       characterData: true,
       attributes: true,
-      attributeFilter: ['aria-busy', 'aria-label', 'title', 'disabled', 'data-is-streaming', 'data-streaming', 'data-testid', 'role']
+      attributeFilter: ['aria-busy', 'aria-label', 'title', 'disabled', 'data-is-streaming', 'data-streaming', 'data-testid', 'role', 'class', 'style', 'hidden', 'aria-hidden']
     });
   }
   window[key] = state;
