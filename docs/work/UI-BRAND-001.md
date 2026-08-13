@@ -15,3 +15,5 @@ A bootstrap message is never resent merely because the original target navigated
 - Saved Monitors starts around 72% width and Auto Reply is absent from the dashboard surface.
 - Transient stale-CDP verification rebinds target metadata and can validate the existing bootstrap message without duplication.
 - Runtime regression tests and all stable PR gates are green before merge.
+
+CI note: direct repository commit retriggers the stable PR gates after the compile-guard repair.
