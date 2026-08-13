@@ -55,6 +55,7 @@ public sealed class MainForm : Form
     private bool _chromeHidden;
     private bool _shutdownRequested;
     private bool _shutdownCompleted;
+    private System.Threading.Timer? _shutdownHardExitWatchdog;
     private bool _ownedResourcesDisposed;
     private bool _newChatMonitorWorkflowRunning;
 
@@ -1270,6 +1271,8 @@ public sealed class MainForm : Form
             _monitor.Activity -= OnMonitorActivity;
             _monitor.HistoryChanged -= OnMonitorHistoryChanged;
             _monitor.RunningStateChanged -= OnMonitorRunningStateChanged;
+            _shutdownHardExitWatchdog?.Dispose();
+            _shutdownHardExitWatchdog = null;
             _monitorStatusFont.Dispose();
             _toolTip.Dispose();
         }
@@ -1288,6 +1291,11 @@ public sealed class MainForm : Form
         if (_shutdownRequested) return;
 
         _shutdownRequested = true;
+        _shutdownHardExitWatchdog ??= new System.Threading.Timer(
+            _ => Environment.Exit(0),
+            null,
+            TimeSpan.FromSeconds(20),
+            Timeout.InfiniteTimeSpan);
         ControlBox = false;
         UseWaitCursor = false;
         Text = $"GPTDeskTop v{GetAppVersion()} - Closing...";
@@ -1376,10 +1384,28 @@ public sealed class MainForm : Form
         {
             _shutdownOverlay.SetStatus("Finalizing…");
             _shutdownCompleted = true;
+
+            // Complete the second close synchronously when we are already back on the UI
+            // thread. Posting it with BeginInvoke can strand the form at Finalizing if the
+            // WinForms queue is no longer dispatching posted work during teardown.
             if (!IsDisposed && IsHandleCreated)
             {
-                try { BeginInvoke(new Action(Close)); }
-                catch (InvalidOperationException) { }
+                try
+                {
+                    if (InvokeRequired)
+                        Invoke(new Action(Close));
+                    else
+                        Close();
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+                {
+                    ExceptionLogService.Log(ex, "MainForm.FinalizeShutdownClose");
+                    Application.ExitThread();
+                }
+            }
+            else
+            {
+                Application.ExitThread();
             }
         }
     }

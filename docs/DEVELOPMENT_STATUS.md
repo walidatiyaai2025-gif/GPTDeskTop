@@ -143,3 +143,10 @@ MON-007 is complete. Continue post-1.8 maintenance by auditing the next concrete
 - **MON-015:** transport recovery now refreshes the same conversation first, waits for readable state, then reopens the exact conversation URL before browser restart. Explicit ChatGPT error UI performs a transactional fresh-chat continuation under the same Monitor ID.
 - **REL-003:** application, setup and packaging metadata advanced to **2.0.0** after these changes.
 - Verification requirement before merge: full RuntimeTests + Release build/packaging gates green.
+
+### [UI-SHUTDOWN-001] Bounded final shutdown completion
+- Status: DONE
+- Report: application could remain visible indefinitely at `Closing GPTDeskTop… / Finalizing…`.
+- Fix: the final close now runs synchronously on the UI thread instead of being stranded behind a `BeginInvoke`, and a 20-second process watchdog guarantees termination if any teardown handler stalls.
+- Safety: normal workspace/monitor/Chrome cleanup still runs first; the watchdog is disposed during a successful normal close.
+- Regression: `ShutdownFinalizationRegressionTests` locks direct-close and bounded-exit behavior.
