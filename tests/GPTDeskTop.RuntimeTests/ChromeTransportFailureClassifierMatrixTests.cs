@@ -56,6 +56,16 @@ public sealed class ChromeTransportFailureClassifierMatrixTests
     public void TransientTransportMessagesAreRecoverable(string message)
         => Assert.True(InvokeBool(TransientMethod, new InvalidOperationException(message)));
 
+    [Fact]
+    public void Http500WebSocketUpgradeFailureIsTransientEvenWhenWrappedAsGenericException()
+        => Assert.True(InvokeBool(TransientMethod,
+            new InvalidOperationException("The server returned status code '500' when status code '101' was expected.")));
+
+    [Fact]
+    public void AnyFailedWebSocketUpgradeThatExpected101IsTransient()
+        => Assert.True(InvokeBool(TransientMethod,
+            new InvalidOperationException("The server returned status code '403' when status code '101' was expected.")));
+
     // MON-STAB-050 acceptance matrix cases 32-38.
     [Fact]
     public void WebSocketExceptionIsTransient()
