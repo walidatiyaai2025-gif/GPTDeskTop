@@ -1,0 +1,37 @@
+name: Agent UI-022 Apply
+
+on:
+  push:
+    branches: [ agent/icon-newchat-wide-monitors ]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: "!contains(github.event.head_commit.message, '[agent-ui022-applied]')"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/icon-newchat-wide-monitors
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Apply UI-022 production patch
+        run: python .agent/apply_icon_newchat_wide.py
+      - name: Remove staging-only files
+        shell: pwsh
+        run: |
+          Remove-Item .agent -Recurse -Force
+          Remove-Item src/GPTDeskTop/Assets/GPTDeskTop.ico.b64 -Force
+          Remove-Item .github/workflows/agent-ui022-apply.yml -Force
+      - name: Commit production changes
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: brand app and harden new chat monitor [agent-ui022-applied]"
+          git push origin HEAD:agent/icon-newchat-wide-monitors
