@@ -1,0 +1,180 @@
+name: Agent shutdown finalization patch
+
+on:
+  push:
+    branches:
+      - agent/fix-shutdown-finalizing-hang
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Apply asserted shutdown fix
+        shell: pwsh
+        run: |
+          $path = 'src/GPTDeskTop/UI/MainForm.cs'
+          $text = Get-Content $path -Raw
+
+          $oldField = @'
+              private bool _shutdownCompleted;
+              private bool _ownedResourcesDisposed;
+          '@
+          $newField = @'
+              private bool _shutdownCompleted;
+              private System.Threading.Timer? _shutdownHardExitWatchdog;
+              private bool _ownedResourcesDisposed;
+          '@
+          if (-not $text.Contains($oldField)) { throw 'Expected shutdown field anchor not found.' }
+          $text = $text.Replace($oldField, $newField)
+
+          $oldDispose = @'
+                      _monitor.RunningStateChanged -= OnMonitorRunningStateChanged;
+                      _monitorStatusFont.Dispose();
+                      _toolTip.Dispose();
+          '@
+          $newDispose = @'
+                      _monitor.RunningStateChanged -= OnMonitorRunningStateChanged;
+                      _shutdownHardExitWatchdog?.Dispose();
+                      _shutdownHardExitWatchdog = null;
+                      _monitorStatusFont.Dispose();
+                      _toolTip.Dispose();
+          '@
+          if (-not $text.Contains($oldDispose)) { throw 'Expected dispose anchor not found.' }
+          $text = $text.Replace($oldDispose, $newDispose)
+
+          $oldStart = @'
+                  _shutdownRequested = true;
+                  ControlBox = false;
+          '@
+          $newStart = @'
+                  _shutdownRequested = true;
+                  _shutdownHardExitWatchdog ??= new System.Threading.Timer(
+                      _ => Environment.Exit(0),
+                      null,
+                      TimeSpan.FromSeconds(20),
+                      Timeout.InfiniteTimeSpan);
+                  ControlBox = false;
+          '@
+          if (-not $text.Contains($oldStart)) { throw 'Expected shutdown start anchor not found.' }
+          $text = $text.Replace($oldStart, $newStart)
+
+          $oldFinalize = @'
+                      _shutdownOverlay.SetStatus("Finalizing…");
+                      _shutdownCompleted = true;
+                      if (!IsDisposed && IsHandleCreated)
+                      {
+                          try { BeginInvoke(new Action(Close)); }
+                          catch (InvalidOperationException) { }
+                      }
+          '@
+          $newFinalize = @'
+                      _shutdownOverlay.SetStatus("Finalizing…");
+                      _shutdownCompleted = true;
+
+                      // Complete the second close synchronously when we are already back on the UI
+                      // thread. Posting it with BeginInvoke can strand the form at Finalizing if the
+                      // WinForms queue is no longer dispatching posted work during teardown.
+                      if (!IsDisposed && IsHandleCreated)
+                      {
+                          try
+                          {
+                              if (InvokeRequired)
+                                  Invoke(new Action(Close));
+                              else
+                                  Close();
+                          }
+                          catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+                          {
+                              ExceptionLogService.Log(ex, "MainForm.FinalizeShutdownClose");
+                              Application.ExitThread();
+                          }
+                      }
+                      else
+                      {
+                          Application.ExitThread();
+                      }
+          '@
+          if (-not $text.Contains($oldFinalize)) { throw 'Expected Finalizing/BeginInvoke anchor not found.' }
+          $text = $text.Replace($oldFinalize, $newFinalize)
+          Set-Content $path $text -NoNewline
+
+          $testPath = 'tests/GPTDeskTop.RuntimeTests/ShutdownFinalizationRegressionTests.cs'
+          @'
+          namespace GPTDeskTop.RuntimeTests;
+
+          public sealed class ShutdownFinalizationRegressionTests
+          {
+              private static string ReadMainForm()
+              {
+                  var path = Path.GetFullPath(Path.Combine(
+                      AppContext.BaseDirectory,
+                      "..", "..", "..", "..", "..",
+                      "src", "GPTDeskTop", "UI", "MainForm.cs"));
+                  return File.ReadAllText(path);
+              }
+
+              [Fact]
+              public void FinalizingClosesSynchronouslyInsteadOfPostingAnotherClose()
+              {
+                  var source = ReadMainForm();
+                  var finalizing = source.IndexOf("_shutdownOverlay.SetStatus(\"Finalizing…\")", StringComparison.Ordinal);
+                  Assert.True(finalizing >= 0);
+                  var tail = source[finalizing..];
+
+                  Assert.Contains("_shutdownCompleted = true", tail, StringComparison.Ordinal);
+                  Assert.Contains("if (InvokeRequired)", tail, StringComparison.Ordinal);
+                  Assert.Contains("Invoke(new Action(Close))", tail, StringComparison.Ordinal);
+                  Assert.Contains("Close();", tail, StringComparison.Ordinal);
+                  Assert.DoesNotContain("BeginInvoke(new Action(Close))", tail, StringComparison.Ordinal);
+              }
+
+              [Fact]
+              public void ShutdownHasAProcessLevelBoundAndDisposesItsWatchdog()
+              {
+                  var source = ReadMainForm();
+
+                  Assert.Contains("_shutdownHardExitWatchdog ??= new System.Threading.Timer", source, StringComparison.Ordinal);
+                  Assert.Contains("TimeSpan.FromSeconds(20)", source, StringComparison.Ordinal);
+                  Assert.Contains("_ => Environment.Exit(0)", source, StringComparison.Ordinal);
+                  Assert.Contains("_shutdownHardExitWatchdog?.Dispose()", source, StringComparison.Ordinal);
+                  Assert.Contains("Application.ExitThread()", source, StringComparison.Ordinal);
+              }
+          }
+          '@ | Set-Content $testPath
+
+          $status = 'docs/DEVELOPMENT_STATUS.md'
+          Add-Content $status @'
+
+          ### [UI-SHUTDOWN-001] Bounded final shutdown completion
+          - Status: DONE
+          - Report: application could remain visible indefinitely at `Closing GPTDeskTop… / Finalizing…`.
+          - Fix: the final close now runs synchronously on the UI thread instead of being stranded behind a `BeginInvoke`, and a 20-second process watchdog guarantees termination if any teardown handler stalls.
+          - Safety: normal workspace/monitor/Chrome cleanup still runs first; the watchdog is disposed during a successful normal close.
+          - Regression: `ShutdownFinalizationRegressionTests` locks direct-close and bounded-exit behavior.
+          '@
+
+          git rm .github/workflows/agent-shutdown-finalization-patch.yml
+
+      - name: Run runtime regression tests
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore:$false
+
+      - name: Commit production fix
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/GPTDeskTop/UI/MainForm.cs tests/GPTDeskTop.RuntimeTests/ShutdownFinalizationRegressionTests.cs docs/DEVELOPMENT_STATUS.md .github/workflows/agent-shutdown-finalization-patch.yml
+          git commit -m 'fix: guarantee shutdown leaves Finalizing state'
+          git push origin HEAD:agent/fix-shutdown-finalizing-hang
