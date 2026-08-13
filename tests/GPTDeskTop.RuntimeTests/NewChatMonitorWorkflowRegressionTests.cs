@@ -54,6 +54,41 @@ public sealed class NewChatMonitorWorkflowRegressionTests
     }
 
     [Fact]
+    public void TransientChromeFailuresAreRecoveryStateInsteadOfExceptionLogFlood()
+    {
+        var source = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "Services", "NewChatMonitorWorkflowService.cs"));
+
+        Assert.Contains("ChromeTransportFailureClassifier.IsTransient(ex)", source, StringComparison.Ordinal);
+        Assert.Contains("Verified send retires broken sessions and re-checks the DOM before a resend.", source, StringComparison.Ordinal);
+        Assert.Contains("Reload may race a navigation or a retired target session.", source, StringComparison.Ordinal);
+        Assert.Contains("Navigation/CDP churn while the new chat receives its /c/{id} identity is recoverable.", source, StringComparison.Ordinal);
+
+        var sendMethodStart = source.IndexOf("private async Task<bool> SendInitialMessageVerifiedAsync", StringComparison.Ordinal);
+        var resolveMethodStart = source.IndexOf("private async Task<ChromeTab?> ResolveStableConversationAsync", sendMethodStart, StringComparison.Ordinal);
+        Assert.True(sendMethodStart >= 0 && resolveMethodStart > sendMethodStart);
+        var sendMethod = source[sendMethodStart..resolveMethodStart];
+
+        var transientCatch = sendMethod.IndexOf("ChromeTransportFailureClassifier.IsTransient(ex)", StringComparison.Ordinal);
+        var persistentLog = sendMethod.IndexOf("ExceptionLogService.Log(ex, $\"NewChatMonitorWorkflow.InitialSendAttempt", StringComparison.Ordinal);
+        Assert.True(transientCatch >= 0 && persistentLog > transientCatch);
+    }
+
+    [Fact]
+    public void PersistentVerifiedSendFailureUsesConnectionAccurateOperatorMessage()
+    {
+        var source = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "Services", "NewChatMonitorWorkflowService.cs"));
+
+        Assert.Contains(
+            "The initial ChatGPT message could not be verified after automatic Chrome/CDP recovery.",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "ChatGPT did not produce a verified user-message receipt for the initial chat message.",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MainWindowExposesOneActionWithTwoIndependentMessages()
     {
         var mainForm = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "UI", "MainForm.cs"));
