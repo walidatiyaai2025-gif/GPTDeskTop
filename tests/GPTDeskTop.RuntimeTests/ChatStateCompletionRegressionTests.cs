@@ -1,0 +1,54 @@
+namespace GPTDeskTop.RuntimeTests;
+
+public sealed class ChatStateCompletionRegressionTests
+{
+    private static string RepositoryPath(params string[] segments)
+        => Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..",
+            Path.Combine(segments)));
+
+    [Fact]
+    public void ChatStateCacheUpgradeForcesExistingTabsOntoTheNewDetector()
+    {
+        var source = File.ReadAllText(RepositoryPath(
+            "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
+
+        Assert.Contains("__gptDesktopChatStateCache?.version === 3", source, StringComparison.Ordinal);
+        Assert.Contains("const version = 3;", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GenericComposerBusyStateCannotKeepACompletedReplyGenerating()
+    {
+        var source = File.ReadAllText(RepositoryPath(
+            "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
+
+        Assert.Contains("const hasStreamingSignal = lastAssistant =>", source, StringComparison.Ordinal);
+        Assert.Contains("const explicitStreamingSelector = '[data-is-streaming=\"true\"],[data-streaming=\"true\"],.result-streaming';", source, StringComparison.Ordinal);
+        Assert.Contains("const streamingSignal = hasStreamingSignal(lastAssistant);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("element.closest('form')", source, StringComparison.Ordinal);
+        Assert.DoesNotContain(".result-streaming,[aria-busy=\"true\"]", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void VisibilityMutationsInvalidateTheCachedGenerationState()
+    {
+        var source = File.ReadAllText(RepositoryPath(
+            "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
+
+        Assert.Contains("'class', 'style', 'hidden', 'aria-hidden'", source, StringComparison.Ordinal);
+        Assert.Contains("const lastAssistant = messages.length ? messages[messages.length - 1] : null;", source, StringComparison.Ordinal);
+        Assert.Contains("const isGenerating = !!stopButton || streamingSignal;", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void StopButtonFallbackOnlyMatchesResponseGenerationControls()
+    {
+        var source = File.ReadAllText(RepositoryPath(
+            "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
+
+        Assert.Contains("stop generating|stop responding|إيقاف الإنشاء|إيقاف الرد", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("stop responding|stop|إيقاف/i", source, StringComparison.Ordinal);
+    }
+}

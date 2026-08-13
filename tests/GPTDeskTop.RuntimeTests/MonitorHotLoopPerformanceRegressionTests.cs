@@ -18,13 +18,17 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             "const isGenerating = !!stopButton || streamingSignal;",
             StringComparison.Ordinal);
         var responseRead = source.IndexOf(
-            "const last = !isGenerating && messages.length",
+            "const last = !isGenerating && lastAssistant",
             StringComparison.Ordinal);
 
         Assert.True(generationCheck >= 0);
         Assert.True(responseRead > generationCheck);
         Assert.Contains(
             "state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText };",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "const streamingSignal = hasStreamingSignal(lastAssistant);",
             source,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
@@ -40,7 +44,7 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
         Assert.Contains(
-            "private const string ChatStateReadExpression = \"window.__gptDesktopChatStateCache?.version === 2 ? window.__gptDesktopChatStateCache.read() : null\";",
+            "private const string ChatStateReadExpression = \"window.__gptDesktopChatStateCache?.version === 3 ? window.__gptDesktopChatStateCache.read() : null\";",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
