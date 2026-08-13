@@ -66,6 +66,7 @@ public sealed class MainForm : Form
         _database = database;
         _reloadNotificationSettings = reloadNotificationSettings;
         Text = $"GPTDeskTop v{GetAppVersion()}";
+        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.Manual;
         MinimumSize = new Size(980, 680);
@@ -254,9 +255,8 @@ public sealed class MainForm : Form
         var heading = FluentTheme.CreateSectionTitle("Selected Monitor");
         editor.Controls.Add(heading, 0, 0);
         editor.SetColumnSpan(heading, 4);
-        editor.Controls.Add(FluentTheme.CreateMutedLabel("Auto reply"), 0, 1);
-        editor.Controls.Add(_autoReplyBox, 1, 1);
-        editor.Controls.Add(_enabledCheck, 2, 1);
+        editor.Controls.Add(_enabledCheck, 0, 1);
+        editor.SetColumnSpan(_enabledCheck, 3);
         editor.Controls.Add(_quickMonitorSettingsButton, 3, 1);
         editor.Controls.Add(FluentTheme.CreateMutedLabel("Summary"), 0, 2);
         editor.Controls.Add(_editorLabel, 1, 2);
@@ -405,7 +405,7 @@ public sealed class MainForm : Form
 
     private void ApplyResponsiveSplitterMinimums()
     {
-        ApplySplitterMinimumsWhenFeasible(_workspaceSplit, 320, 420);
+        ApplySplitterMinimumsWhenFeasible(_workspaceSplit, 240, 620);
         ApplySplitterMinimumsWhenFeasible(_diagnosticsSplit, 300, 300);
     }
 
@@ -429,7 +429,7 @@ public sealed class MainForm : Form
 
     private void ApplyInitialSplitterRatios()
     {
-        SetSplitRatio(_workspaceSplit, 0.42);
+        SetSplitRatio(_workspaceSplit, 0.28);
         SetSplitRatio(_diagnosticsSplit, 0.48);
     }
 
@@ -447,8 +447,8 @@ public sealed class MainForm : Form
             }
 
             var workspaceRaw = await _database.GetSettingAsync("Ui.Main.WorkspaceSplitRatio");
-            if (!TryApplyStoredSplitRatio(_workspaceSplit, workspaceRaw))
-                SetSplitRatio(_workspaceSplit, 0.42);
+            if (!TryApplyStoredSplitRatio(_workspaceSplit, workspaceRaw) || GetSplitRatio(_workspaceSplit) > 0.34)
+                SetSplitRatio(_workspaceSplit, 0.28);
             var diagnosticsRaw = await _database.GetSettingAsync("Ui.Main.DiagnosticsSplitRatio");
             if (!TryApplyStoredSplitRatio(_diagnosticsSplit, diagnosticsRaw))
                 SetSplitRatio(_diagnosticsSplit, 0.48);
@@ -569,7 +569,7 @@ public sealed class MainForm : Form
         _monitorsGrid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(SavedMonitor.Enabled), HeaderText = "On", Width = 42 });
         _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.RuntimeStatus), HeaderText = "Runtime", Width = 105 });
         _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Title), HeaderText = "Chat", Width = 230 });
-        _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.AutoReply), HeaderText = "Auto reply", Width = 120 });
+        // Auto Reply remains editable in Monitor Settings but is intentionally hidden from the main Saved Monitors grid.
         _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.ReplyDelaySeconds), HeaderText = "Delay", Width = 58 });
         _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.TimerSeconds), HeaderText = "Poll", Width = 55 });
         _monitorsGrid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SavedMonitor.Url), HeaderText = "Conversation URL", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });

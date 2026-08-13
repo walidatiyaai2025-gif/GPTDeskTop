@@ -30,7 +30,8 @@ public sealed class TrayNotificationService : IDisposable
         var menu = FluentTheme.CreateMenu();
         menu.Items.Add(new ToolStripMenuItem("GPTDeskTop notifications") { Enabled = false });
         menu.Items.Add(new ToolStripSeparator()); menu.Items.Add(settingsItem); menu.Items.Add(_durationMenu);
-        _notifyIcon = new NotifyIcon { Icon = SystemIcons.Information, Text = "GPTDeskTop Chat Monitor", Visible = true, ContextMenuStrip = menu };
+        var brandedIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Information;
+        _notifyIcon = new NotifyIcon { Icon = brandedIcon, Text = "GPTDeskTop Chat Monitor", Visible = true, ContextMenuStrip = menu };
         _monitor.ResponseReceived += OnResponseReceived;
     }
 

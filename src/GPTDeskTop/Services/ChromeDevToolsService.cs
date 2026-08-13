@@ -624,10 +624,30 @@ public sealed class ChromeDevToolsService
         }
         catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
         {
-            // A timed-out CDP command marks its session broken. Explicit invalidation guarantees the
-            // next verification uses a fresh session without treating the transient as a crash log.
+            // A timed-out CDP command marks its session broken. After the first ChatGPT message the
+            // target may also have navigated to /c/{id}; refresh the target metadata/WebSocket before
+            // the next verification so we do not keep reconnecting to the stale debugger URL.
             _sessionPool.Invalidate(tab.Id);
+            await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
             return (false, 0, string.Empty);
+        }
+    }
+    private async Task TryRefreshTabBindingAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tabs = await GetTabsAsync(cancellationToken).ConfigureAwait(false);
+            var current = tabs.FirstOrDefault(candidate => string.Equals(candidate.Id, tab.Id, StringComparison.Ordinal));
+            if (current is not null)
+                RebindTab(tab, current);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+        {
+            // The next verification loop retries target discovery; no duplicate send is issued first.
         }
     }
     private async Task<(int Count, string LastText)> GetUserMessageSnapshotAsync(ChromeTab tab, CancellationToken cancellationToken) { const string expression = """ (() => { const messages = [...document.querySelectorAll('[data-message-author-role="user"]')]; const last = messages.length ? (messages[messages.length - 1].innerText || messages[messages.length - 1].textContent || '').trim() : ''; return { count: messages.length, lastText: last }; })() """; var value = await EvaluateAsync(tab, expression, cancellationToken, false); var count = value.TryGetProperty("count", out var c) ? c.GetInt32() : 0; var last = value.TryGetProperty("lastText", out var t) ? t.GetString() ?? string.Empty : string.Empty; return (count, last); }

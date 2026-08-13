@@ -39,11 +39,26 @@ public sealed class NewChatMonitorWorkflowService
         {
             openedTab = await CreateFreshChatTabAsync(cancellationToken).ConfigureAwait(false);
             var sent = await SendInitialMessageVerifiedAsync(openedTab, initialChatMessage, cancellationToken).ConfigureAwait(false);
-            if (!sent)
-                throw new InvalidOperationException("The initial ChatGPT message could not be verified after automatic Chrome/CDP recovery. No monitor was created; retry New Chat + Monitor.");
 
-            var stableTab = await ResolveStableConversationAsync(openedTab, cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidOperationException("The new ChatGPT target did not expose a stable conversation URL after verified delivery. No monitor was created.");
+            // The first send normally navigates ChatGPT from the new-chat shell to /c/{conversation-id}.
+            // A CDP target can therefore be valid enough to accept the click but stale when the receipt
+            // is read. Resolve the stable conversation and verify the SAME user message there before
+            // declaring failure. requireNewTurn:false prevents a duplicate send when the message already landed.
+            var stableTab = await ResolveStableConversationAsync(openedTab, cancellationToken).ConfigureAwait(false);
+            if (!sent && stableTab is not null)
+            {
+                sent = await _chrome.SendChatMessageVerifiedAsync(
+                    stableTab,
+                    initialChatMessage,
+                    cancellationToken,
+                    requireNewTurn: false).ConfigureAwait(false);
+            }
+
+            if (!sent)
+                throw new InvalidOperationException("The initial ChatGPT message could not be verified after stable-conversation recovery. The new tab was kept open for inspection and no duplicate monitor was created.");
+
+            stableTab ??= await ResolveStableConversationAsync(openedTab, cancellationToken).ConfigureAwait(false);
+            stableTab ??= throw new InvalidOperationException("The new ChatGPT target did not expose a stable conversation URL after verified delivery. No monitor was created.");
 
             var savedMonitor = await BuildMonitorAsync(stableTab, monitorAutoReply, cancellationToken).ConfigureAwait(false);
             var registration = await _database.RegisterMonitorIfConversationAvailableAsync(savedMonitor, cancellationToken).ConfigureAwait(false);
