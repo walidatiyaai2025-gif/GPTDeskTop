@@ -1,0 +1,28 @@
+name: Agent UI Brand Diagnose 2
+on:
+  push:
+    branches: [ agent/icon-newchat-wide-monitors ]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/icon-newchat-wide-monitors
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Surface failing runtime tests
+        shell: pwsh
+        run: |
+          dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true | Out-Null
+          $lines = & dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release -p:EnableWindowsTargeting=true --no-restore --logger "console;verbosity=normal" 2>&1 | ForEach-Object { $_.ToString() }
+          $matches = $lines | Where-Object { $_ -match '^\s*Failed |Error Message:|Stack Trace:|Assert\.|Expected:|Actual:|\[xUnit.net|error CS|Build FAILED' }
+          if ($matches.Count -eq 0) { $matches = $lines | Select-Object -Last 120 }
+          $message = (($matches | Select-Object -First 80) -join ' | ')
+          $message = $message.Replace('%','%25').Replace("`r",'').Replace("`n",'%0A')
+          if ($message.Length -gt 12000) { $message = $message.Substring(0,12000) }
+          Write-Host "::error title=UI-BRAND failing runtime tests::$message"
+          exit 0
