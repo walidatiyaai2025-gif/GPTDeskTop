@@ -21,20 +21,25 @@ public sealed class DevelopmentTaskEngineEmissionTests
                 statePath: statePath,
                 messagesPath: messagesPath);
 
-            var emitted = new List<string>();
-            engine.MessageReady += message => emitted.Add(message);
+            var firstEmission = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var secondEmission = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var emissionCount = 0;
+            engine.MessageReady += message =>
+            {
+                var count = Interlocked.Increment(ref emissionCount);
+                if (count == 1) firstEmission.TrySetResult(message);
+                else if (count == 2) secondEmission.TrySetResult(message);
+            };
 
             await engine.StartAsync("plan", "Development Plan");
-            await Task.Delay(700);
+            Assert.Equal("message-1", await firstEmission.Task.WaitAsync(TimeSpan.FromSeconds(2)));
 
-            Assert.Single(emitted);
-            Assert.Equal("message-1", emitted[0]);
+            await Task.Delay(700);
+            Assert.Equal(1, Volatile.Read(ref emissionCount));
 
             await engine.AdvanceAsync();
-            await Task.Delay(350);
-
-            Assert.Equal(2, emitted.Count);
-            Assert.Equal("next-2", emitted[1]);
+            Assert.Equal("next-2", await secondEmission.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(2, Volatile.Read(ref emissionCount));
         }
         finally
         {
