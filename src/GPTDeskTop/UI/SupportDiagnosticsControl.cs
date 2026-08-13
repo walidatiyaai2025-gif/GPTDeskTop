@@ -13,7 +13,7 @@ public sealed class SupportDiagnosticsControl : UserControl
     private readonly Label _status = new()
     {
         Dock = DockStyle.Fill,
-        Text = "Privacy-safe diagnostics only — no chat content or database copy.",
+        Text = "Privacy-safe diagnostics only — includes monitor timeline, no chat content or database copy.",
         ForeColor = FluentTheme.Muted,
         TextAlign = ContentAlignment.MiddleLeft,
         AutoEllipsis = true,
@@ -38,7 +38,7 @@ public sealed class SupportDiagnosticsControl : UserControl
         BackColor = FluentTheme.Background;
         Padding = new Padding(12, 3, 12, 5);
         AccessibleName = "Support diagnostics bundle";
-        AccessibleDescription = "Creates a privacy-safe ZIP containing runtime health, counts and sanitized configuration without conversation content.";
+        AccessibleDescription = "Creates a privacy-safe ZIP containing runtime health, monitor state/delivery timeline, counts and sanitized configuration without conversation content.";
 
         BuildUi();
         ConfigureAccessibility();
@@ -84,13 +84,13 @@ public sealed class SupportDiagnosticsControl : UserControl
         FluentTheme.StyleButton(_createButton, primary: true);
         _toolTip.SetToolTip(
             _createButton,
-            "Creates a ZIP with sanitized runtime/configuration data, aggregate history counts, and exception-file metadata only. Conversation content is excluded.");
+            "Creates a ZIP with sanitized runtime/configuration data, monitor state and delivery-status timeline, aggregate history counts, and exception-file metadata. Conversation content is excluded.");
     }
 
     private void ConfigureAccessibility()
     {
         _createButton.AccessibleName = "Create privacy-safe support bundle";
-        _createButton.AccessibleDescription = "Choose a ZIP destination and collect bounded read-only diagnostic information.";
+        _createButton.AccessibleDescription = "Choose a ZIP destination and collect bounded read-only diagnostic information including the monitor operational timeline.";
         _status.AccessibleName = "Support bundle status";
     }
 
@@ -113,7 +113,7 @@ public sealed class SupportDiagnosticsControl : UserControl
         _generating = true;
         _createButton.Enabled = false;
         _createButton.Text = "Creating…";
-        _status.Text = "Collecting privacy-safe diagnostics (maximum probe window: 5 seconds)…";
+        _status.Text = "Collecting privacy-safe diagnostics and monitor timeline (maximum probe window: 5 seconds)…";
         _status.ForeColor = FluentTheme.Accent;
 
         try
