@@ -58,7 +58,8 @@ public sealed class NewChatMonitorWorkflowService
                 throw new InvalidOperationException("The initial ChatGPT message could not be verified after stable-conversation recovery. The new tab was kept open for inspection and no duplicate monitor was created.");
 
             stableTab ??= await ResolveStableConversationAsync(openedTab, cancellationToken).ConfigureAwait(false);
-            stableTab ??= throw new InvalidOperationException("The new ChatGPT target did not expose a stable conversation URL after verified delivery. No monitor was created.");
+            if (stableTab is null)
+                throw new InvalidOperationException("The new ChatGPT target did not expose a stable conversation URL after verified delivery. No monitor was created.");
 
             var savedMonitor = await BuildMonitorAsync(stableTab, monitorAutoReply, cancellationToken).ConfigureAwait(false);
             var registration = await _database.RegisterMonitorIfConversationAvailableAsync(savedMonitor, cancellationToken).ConfigureAwait(false);
