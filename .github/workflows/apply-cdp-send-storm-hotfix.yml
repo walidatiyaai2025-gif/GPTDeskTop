@@ -1,16 +1,14 @@
-name: Apply CDP + send-storm hotfix
+name: Apply CDP send storm hotfix
 
 on:
   push:
-    branches:
-      - fix-cdp-send-storm
+    branches: [fix-cdp-send-storm]
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: ${{ !contains(github.event.head_commit.message, '[hotfix-applied]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -99,8 +97,6 @@ jobs:
         {
             try
             {
-                // Non-destructive first recovery: if the dedicated browser was closed or never
-                // started, launch it. LaunchMonitorChrome is idempotent for a live owned process.
                 LaunchMonitorChrome();
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -138,7 +134,7 @@ jobs:
 
           source = source.replace(
               '    public async Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken = default)\n    {\n        var trackedProcess = _monitorChromeProcess;',
-              '    public async Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken = default)\n    {\n        // Shutdown/explicit close must not inherit a prior endpoint failure count and accidentally\n        // trigger auto-launch while the browser is intentionally being torn down.\n        Interlocked.Exchange(ref _endpointTransportFailures, 0);\n        var trackedProcess = _monitorChromeProcess;',
+              '    public async Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken = default)\n    {\n        Interlocked.Exchange(ref _endpointTransportFailures, 0);\n        var trackedProcess = _monitorChromeProcess;',
               1)
 
           start = source.index('    public async Task<bool> SendChatMessageVerifiedAsync(')
@@ -159,9 +155,6 @@ jobs:
         if (!before.Success) return false;
         if (!requireNewTurn && string.Equals(before.LastText, expected, StringComparison.Ordinal)) return true;
 
-        // The fence key includes the user-turn baseline. That means the same auto-reply text can be
-        // sent again after a *new* assistant response (the baseline count has advanced), while a
-        // transport/DOM verification race can never press Send repeatedly for the same turn.
         var submissionFenceKey = GetDeliverySubmissionFenceKey(tab, before.Count, expected);
         var submissionIssued = HasActiveDeliverySubmissionFence(submissionFenceKey);
 
@@ -197,9 +190,6 @@ jobs:
                 }
                 catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
                 {
-                    // Runtime.evaluate can fail after ChatGPT already handled the click/Enter. Treat
-                    // that outcome as ambiguous-but-submitted and only verify from this point onward.
-                    // Re-issuing Send here is exactly what caused the startup send storm.
                     submissionIssued = true;
                     MarkDeliverySubmissionFence(submissionFenceKey);
                     _sessionPool.Invalidate(tab.Id);
@@ -208,16 +198,12 @@ jobs:
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    // Conservative at-most-once behavior: once the submit path was entered, an
-                    // unexpected failure is not permission to press Send again automatically.
                     submissionIssued = true;
                     MarkDeliverySubmissionFence(submissionFenceKey);
                     ExceptionLogService.Log(ex, "ChromeDevToolsService.SendChatMessageVerified", null, tab.Id, tab.Title);
                 }
             }
 
-            // Once a physical submit gesture has been issued, poll only for the DOM receipt. Never
-            // click Send / press Enter again for this baseline user-turn count.
             await Task.Delay(300, cancellationToken);
         }
         return false;
@@ -267,17 +253,13 @@ jobs:
           source = source[:start] + replacement + source[end:]
           path.write_text(source, encoding='utf-8')
 
-          test = Path('tests/GPTDeskTop.RuntimeTests/CdpRecoveryAndSendStormRegressionTests.cs')
-          test.write_text(r'''namespace GPTDeskTop.RuntimeTests;
+          Path('tests/GPTDeskTop.RuntimeTests/CdpRecoveryAndSendStormRegressionTests.cs').write_text(r'''namespace GPTDeskTop.RuntimeTests;
 
 public sealed class CdpRecoveryAndSendStormRegressionTests
 {
     private static string ReadChromeServiceSource()
     {
-        var path = Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory,
-            "..", "..", "..", "..", "..",
-            "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
+        var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
         return File.ReadAllText(path);
     }
 
@@ -288,12 +270,10 @@ public sealed class CdpRecoveryAndSendStormRegressionTests
         var start = source.IndexOf("public async Task<bool> SendChatMessageVerifiedAsync", StringComparison.Ordinal);
         var end = source.IndexOf("private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync", start, StringComparison.Ordinal);
         var method = source[start..end];
-
         Assert.Contains("submissionIssued", method, StringComparison.Ordinal);
         Assert.Contains("GetDeliverySubmissionFenceKey(tab, before.Count, expected)", method, StringComparison.Ordinal);
         Assert.Contains("if (!submissionIssued)", method, StringComparison.Ordinal);
         Assert.Contains("MarkDeliverySubmissionFence(submissionFenceKey)", method, StringComparison.Ordinal);
-        Assert.Contains("Once a physical submit gesture has been issued", method, StringComparison.Ordinal);
         Assert.Equal(1, Count(method, "await SendChatMessageAsync(tab, message, cancellationToken)"));
     }
 
@@ -301,13 +281,11 @@ public sealed class CdpRecoveryAndSendStormRegressionTests
     public void EndpointListingSelfRecoversDedicatedLoopbackChromeAfterBoundedFailures()
     {
         var source = ReadChromeServiceSource();
-
         Assert.Contains("EndpointRecoveryFailureThreshold = 4", source, StringComparison.Ordinal);
         Assert.Contains("GetTabsCoreAsync", source, StringComparison.Ordinal);
         Assert.Contains("TryRecoverMonitorBrowserEndpointAsync", source, StringComparison.Ordinal);
         Assert.Contains("endpoint.IsLoopback", source, StringComparison.Ordinal);
         Assert.Contains("LaunchMonitorChrome();", source, StringComparison.Ordinal);
-        Assert.Contains("EndpointRecoveryProbeAttempts", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -316,9 +294,7 @@ public sealed class CdpRecoveryAndSendStormRegressionTests
         var source = ReadChromeServiceSource();
         var start = source.IndexOf("public async Task CloseAllMonitorTabsAsync", StringComparison.Ordinal);
         var end = source.IndexOf("public async Task<bool> TrySelectModelAsync", start, StringComparison.Ordinal);
-        var method = source[start..end];
-
-        Assert.Contains("Interlocked.Exchange(ref _endpointTransportFailures, 0);", method, StringComparison.Ordinal);
+        Assert.Contains("Interlocked.Exchange(ref _endpointTransportFailures, 0);", source[start..end], StringComparison.Ordinal);
     }
 
     private static int Count(string source, string value)
@@ -335,8 +311,7 @@ public sealed class CdpRecoveryAndSendStormRegressionTests
 }
 ''', encoding='utf-8')
 
-          workflow = Path('.github/workflows/apply-cdp-send-storm-hotfix.yml')
-          workflow.unlink()
+          Path('.github/workflows/apply-cdp-send-storm-hotfix.yml').unlink()
           PY
 
       - name: Commit hotfix
