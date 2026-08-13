@@ -1,0 +1,349 @@
+name: Apply CDP + send-storm hotfix
+
+on:
+  push:
+    branches:
+      - fix-cdp-send-storm
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[hotfix-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-cdp-send-storm
+          fetch-depth: 0
+
+      - name: Apply targeted hotfix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/GPTDeskTop/Services/ChromeDevToolsService.cs')
+          source = path.read_text(encoding='utf-8')
+
+          source = source.replace(
+              'using System.Diagnostics;\nusing System.Net.WebSockets;\nusing System.Runtime.InteropServices;\nusing System.Text.Json;',
+              'using System.Diagnostics;\nusing System.Net.WebSockets;\nusing System.Runtime.InteropServices;\nusing System.Security.Cryptography;\nusing System.Text;\nusing System.Text.Json;',
+              1)
+
+          source = source.replace(
+              '    private const int MonitorRecoveryEndpointGraceDelayMs = 250;\n    private const string BrowserSessionId = "__gptdesktop_monitor_browser__";',
+              '    private const int MonitorRecoveryEndpointGraceDelayMs = 250;\n    private const int EndpointRecoveryFailureThreshold = 4;\n    private const int EndpointRecoveryProbeAttempts = 12;\n    private const int EndpointRecoveryProbeDelayMs = 500;\n    private static readonly TimeSpan DeliverySubmissionFenceLifetime = TimeSpan.FromMinutes(10);\n    private const string BrowserSessionId = "__gptdesktop_monitor_browser__";',
+              1)
+
+          source = source.replace(
+              '    private readonly SemaphoreSlim _monitorBrowserRecoveryGate = new(1, 1);\n    private readonly object _chatStateFailureSync = new();\n    private readonly Dictionary<string, int> _chatStateTransportFailures = new(StringComparer.Ordinal);',
+              '    private readonly SemaphoreSlim _monitorBrowserRecoveryGate = new(1, 1);\n    private readonly SemaphoreSlim _endpointRecoveryGate = new(1, 1);\n    private readonly object _chatStateFailureSync = new();\n    private readonly Dictionary<string, int> _chatStateTransportFailures = new(StringComparer.Ordinal);\n    private readonly object _deliverySubmissionFenceSync = new();\n    private readonly Dictionary<string, DateTimeOffset> _deliverySubmissionFences = new(StringComparer.Ordinal);\n    private int _endpointTransportFailures;',
+              1)
+
+          old_get_tabs = '''    public async Task<List<ChromeTab>> GetTabsAsync(CancellationToken cancellationToken = default) { using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/list", cancellationToken); response.EnsureSuccessStatusCode(); var json = await response.Content.ReadAsStringAsync(cancellationToken); using var document = JsonDocument.Parse(json); var tabs = new List<ChromeTab>(); foreach (var item in document.RootElement.EnumerateArray()) { var type = item.TryGetProperty("type", out var typeElement) ? typeElement.GetString() ?? string.Empty : string.Empty; if (!string.Equals(type, "page", StringComparison.OrdinalIgnoreCase)) continue; tabs.Add(new ChromeTab { Id = item.TryGetProperty("id", out var id) ? id.GetString() ?? string.Empty : string.Empty, Title = item.TryGetProperty("title", out var title) ? title.GetString() ?? string.Empty : string.Empty, Url = item.TryGetProperty("url", out var url) ? url.GetString() ?? string.Empty : string.Empty, Type = type, WebSocketDebuggerUrl = item.TryGetProperty("webSocketDebuggerUrl", out var ws) ? ws.GetString() ?? string.Empty : string.Empty }); } _sessionPool.Prune(tabs); return tabs.OrderBy(t => t.Title, StringComparer.CurrentCultureIgnoreCase).ToList(); }'''
+          new_get_tabs = '''    public async Task<List<ChromeTab>> GetTabsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var tabs = await GetTabsCoreAsync(cancellationToken);
+            Interlocked.Exchange(ref _endpointTransportFailures, 0);
+            return tabs;
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+        {
+            var failureCount = Interlocked.Increment(ref _endpointTransportFailures);
+            if (failureCount < EndpointRecoveryFailureThreshold)
+                throw;
+
+            if (!await TryRecoverMonitorBrowserEndpointAsync(cancellationToken))
+                throw;
+
+            Interlocked.Exchange(ref _endpointTransportFailures, 0);
+            return await GetTabsCoreAsync(cancellationToken);
+        }
+    }
+
+    private async Task<List<ChromeTab>> GetTabsCoreAsync(CancellationToken cancellationToken)
+    {
+        using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/list", cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        using var document = JsonDocument.Parse(json);
+        var tabs = new List<ChromeTab>();
+        foreach (var item in document.RootElement.EnumerateArray())
+        {
+            var type = item.TryGetProperty("type", out var typeElement) ? typeElement.GetString() ?? string.Empty : string.Empty;
+            if (!string.Equals(type, "page", StringComparison.OrdinalIgnoreCase)) continue;
+            tabs.Add(new ChromeTab
+            {
+                Id = item.TryGetProperty("id", out var id) ? id.GetString() ?? string.Empty : string.Empty,
+                Title = item.TryGetProperty("title", out var title) ? title.GetString() ?? string.Empty : string.Empty,
+                Url = item.TryGetProperty("url", out var url) ? url.GetString() ?? string.Empty : string.Empty,
+                Type = type,
+                WebSocketDebuggerUrl = item.TryGetProperty("webSocketDebuggerUrl", out var ws) ? ws.GetString() ?? string.Empty : string.Empty
+            });
+        }
+        _sessionPool.Prune(tabs);
+        return tabs.OrderBy(t => t.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    private async Task<bool> TryRecoverMonitorBrowserEndpointAsync(CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(_config.DebuggingBaseUrl, UriKind.Absolute, out var endpoint) || !endpoint.IsLoopback)
+            return false;
+
+        await _endpointRecoveryGate.WaitAsync(cancellationToken);
+        try
+        {
+            try
+            {
+                // Non-destructive first recovery: if the dedicated browser was closed or never
+                // started, launch it. LaunchMonitorChrome is idempotent for a live owned process.
+                LaunchMonitorChrome();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                ExceptionLogService.Log(ex, "ChromeDevToolsService.EndpointRecoveryLaunch");
+                return false;
+            }
+
+            for (var attempt = 1; attempt <= EndpointRecoveryProbeAttempts; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    await Task.Delay(EndpointRecoveryProbeDelayMs, cancellationToken);
+                    _ = await GetTabsCoreAsync(cancellationToken);
+                    return true;
+                }
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+                {
+                    if (attempt == EndpointRecoveryProbeAttempts)
+                        ExceptionLogService.Log(ex, "ChromeDevToolsService.EndpointRecoveryProbe");
+                }
+            }
+
+            return false;
+        }
+        finally
+        {
+            _endpointRecoveryGate.Release();
+        }
+    }'''
+          if old_get_tabs not in source:
+              raise SystemExit('GetTabsAsync target not found')
+          source = source.replace(old_get_tabs, new_get_tabs, 1)
+
+          source = source.replace(
+              '    public async Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken = default)\n    {\n        var trackedProcess = _monitorChromeProcess;',
+              '    public async Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken = default)\n    {\n        // Shutdown/explicit close must not inherit a prior endpoint failure count and accidentally\n        // trigger auto-launch while the browser is intentionally being torn down.\n        Interlocked.Exchange(ref _endpointTransportFailures, 0);\n        var trackedProcess = _monitorChromeProcess;',
+              1)
+
+          start = source.index('    public async Task<bool> SendChatMessageVerifiedAsync(')
+          end = source.index('    private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync', start)
+          replacement = '''    public async Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default, bool requireNewTurn = false)
+    {
+        var expected = message.Trim();
+        if (expected.Length == 0) return false;
+
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        var before = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+        while (!before.Success && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(250, cancellationToken);
+            before = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+        }
+
+        if (!before.Success) return false;
+        if (!requireNewTurn && string.Equals(before.LastText, expected, StringComparison.Ordinal)) return true;
+
+        // The fence key includes the user-turn baseline. That means the same auto-reply text can be
+        // sent again after a *new* assistant response (the baseline count has advanced), while a
+        // transport/DOM verification race can never press Send repeatedly for the same turn.
+        var submissionFenceKey = GetDeliverySubmissionFenceKey(tab, before.Count, expected);
+        var submissionIssued = HasActiveDeliverySubmissionFence(submissionFenceKey);
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var current = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+            if (!current.Success)
+            {
+                await Task.Delay(250, cancellationToken);
+                continue;
+            }
+
+            if (current.Count > before.Count && string.Equals(current.LastText, expected, StringComparison.Ordinal))
+            {
+                ClearDeliverySubmissionFence(submissionFenceKey);
+                return true;
+            }
+
+            if (!submissionIssued)
+            {
+                try
+                {
+                    if (!await SendChatMessageAsync(tab, message, cancellationToken))
+                    {
+                        await Task.Delay(500, cancellationToken);
+                        continue;
+                    }
+
+                    submissionIssued = true;
+                    MarkDeliverySubmissionFence(submissionFenceKey);
+                }
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+                {
+                    // Runtime.evaluate can fail after ChatGPT already handled the click/Enter. Treat
+                    // that outcome as ambiguous-but-submitted and only verify from this point onward.
+                    // Re-issuing Send here is exactly what caused the startup send storm.
+                    submissionIssued = true;
+                    MarkDeliverySubmissionFence(submissionFenceKey);
+                    _sessionPool.Invalidate(tab.Id);
+                    await Task.Delay(250, cancellationToken);
+                    continue;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Conservative at-most-once behavior: once the submit path was entered, an
+                    // unexpected failure is not permission to press Send again automatically.
+                    submissionIssued = true;
+                    MarkDeliverySubmissionFence(submissionFenceKey);
+                    ExceptionLogService.Log(ex, "ChromeDevToolsService.SendChatMessageVerified", null, tab.Id, tab.Title);
+                }
+            }
+
+            // Once a physical submit gesture has been issued, poll only for the DOM receipt. Never
+            // click Send / press Enter again for this baseline user-turn count.
+            await Task.Delay(300, cancellationToken);
+        }
+        return false;
+    }
+
+    private static string GetDeliverySubmissionFenceKey(ChromeTab tab, int baselineCount, string expected)
+    {
+        var targetIdentity = !string.IsNullOrWhiteSpace(tab.Url) ? tab.Url : tab.Id;
+        var messageHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(expected)));
+        return $"{targetIdentity}|{baselineCount}|{messageHash}";
+    }
+
+    private bool HasActiveDeliverySubmissionFence(string key)
+    {
+        lock (_deliverySubmissionFenceSync)
+        {
+            PruneDeliverySubmissionFencesNoLock();
+            return _deliverySubmissionFences.TryGetValue(key, out var expiresUtc)
+                   && expiresUtc > DateTimeOffset.UtcNow;
+        }
+    }
+
+    private void MarkDeliverySubmissionFence(string key)
+    {
+        lock (_deliverySubmissionFenceSync)
+        {
+            PruneDeliverySubmissionFencesNoLock();
+            _deliverySubmissionFences[key] = DateTimeOffset.UtcNow + DeliverySubmissionFenceLifetime;
+        }
+    }
+
+    private void ClearDeliverySubmissionFence(string key)
+    {
+        lock (_deliverySubmissionFenceSync) _deliverySubmissionFences.Remove(key);
+    }
+
+    private void PruneDeliverySubmissionFencesNoLock()
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var staleKey in _deliverySubmissionFences
+                     .Where(item => item.Value <= now)
+                     .Select(item => item.Key)
+                     .ToArray())
+            _deliverySubmissionFences.Remove(staleKey);
+    }
+'''
+          source = source[:start] + replacement + source[end:]
+          path.write_text(source, encoding='utf-8')
+
+          test = Path('tests/GPTDeskTop.RuntimeTests/CdpRecoveryAndSendStormRegressionTests.cs')
+          test.write_text(r'''namespace GPTDeskTop.RuntimeTests;
+
+public sealed class CdpRecoveryAndSendStormRegressionTests
+{
+    private static string ReadChromeServiceSource()
+    {
+        var path = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..",
+            "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
+        return File.ReadAllText(path);
+    }
+
+    [Fact]
+    public void VerifiedDeliveryUsesAtMostOnceSubmissionFencePerUserTurnBaseline()
+    {
+        var source = ReadChromeServiceSource();
+        var start = source.IndexOf("public async Task<bool> SendChatMessageVerifiedAsync", StringComparison.Ordinal);
+        var end = source.IndexOf("private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync", start, StringComparison.Ordinal);
+        var method = source[start..end];
+
+        Assert.Contains("submissionIssued", method, StringComparison.Ordinal);
+        Assert.Contains("GetDeliverySubmissionFenceKey(tab, before.Count, expected)", method, StringComparison.Ordinal);
+        Assert.Contains("if (!submissionIssued)", method, StringComparison.Ordinal);
+        Assert.Contains("MarkDeliverySubmissionFence(submissionFenceKey)", method, StringComparison.Ordinal);
+        Assert.Contains("Once a physical submit gesture has been issued", method, StringComparison.Ordinal);
+        Assert.Equal(1, Count(method, "await SendChatMessageAsync(tab, message, cancellationToken)"));
+    }
+
+    [Fact]
+    public void EndpointListingSelfRecoversDedicatedLoopbackChromeAfterBoundedFailures()
+    {
+        var source = ReadChromeServiceSource();
+
+        Assert.Contains("EndpointRecoveryFailureThreshold = 4", source, StringComparison.Ordinal);
+        Assert.Contains("GetTabsCoreAsync", source, StringComparison.Ordinal);
+        Assert.Contains("TryRecoverMonitorBrowserEndpointAsync", source, StringComparison.Ordinal);
+        Assert.Contains("endpoint.IsLoopback", source, StringComparison.Ordinal);
+        Assert.Contains("LaunchMonitorChrome();", source, StringComparison.Ordinal);
+        Assert.Contains("EndpointRecoveryProbeAttempts", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void IntentionalBrowserCloseResetsEndpointFailureCounterBeforeTabDiscovery()
+    {
+        var source = ReadChromeServiceSource();
+        var start = source.IndexOf("public async Task CloseAllMonitorTabsAsync", StringComparison.Ordinal);
+        var end = source.IndexOf("public async Task<bool> TrySelectModelAsync", start, StringComparison.Ordinal);
+        var method = source[start..end];
+
+        Assert.Contains("Interlocked.Exchange(ref _endpointTransportFailures, 0);", method, StringComparison.Ordinal);
+    }
+
+    private static int Count(string source, string value)
+    {
+        var count = 0;
+        var offset = 0;
+        while ((offset = source.IndexOf(value, offset, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            offset += value.Length;
+        }
+        return count;
+    }
+}
+''', encoding='utf-8')
+
+          workflow = Path('.github/workflows/apply-cdp-send-storm-hotfix.yml')
+          workflow.unlink()
+          PY
+
+      - name: Commit hotfix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: recover CDP endpoint and suppress send storms [hotfix-applied]"
+          git push origin HEAD:fix-cdp-send-storm
