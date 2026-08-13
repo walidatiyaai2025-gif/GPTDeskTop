@@ -666,7 +666,16 @@ public sealed class ChromeDevToolsService
         }
 
         if (!before.Success) return false;
-        if (!requireNewTurn && string.Equals(before.LastText, expected, StringComparison.Ordinal)) return true;
+        if (string.Equals(before.LastText, expected, StringComparison.Ordinal))
+        {
+            var deliveryState = await GetChatStateAsync(tab, cancellationToken);
+            if (MonitorDeliveryRecoveryPolicy.CanReuseMatchingUserTailAsReceipt(
+                    requireNewTurn,
+                    before.Count,
+                    deliveryState.AssistantCount,
+                    deliveryState.IsGenerating))
+                return true;
+        }
 
         while (DateTimeOffset.UtcNow < deadline)
         {
@@ -736,7 +745,7 @@ public sealed class ChromeDevToolsService
         try
         {
             var tabs = await GetTabsAsync(cancellationToken).ConfigureAwait(false);
-            var current = tabs.FirstOrDefault(candidate => string.Equals(candidate.Id, tab.Id, StringComparison.Ordinal));
+            var current = MonitorDeliveryRecoveryPolicy.FindBestBinding(tabs, tab);
             if (current is not null)
                 RebindTab(tab, current);
         }
