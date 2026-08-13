@@ -338,7 +338,6 @@ internal static class SavedMonitorHealthGridExperience
             else if (string.Equals(column.DataPropertyName, nameof(SavedMonitor.RuntimeStatus), StringComparison.Ordinal))
             {
                 e.Value = health.Status;
-                e.CellStyle.Font = new Font(_grid.Font, FontStyle.Bold);
                 e.FormattingApplied = true;
             }
 
