@@ -245,24 +245,12 @@ internal static class OperatorWorkspaceV2Experience
     {
         root.Controls.Remove(versionLabel);
 
-        var footer = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 3,
-            RowCount = 1,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty,
-            BackColor = versionLabel.BackColor
-        };
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33F));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34F));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33F));
-        footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-
         var footerStatus = new Label
         {
             Text = BuildDevelopmentFooterText(development),
             Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = new Padding(8, 0, 8, 0),
             TextAlign = ContentAlignment.MiddleCenter,
             AutoEllipsis = true,
             ForeColor = FluentTheme.Muted,
@@ -270,9 +258,44 @@ internal static class OperatorWorkspaceV2Experience
             AccessibleName = "Development runtime status"
         };
 
-        var leftSpacer = new Label { Dock = DockStyle.Fill };
+        var leftSpacer = new Label
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty
+        };
+
         versionLabel.Dock = DockStyle.Fill;
+        versionLabel.Margin = Padding.Empty;
+        versionLabel.Padding = new Padding(8, 0, 0, 0);
         versionLabel.TextAlign = ContentAlignment.MiddleRight;
+        versionLabel.AutoEllipsis = true;
+
+        // MainForm originally reserves only 24px for row 4. That is too small once the footer
+        // contains two independently rendered text regions and becomes especially fragile under
+        // Windows DPI scaling. Let the v2 footer own a single, font-aware row height instead.
+        var footerHeight = Math.Max(
+            34F,
+            Math.Max(versionLabel.Font.Height, footerStatus.Font.Height) + 14F);
+        root.RowStyles[4].SizeType = SizeType.Absolute;
+        root.RowStyles[4].Height = footerHeight;
+
+        var footer = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1,
+            Margin = Padding.Empty,
+            Padding = new Padding(0, 2, 0, 0),
+            MinimumSize = new Size(0, (int)Math.Ceiling(footerHeight)),
+            BackColor = versionLabel.BackColor
+        };
+
+        // Preserve a visually centered development status while giving it more horizontal room.
+        // Both text regions ellipsize inside their own cells instead of painting into neighbours.
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 24F));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52F));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 24F));
+        footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
         footer.Controls.Add(leftSpacer, 0, 0);
         footer.Controls.Add(footerStatus, 1, 0);
@@ -281,6 +304,7 @@ internal static class OperatorWorkspaceV2Experience
 
         var tip = new ToolTip();
         tip.SetToolTip(footerStatus, "Development controls and sent-message catalog are available from ☰ Commands.");
+        tip.SetToolTip(versionLabel, versionLabel.Text);
         footerStatus.Disposed += (_, _) => tip.Dispose();
         return footerStatus;
     }
