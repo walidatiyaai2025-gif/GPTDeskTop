@@ -86,6 +86,10 @@ public sealed class SupportBundleService
         _monitor = monitor ?? throw new ArgumentNullException(nameof(monitor));
         _database = database ?? throw new ArgumentNullException(nameof(database));
         _config = config ?? throw new ArgumentNullException(nameof(config));
+
+        // The support surface is created during normal application startup, so it is also the
+        // single process-wide bootstrap point for the privacy-safe monitor operational timeline.
+        MonitorDiagnosticTraceService.EnsureStarted(_chrome, _monitor, _database);
     }
 
     public async Task<string> CreateAsync(string outputPath, CancellationToken cancellationToken = default)
@@ -107,6 +111,7 @@ public sealed class SupportBundleService
         {
             var snapshot = await CollectAsync(cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
+            var monitorTimeline = MonitorDiagnosticTraceService.ReadBundleTail();
 
             await using (var stream = new FileStream(
                              tempPath,
@@ -122,6 +127,15 @@ public sealed class SupportBundleService
                     "diagnostics.json",
                     SerializeSnapshot(snapshot),
                     cancellationToken).ConfigureAwait(false);
+
+                if (!string.IsNullOrWhiteSpace(monitorTimeline))
+                {
+                    await WriteTextEntryAsync(
+                        archive,
+                        "monitor-diagnostics.jsonl",
+                        monitorTimeline,
+                        cancellationToken).ConfigureAwait(false);
+                }
 
                 await WriteTextEntryAsync(
                     archive,
@@ -173,7 +187,7 @@ public sealed class SupportBundleService
             duplicateMonitorOwnershipCount: database.DuplicateMonitorOwnershipCount);
 
         return new SupportBundleSnapshot(
-            "1.0",
+            "1.1",
             DateTimeOffset.UtcNow,
             GetAppVersion(),
             RuntimeInformation.FrameworkDescription,
@@ -317,6 +331,7 @@ public sealed class SupportBundleService
         builder.AppendLine();
         builder.AppendLine("Contents:");
         builder.AppendLine("- diagnostics.json: environment, sanitized configuration, runtime/recovery health counts, history aggregates and exception-file metadata.");
+        builder.AppendLine("- monitor-diagnostics.jsonl: bounded privacy-safe operational timeline with monitor running/target/generation state and delivery status metadata.");
         builder.AppendLine("- README.txt: this privacy and contents notice.");
         builder.AppendLine();
         builder.AppendLine("Intentionally excluded:");
@@ -333,6 +348,7 @@ public sealed class SupportBundleService
         "auto-reply, handoff, recovery and new-chat message text",
         "raw SQLite database contents",
         "raw exception log contents",
+        "raw exception messages and stack traces in the monitor diagnostic timeline",
         "Windows user name, machine name and local profile paths"
     };
 
