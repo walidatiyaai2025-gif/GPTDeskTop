@@ -27,33 +27,22 @@ public sealed class SavedMonitor
     public int ReplyDelaySeconds { get; set; } = 3;
     public int TimerSeconds { get; set; } = 1;
     public bool Enabled { get; set; } = true;
-
-    // Conversation rotation is intentionally limited to an actual conversation/context-limit
-    // signal exposed by ChatGPT. It does not attempt to predict or bypass account usage quotas.
     public bool ConversationRotationEnabled { get; set; } = true;
     public string NewChatStartMessage { get; set; } = "كمل";
     public int NewChatDelaySeconds { get; set; } = 30;
     public int RotationCooldownSeconds { get; set; } = 60;
     public int MaxConversationRotations { get; set; } = 0;
     public int RotationCount { get; set; }
-
-    // Conservative model routing. Labels are matched against the visible ChatGPT model picker.
-    // "Auto" means leave the currently selected ChatGPT model unchanged.
     public bool ModelRoutingEnabled { get; set; } = false;
     public string PreferredModel { get; set; } = "Auto";
     public string FallbackModel { get; set; } = "Auto";
-
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 
     public string RuntimeStatus
     {
-        get => string.Equals(_runtimeStatus, "Running", StringComparison.OrdinalIgnoreCase)
-            ? "🟢 Running"
-            : "🔴 Stopped";
-        set => _runtimeStatus = value?.Contains("Running", StringComparison.OrdinalIgnoreCase) == true
-            ? "Running"
-            : "Stopped";
+        get => string.Equals(_runtimeStatus, "Running", StringComparison.OrdinalIgnoreCase) ? "🟢 Running" : "🔴 Stopped";
+        set => _runtimeStatus = value?.Contains("Running", StringComparison.OrdinalIgnoreCase) == true ? "Running" : "Stopped";
     }
 }
 
@@ -68,4 +57,58 @@ public sealed class MessageLog
     public string Prompt { get; set; } = string.Empty;
     public string Response { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+}
+
+public enum ProjectTaskStatus
+{
+    Discovered,
+    Ready,
+    InProgress,
+    Verifying,
+    Completed,
+    Blocked,
+    Superseded,
+    AwaitingApproval
+}
+
+public sealed class ProjectState
+{
+    public int StateVersion { get; set; } = 1;
+    public string ProjectId { get; set; } = string.Empty;
+    public string RepoUrl { get; set; } = string.Empty;
+    public string ProjectName { get; set; } = string.Empty;
+    public string MainGoal { get; set; } = string.Empty;
+    public List<string> Rules { get; set; } = [];
+    public string CurrentPhase { get; set; } = string.Empty;
+    public string Status { get; set; } = "IDLE";
+    public List<ProjectTaskState> Tasks { get; set; } = [];
+    public string CurrentBranch { get; set; } = "main";
+    public string CurrentPR { get; set; } = string.Empty;
+    public string LastCommit { get; set; } = string.Empty;
+    public List<string> KnownErrors { get; set; } = [];
+    public List<string> ImportantDecisions { get; set; } = [];
+    public string NextAction { get; set; } = string.Empty;
+    public int ChatGeneration { get; set; } = 1;
+    public string CurrentChatId { get; set; } = string.Empty;
+    public int HealthScore { get; set; } = 100;
+    public int RetryCount { get; set; }
+    public DateTimeOffset? LastVerifiedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+public sealed class ProjectTaskState
+{
+    public string TaskId { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public ProjectTaskStatus Status { get; set; } = ProjectTaskStatus.Discovered;
+    public string Priority { get; set; } = "Normal";
+    public int? AssignedChatGeneration { get; set; }
+    public int? GitHubIssue { get; set; }
+    public int? GitHubPR { get; set; }
+    public string Branch { get; set; } = string.Empty;
+    public string LastCommit { get; set; } = string.Empty;
+    public string BlockedReason { get; set; } = string.Empty;
+    public List<string> VerificationEvidence { get; set; } = [];
+    public DateTimeOffset? StartedAt { get; set; }
+    public DateTimeOffset? CompletedAt { get; set; }
 }
