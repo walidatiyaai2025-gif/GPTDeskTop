@@ -119,17 +119,12 @@ internal static class OpenConversationAutoDetectionExperience
                 var pages = await _chrome.GetTabsAsync(scanTimeout.Token);
                 var conversations = pages
                     .Where(tab => RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
-                    .OrderBy(tab => tab.Id, StringComparer.Ordinal)
                     .ToList();
                 var signature = BuildSignature(conversations);
 
-                // The first successful scan establishes a baseline. MainForm owns the startup load,
-                // so this detector never races that initial refresh merely because the form appeared.
-                if (_lastConversationSignature is null)
-                {
-                    _lastConversationSignature = signature;
-                    return;
-                }
+                // On the first readable scan, compare Chrome with what MainForm is actually showing.
+                // This makes auto-detect self-healing even if Chrome becomes available after startup.
+                _lastConversationSignature ??= BuildVisibleSignature();
 
                 if (string.Equals(_lastConversationSignature, signature, StringComparison.Ordinal))
                     return;
@@ -186,6 +181,12 @@ internal static class OpenConversationAutoDetectionExperience
             return new ConversationSelection(tab.Id, tab.Url);
         }
 
+        private string BuildVisibleSignature()
+            => BuildSignature(_tabsGrid.Rows
+                .Cast<DataGridViewRow>()
+                .Select(row => row.DataBoundItem)
+                .OfType<ChromeTab>());
+
         private void RestoreSelection(ConversationSelection? selected)
         {
             if (selected is null || _tabsGrid.IsDisposed || _tabsGrid.Rows.Count == 0)
@@ -210,11 +211,13 @@ internal static class OpenConversationAutoDetectionExperience
         private static string BuildSignature(IEnumerable<ChromeTab> conversations)
             => string.Join(
                 '\u001e',
-                conversations.Select(tab => string.Join(
-                    '\u001f',
-                    tab.Id ?? string.Empty,
-                    tab.Url ?? string.Empty,
-                    tab.Title ?? string.Empty)));
+                conversations
+                    .OrderBy(tab => tab.Id, StringComparer.Ordinal)
+                    .Select(tab => string.Join(
+                        '\u001f',
+                        tab.Id ?? string.Empty,
+                        tab.Url ?? string.Empty,
+                        tab.Title ?? string.Empty)));
 
         private void Stop()
         {
