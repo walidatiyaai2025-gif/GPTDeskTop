@@ -1,0 +1,32 @@
+name: Agent UI Brand Diagnose
+on:
+  push:
+    branches: [ agent/icon-newchat-wide-monitors ]
+permissions:
+  contents: write
+jobs:
+  diagnose:
+    if: "!contains(github.event.head_commit.message, '[agent-diagnostic]')"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/icon-newchat-wide-monitors
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Capture runtime test output
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory diagnostics -Force | Out-Null
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release -p:EnableWindowsTargeting=true --no-restore *>&1 | Tee-Object diagnostics/ui-brand-runtime-test.txt
+          exit 0
+      - name: Commit diagnostic log
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add diagnostics/ui-brand-runtime-test.txt
+          git commit -m 'chore: capture UI brand test diagnostics [agent-diagnostic]'
+          git push origin HEAD:agent/icon-newchat-wide-monitors
