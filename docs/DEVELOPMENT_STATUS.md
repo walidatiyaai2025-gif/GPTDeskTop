@@ -152,7 +152,7 @@ MON-007 is complete. Continue post-1.8 maintenance by auditing the next concrete
 - Regression: `ShutdownFinalizationRegressionTests` locks direct-close and bounded-exit behavior.
 
 
-## UI-022 — Branded wide Saved Monitors + first-message CDP rebind
+## UI-BRAND-001 — Branded wide Saved Monitors + first-message CDP rebind
 - Status: Done / CI pending.
 - Uses the supplied GPTDeskTop artwork as the application/setup icon and tray/window icon.
 - Saved Monitors defaults to about 72% of the primary workspace (roughly 2.6x the Open Conversations pane) and Auto Reply is hidden from the dashboard grid/card while remaining editable in monitor settings.
