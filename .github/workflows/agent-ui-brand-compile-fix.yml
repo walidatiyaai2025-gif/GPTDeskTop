@@ -1,0 +1,31 @@
+name: Agent UI Brand Compile Fix
+on:
+  push:
+    branches: [ agent/icon-newchat-wide-monitors ]
+permissions:
+  contents: write
+jobs:
+  fix:
+    if: "!contains(github.event.head_commit.message, '[agent-brand-compile-fixed]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/icon-newchat-wide-monitors
+          fetch-depth: 0
+      - name: Fix persisted split ratio guard
+        shell: pwsh
+        run: |
+          $path = 'src/GPTDeskTop/UI/MainForm.cs'
+          $s = Get-Content $path -Raw
+          $old = 'if (!TryApplyStoredSplitRatio(_workspaceSplit, workspaceRaw) || GetSplitRatio(_workspaceSplit) > 0.34)'
+          $new = 'if (!TryApplyStoredSplitRatio(_workspaceSplit, workspaceRaw) || (_workspaceSplit.Width > 0 && (double)_workspaceSplit.SplitterDistance / _workspaceSplit.Width > 0.34))'
+          if (-not $s.Contains($old)) { throw 'Expected GetSplitRatio patch anchor not found.' }
+          $s = $s.Replace($old, $new)
+          Set-Content $path $s -NoNewline
+          Remove-Item .github/workflows/agent-ui-brand-compile-fix.yml -Force
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: use native split dimensions [agent-brand-compile-fixed]'
+          git push origin HEAD:agent/icon-newchat-wide-monitors
