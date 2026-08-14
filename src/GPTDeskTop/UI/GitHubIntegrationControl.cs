@@ -31,7 +31,6 @@ public sealed class GitHubIntegrationControl : UserControl
         BuildUi();
         WireEvents();
         ConfigureAccessibility();
-        FluentTheme.Apply(this);
         FluentTheme.StyleButton(_save, primary: true);
         FluentTheme.StyleButton(_test);
         FluentTheme.StyleButton(_loadBranches);
