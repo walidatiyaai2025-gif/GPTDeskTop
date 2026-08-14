@@ -1,0 +1,31 @@
+name: Release Artifact
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Restore
+        run: dotnet restore GPTDeskTop.sln
+      - name: Build Release x64
+        run: dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
+      - name: Verify setup executable
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'Output/Setup/GPTDeskTop-Setup.exe')) { throw 'GPTDeskTop-Setup.exe was not produced.' }
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-Release
+          path: Output/Setup/
+          if-no-files-found: error
