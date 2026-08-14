@@ -11,39 +11,51 @@ public sealed class ComposerVoiceButtonSendFallbackRegressionTests
         return File.ReadAllText(path);
     }
 
-    [Fact]
-    public void ComposerSubmitDoesNotDependExclusivelyOnVisibleSendButton()
+    private static string ReadSendMethod()
     {
         var source = ReadChromeServiceSource();
+        var start = source.IndexOf("public async Task<bool> SendChatMessageAsync", StringComparison.Ordinal);
+        var end = source.IndexOf("public async Task<bool> SendChatMessageVerifiedAsync", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        return source[start..end];
+    }
+
+    [Fact]
+    public void ComposerSubmitUsesCanonicalSendButtonWithoutKeyboardFallback()
+    {
+        var source = ReadChromeServiceSource();
+        var sendMethod = ReadSendMethod();
 
         Assert.Contains("button[data-testid=\"send-button\"]", source, StringComparison.Ordinal);
-        Assert.Contains("fallbackReady", source, StringComparison.Ordinal);
-        Assert.Contains("Input.dispatchKeyEvent", source, StringComparison.Ordinal);
-        Assert.Contains("type = \"rawKeyDown\"", source, StringComparison.Ordinal);
-        Assert.Contains("type = \"keyUp\"", source, StringComparison.Ordinal);
-        Assert.Contains("windowsVirtualKeyCode = 13", source, StringComparison.Ordinal);
-        Assert.Contains("nativeVirtualKeyCode = 13", source, StringComparison.Ordinal);
+        Assert.Contains("DecideBeforeSubmit", source, StringComparison.Ordinal);
+        Assert.Contains("sendButton.click();", sendMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("fallbackReady", sendMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("Input.dispatchKeyEvent", sendMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("windowsVirtualKeyCode = 13", sendMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("nativeVirtualKeyCode = 13", sendMethod, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void EnterFallbackRequiresTextAndNoActiveStopControl()
+    public void ActiveStopOrDisabledComposerDefersInsteadOfSynthesizingEnter()
     {
-        var source = ReadChromeServiceSource();
+        var sendMethod = ReadSendMethod();
 
-        Assert.Contains("const editorText =", source, StringComparison.Ordinal);
-        Assert.Contains("if (!editorText.trim()) return { clicked: false, fallbackReady: false };", source, StringComparison.Ordinal);
-        Assert.Contains("button[data-testid=\"stop-button\"]", source, StringComparison.Ordinal);
-        Assert.Contains("return { clicked: false, fallbackReady: !visible(stopButton) };", source, StringComparison.Ordinal);
+        Assert.Contains("ReadComposerDecisionAsync(tab, requireSendReady: false", sendMethod, StringComparison.Ordinal);
+        Assert.Contains("if (visible(stop)) return false;", sendMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("const editorText =", sendMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("rawKeyDown", sendMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("keyUp", sendMethod, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void RealSendButtonRemainsPrimaryBeforeKeyboardFallback()
+    public void RealSendButtonRemainsTheOnlySubmitMutationAfterReadinessGate()
     {
-        var source = ReadChromeServiceSource();
-        var sendButtonClick = source.IndexOf("sendButton.click();", StringComparison.Ordinal);
-        var keyFallback = source.IndexOf("Input.dispatchKeyEvent", StringComparison.Ordinal);
+        var sendMethod = ReadSendMethod();
+        var gate = sendMethod.IndexOf("ReadComposerDecisionAsync(tab, requireSendReady: false", StringComparison.Ordinal);
+        var click = sendMethod.IndexOf("sendButton.click();", StringComparison.Ordinal);
 
-        Assert.True(sendButtonClick >= 0);
-        Assert.True(keyFallback > sendButtonClick);
+        Assert.True(gate >= 0);
+        Assert.True(click > gate);
+        Assert.DoesNotContain("Input.dispatchKeyEvent", sendMethod, StringComparison.Ordinal);
     }
 }
