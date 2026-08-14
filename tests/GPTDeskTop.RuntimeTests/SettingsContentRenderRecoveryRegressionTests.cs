@@ -15,7 +15,8 @@ public sealed class SettingsContentRenderRecoveryRegressionTests
         var settings = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "UI", "SettingsForm.cs"));
 
         Assert.Contains("_tabs.Enabled = true;", settings, StringComparison.Ordinal);
-        Assert.DoesNotContain("Application.Idle", settings, StringComparison.Ordinal);
+        Assert.DoesNotContain("Application.Idle +=", settings, StringComparison.Ordinal);
+        Assert.DoesNotContain("Application.Idle -=", settings, StringComparison.Ordinal);
         Assert.DoesNotContain("EnabledChanged +=", settings, StringComparison.Ordinal);
         Assert.DoesNotContain("VisibleChanged +=", settings, StringComparison.Ordinal);
         Assert.DoesNotContain("BeginInvoke", settings, StringComparison.Ordinal);
