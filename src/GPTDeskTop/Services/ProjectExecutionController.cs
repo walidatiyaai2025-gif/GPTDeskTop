@@ -24,8 +24,8 @@ public sealed class ProjectExecutionController
         _chrome = chrome ?? throw new ArgumentNullException(nameof(chrome));
     }
 
-    public Task<IReadOnlyList<SavedMonitor>> GetMonitorsAsync(CancellationToken cancellationToken = default) =>
-        _database.GetSavedMonitorsAsync(cancellationToken);
+    public async Task<IReadOnlyList<SavedMonitor>> GetMonitorsAsync(CancellationToken cancellationToken = default) =>
+        await _database.GetSavedMonitorsAsync(cancellationToken);
 
     public async Task<ProjectState> InitializeAsync(
         string repoUrl,
