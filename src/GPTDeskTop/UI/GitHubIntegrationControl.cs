@@ -14,6 +14,7 @@ public sealed class GitHubIntegrationControl : UserControl
     private readonly CheckBox _watchCommits = new() { Text = "Commits", Checked = true, AutoSize = true };
     private readonly CheckBox _watchPullRequests = new() { Text = "Pull requests", Checked = true, AutoSize = true };
     private readonly CheckBox _watchIssues = new() { Text = "Issues", Checked = true, AutoSize = true };
+    private readonly Button _save = new() { Text = "Save GitHub Settings", AutoSize = true };
     private readonly Button _test = new() { Text = "Test Connection", AutoSize = true };
     private readonly Button _loadBranches = new() { Text = "Load Branches", AutoSize = true };
     private readonly Button _disconnect = new() { Text = "Disconnect / Reset", AutoSize = true };
@@ -31,7 +32,8 @@ public sealed class GitHubIntegrationControl : UserControl
         WireEvents();
         ConfigureAccessibility();
         FluentTheme.Apply(this);
-        FluentTheme.StyleButton(_test, primary: true);
+        FluentTheme.StyleButton(_save, primary: true);
+        FluentTheme.StyleButton(_test);
         FluentTheme.StyleButton(_loadBranches);
         FluentTheme.StyleButton(_disconnect);
     }
@@ -84,14 +86,16 @@ public sealed class GitHubIntegrationControl : UserControl
         AddRow(root, 5, "Monitor evidence", "Choose which GitHub activity can be used as development progress evidence.", BuildWatchHost());
 
         var actionHost = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, Padding = new Padding(4, 8, 0, 0) };
+        actionHost.Controls.Add(_save);
         actionHost.Controls.Add(_test);
         actionHost.Controls.Add(_loadBranches);
         actionHost.Controls.Add(_disconnect);
         root.Controls.Add(actionHost, 0, 6);
         root.SetColumnSpan(actionHost, 2);
 
-        root.Controls.Add(FluentTheme.CreateSectionTitle("Live validation"), 0, 7);
-        root.SetColumnSpan(root.GetControlFromPosition(0, 7)!, 2);
+        var validationHeading = FluentTheme.CreateSectionTitle("Live validation");
+        root.Controls.Add(validationHeading, 0, 7);
+        root.SetColumnSpan(validationHeading, 2);
         root.Controls.Add(_status, 0, 8);
         root.SetColumnSpan(_status, 2);
         root.Controls.Add(_identity, 0, 9);
@@ -135,9 +139,25 @@ public sealed class GitHubIntegrationControl : UserControl
     private void WireEvents()
     {
         _showToken.CheckedChanged += (_, _) => _token.UseSystemPasswordChar = !_showToken.Checked;
+        _save.Click += async (_, _) => await SaveFromUiAsync();
         _test.Click += async (_, _) => await TestConnectionAsync(loadBranches: true);
         _loadBranches.Click += async (_, _) => await TestConnectionAsync(loadBranches: true);
         _disconnect.Click += async (_, _) => await DisconnectAsync();
+    }
+
+    private async Task SaveFromUiAsync()
+    {
+        if (_busy) return;
+        try
+        {
+            SetBusy(true, "Saving GitHub settings…");
+            await SaveAsync();
+            SetBusy(false, "GitHub settings saved securely for this Windows user.", true);
+        }
+        catch (Exception ex)
+        {
+            SetBusy(false, ex.Message, false);
+        }
     }
 
     private async Task TestConnectionAsync(bool loadBranches)
@@ -201,7 +221,7 @@ public sealed class GitHubIntegrationControl : UserControl
         _busy = busy;
         _repository.Enabled = _branch.Enabled = _token.Enabled = _showToken.Enabled = !_busy;
         _watchCommits.Enabled = _watchPullRequests.Enabled = _watchIssues.Enabled = !_busy;
-        _test.Enabled = _loadBranches.Enabled = _disconnect.Enabled = !_busy;
+        _save.Enabled = _test.Enabled = _loadBranches.Enabled = _disconnect.Enabled = !_busy;
         UseWaitCursor = busy;
         SetStatus(message, success);
     }
@@ -223,6 +243,7 @@ public sealed class GitHubIntegrationControl : UserControl
         _repository.AccessibleName = "GitHub repository";
         _token.AccessibleName = "GitHub personal access token";
         _branch.AccessibleName = "GitHub branch";
+        _save.AccessibleName = "Save GitHub settings";
         _test.AccessibleName = "Test GitHub connection";
         _loadBranches.AccessibleName = "Load GitHub branches";
         _disconnect.AccessibleName = "Disconnect GitHub integration";
