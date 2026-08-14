@@ -143,8 +143,6 @@ public sealed class ChromeDevToolsService
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    // Browser.close commonly succeeds by tearing down its own DevTools socket before
-                    // a response is observable. That disconnect is expected close semantics, not a fault.
                     if (!IsExpectedBrowserCloseDisconnect(ex))
                         ExceptionLogService.Log(ex, "ChromeDevToolsService.CloseMonitorBrowser");
                     browserCloseRequested = true;
@@ -208,7 +206,6 @@ public sealed class ChromeDevToolsService
             }
             catch (InvalidOperationException)
             {
-                // Process already exited between checks.
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -227,8 +224,6 @@ public sealed class ChromeDevToolsService
     public async Task<bool> TrySelectModelAsync(ChromeTab tab, string modelLabel, CancellationToken cancellationToken = default) { if (string.IsNullOrWhiteSpace(modelLabel) || string.Equals(modelLabel.Trim(), "Auto", StringComparison.OrdinalIgnoreCase)) return true; var labelLiteral = JsonSerializer.Serialize(modelLabel.Trim()); var expression = $$""" (() => { const requested = {{labelLiteral}}.trim().toLowerCase(); const normalize = value => (value || '').replace(/\s+/g, ' ').trim().toLowerCase(); const visible = element => { const r = element.getBoundingClientRect(); const s = getComputedStyle(element); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; }; const elements = [...document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"]')]; const modelButton = elements.find(e => { if (!visible(e)) return false; const label = normalize(e.getAttribute('aria-label')); const text = normalize(e.innerText || e.textContent); return /model|م\u0648\u062f\u064a\u0644|reasoning|thinking|instant/i.test(label + ' ' + text); }); if (modelButton) modelButton.click(); const items = [...document.querySelectorAll('[role="menuitem"],[role="option"],button')]; const target = items.find(e => visible(e) && normalize(e.innerText || e.textContent).includes(requested)); if (!target) return false; target.click(); return true; })() """; try { var result = await EvaluateAsync(tab, expression, cancellationToken, false); return result.ValueKind == JsonValueKind.True; } catch (Exception ex) when (ex is not OperationCanceledException) { ExceptionLogService.Log(ex, "ChromeDevToolsService.TrySelectModel", null, tab.Id, tab.Title); return false; } }
     public async Task<bool> HideMonitorChromeAsync(CancellationToken cancellationToken = default)
     {
-        // Prefer a native hide. Changing Browser.setWindowBounds to "minimized" over CDP at the
-        // same time monitor sessions are polling can churn DevTools sessions and trigger recovery.
         var handle = await ResolveMonitorWindowHandleAsync(cancellationToken);
         if (handle != IntPtr.Zero)
         {
@@ -238,7 +233,6 @@ public sealed class ChromeDevToolsService
             return true;
         }
 
-        // Startup/ownership edge case: retain the legacy CDP fallback only when no native handle exists.
         var changed = await SetAllBrowserWindowsStateAsync("minimized", cancellationToken);
         if (changed) _monitorChromeHidden = true;
         return changed;
@@ -325,17 +319,12 @@ public sealed class ChromeDevToolsService
             var replacement = await TryFindConversationTabAsync(tab.Url, cancellationToken);
             if (replacement is not null)
             {
-                // First escalation level: keep the exact conversation/target, force a clean CDP
-                // session, reload it, and give ChatGPT a bounded window to restore real content.
                 if (await RefreshConversationTabAsync(replacement, cancellationToken))
                 {
                     RebindTab(tab, replacement);
                     return true;
                 }
 
-                // Second escalation level: the refreshed tab never became readable. Open the exact
-                // saved /c/{conversation-id} URL in a new target; close the stale target only after
-                // the replacement proves it can expose conversation state.
                 replacement = await ReopenConversationTabAsync(tab.Url, replacement, cancellationToken);
                 if (replacement is not null)
                 {
@@ -355,8 +344,6 @@ public sealed class ChromeDevToolsService
                 }
             }
 
-            // Do not kill a healthy hidden browser because of a short DevTools transport blip.
-            // Require the endpoint to remain unavailable across a bounded grace window first.
             liveTabs = await WaitForLiveTabsAfterTransportFailureAsync(cancellationToken);
             if (liveTabs is { Count: > 0 })
             {
@@ -378,8 +365,6 @@ public sealed class ChromeDevToolsService
                 }
             }
 
-            // The endpoint stayed unavailable through the grace window. Now a real browser restart
-            // is justified. Preserve the operator's hidden preference across that recovery.
             var restoreHidden = _monitorChromeHidden;
             await CloseAllMonitorTabsAsync(cancellationToken);
             LaunchMonitorChrome(tab.Url);
@@ -556,14 +541,48 @@ public sealed class ChromeDevToolsService
         return ex.Message.Contains("Chrome closed the DevTools connection", StringComparison.OrdinalIgnoreCase)
                || ex.Message.Contains("connection was forcibly closed", StringComparison.OrdinalIgnoreCase);
     }
+
+    private async Task<ComposerAutomationDecision> ReadComposerDecisionAsync(
+        ChromeTab tab,
+        bool requireSendReady,
+        CancellationToken cancellationToken)
+    {
+        var readiness = await EvaluateAsync(tab, ChatComposerReadinessScript.Expression, cancellationToken, false);
+        var chatState = await ReadChatStateCoreAsync(tab, cancellationToken);
+
+        var isGenerating = (readiness.TryGetProperty("isGenerating", out var generating) && generating.GetBoolean())
+                           || chatState.IsGenerating;
+        var editorPresent = readiness.TryGetProperty("editorPresent", out var editorPresentElement) && editorPresentElement.GetBoolean();
+        var editorEnabled = readiness.TryGetProperty("editorEnabled", out var editorEnabledElement) && editorEnabledElement.GetBoolean();
+        var sendButtonPresent = readiness.TryGetProperty("sendButtonPresent", out var sendPresentElement) && sendPresentElement.GetBoolean();
+        var sendButtonEnabled = readiness.TryGetProperty("sendButtonEnabled", out var sendEnabledElement) && sendEnabledElement.GetBoolean();
+        var hasRenderedError = !string.IsNullOrWhiteSpace(chatState.ErrorText);
+
+        return requireSendReady
+            ? ChatComposerInterlockPolicy.DecideBeforeSubmit(isGenerating, editorPresent, editorEnabled, sendButtonPresent, sendButtonEnabled, hasRenderedError)
+            : ChatComposerInterlockPolicy.DecideBeforeEditorMutation(isGenerating, editorPresent, editorEnabled, hasRenderedError);
+    }
+
     public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default)
     {
+        var preparationDecision = await ReadComposerDecisionAsync(tab, requireSendReady: false, cancellationToken);
+        if (preparationDecision != ComposerAutomationDecision.ReadyToPrepare)
+            return false;
+
         var textLiteral = JsonSerializer.Serialize(message);
         var setEditorExpression = $$"""
         (() => {
           const text = {{textLiteral}};
-          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]') || document.querySelector('[contenteditable="true"]');
-          if (!editor) return false;
+          const visible = element => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+          };
+          const stop = document.querySelector('button[data-testid="stop-button"]');
+          if (visible(stop)) return false;
+          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
+          if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
           editor.focus();
           if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
             const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set;
@@ -583,9 +602,20 @@ public sealed class ChromeDevToolsService
         })()
         """;
 
-        var editorReady = await EvaluateAsync(tab, setEditorExpression, cancellationToken, false);
-        if (editorReady.ValueKind != JsonValueKind.True) return false;
-        await Task.Delay(350, cancellationToken);
+        var editorPrepared = await EvaluateAsync(tab, setEditorExpression, cancellationToken, false);
+        if (editorPrepared.ValueKind != JsonValueKind.True) return false;
+
+        for (var readinessAttempt = 0; readinessAttempt < 6; readinessAttempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var submitDecision = await ReadComposerDecisionAsync(tab, requireSendReady: true, cancellationToken);
+            if (submitDecision == ComposerAutomationDecision.ReadyToSend)
+                break;
+            if (submitDecision is ComposerAutomationDecision.DeferWhileGenerating or ComposerAutomationDecision.DeferForRenderedError)
+                return false;
+            if (readinessAttempt == 5) return false;
+            await Task.Delay(150, cancellationToken);
+        }
 
         const string submitExpression = """
         (() => {
@@ -595,63 +625,24 @@ public sealed class ChromeDevToolsService
             const style = getComputedStyle(element);
             return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
           };
+          const stop = document.querySelector('button[data-testid="stop-button"]');
+          if (visible(stop)) return false;
           const sendButton = document.querySelector('button[data-testid="send-button"]') ||
             [...document.querySelectorAll('button')].find(button => {
               if (!visible(button)) return false;
               const label = button.getAttribute('aria-label') || '';
               return /^(send|send message|إرسال|إرسال الرسالة)$/i.test(label.trim());
             });
-          if (sendButton && !sendButton.disabled && visible(sendButton)) {
-            sendButton.click();
-            return { clicked: true, fallbackReady: false };
-          }
-
-          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]') || document.querySelector('[contenteditable="true"]');
-          if (!editor) return { clicked: false, fallbackReady: false };
-          editor.focus();
-          const editorText = editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
-            ? editor.value
-            : (editor.innerText || editor.textContent || '');
-          if (!editorText.trim()) return { clicked: false, fallbackReady: false };
-
-          const stopButton = document.querySelector('button[data-testid="stop-button"]');
-          return { clicked: false, fallbackReady: !visible(stopButton) };
+          if (!sendButton || sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true' || !visible(sendButton)) return false;
+          sendButton.click();
+          return true;
         })()
         """;
 
-        var submitState = await EvaluateAsync(tab, submitExpression, cancellationToken, false);
-        var clicked = submitState.TryGetProperty("clicked", out var clickedElement) && clickedElement.GetBoolean();
-        if (clicked) return true;
-
-        var fallbackReady = submitState.TryGetProperty("fallbackReady", out var fallbackElement) && fallbackElement.GetBoolean();
-        if (!fallbackReady) return false;
-
-        await SendCommandAsync(
-            tab,
-            "Input.dispatchKeyEvent",
-            new
-            {
-                type = "rawKeyDown",
-                key = "Enter",
-                code = "Enter",
-                windowsVirtualKeyCode = 13,
-                nativeVirtualKeyCode = 13
-            },
-            cancellationToken);
-        await SendCommandAsync(
-            tab,
-            "Input.dispatchKeyEvent",
-            new
-            {
-                type = "keyUp",
-                key = "Enter",
-                code = "Enter",
-                windowsVirtualKeyCode = 13,
-                nativeVirtualKeyCode = 13
-            },
-            cancellationToken);
-        return true;
+        var submitted = await EvaluateAsync(tab, submitExpression, cancellationToken, false);
+        return submitted.ValueKind == JsonValueKind.True;
     }
+
     public async Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default, bool requireNewTurn = false)
     {
         var expected = message.Trim();
@@ -693,6 +684,13 @@ public sealed class ChromeDevToolsService
 
             try
             {
+                var preparationDecision = await ReadComposerDecisionAsync(tab, requireSendReady: false, cancellationToken);
+                if (preparationDecision != ComposerAutomationDecision.ReadyToPrepare)
+                {
+                    await Task.Delay(500, cancellationToken);
+                    continue;
+                }
+
                 if (!await SendChatMessageAsync(tab, message, cancellationToken))
                 {
                     await Task.Delay(500, cancellationToken);
@@ -701,8 +699,6 @@ public sealed class ChromeDevToolsService
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
             {
-                // Runtime.evaluate can time out after the page already handled the click. Retire the
-                // broken transport and verify the DOM on the next pass before attempting another send.
                 _sessionPool.Invalidate(tab.Id);
                 await Task.Delay(250, cancellationToken);
                 continue;
@@ -732,9 +728,6 @@ public sealed class ChromeDevToolsService
         }
         catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
         {
-            // A timed-out CDP command marks its session broken. After the first ChatGPT message the
-            // target may also have navigated to /c/{id}; refresh the target metadata/WebSocket before
-            // the next verification so we do not keep reconnecting to the stale debugger URL.
             _sessionPool.Invalidate(tab.Id);
             await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
             return (false, 0, string.Empty);
@@ -755,7 +748,6 @@ public sealed class ChromeDevToolsService
         }
         catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
         {
-            // The next verification loop retries target discovery; no duplicate send is issued first.
         }
     }
     private async Task<(int Count, string LastText)> GetUserMessageSnapshotAsync(ChromeTab tab, CancellationToken cancellationToken) { const string expression = """ (() => { const messages = [...document.querySelectorAll('[data-message-author-role="user"]')]; const last = messages.length ? (messages[messages.length - 1].innerText || messages[messages.length - 1].textContent || '').trim() : ''; return { count: messages.length, lastText: last }; })() """; var value = await EvaluateAsync(tab, expression, cancellationToken, false); var count = value.TryGetProperty("count", out var c) ? c.GetInt32() : 0; var last = value.TryGetProperty("lastText", out var t) ? t.GetString() ?? string.Empty : string.Empty; return (count, last); }
