@@ -3,13 +3,16 @@ namespace GPTDeskTop.RuntimeTests;
 public sealed class ApplicationSettingsBusySurfaceRegressionTests
 {
     [Fact]
-    public void SettingsRenderRecoveryKeepsTabSurfaceEnabledDuringAsyncIo()
+    public void SettingsBusyStateKeepsTabSurfaceEnabledAtTheSource()
     {
-        var recovery = ReadSource("src", "GPTDeskTop", "UI", "SettingsContentRenderRecovery.cs");
+        var settings = ReadSource("src", "GPTDeskTop", "UI", "SettingsForm.cs");
 
-        Assert.Contains("KeepSettingsTabsEnabled", recovery, StringComparison.Ordinal);
-        Assert.Contains("tabs.Enabled = true", recovery, StringComparison.Ordinal);
-        Assert.DoesNotContain("tabs.Refresh()", recovery, StringComparison.Ordinal);
+        Assert.Contains("_tabs.Enabled = true;", settings, StringComparison.Ordinal);
+        Assert.DoesNotContain("_tabs.Enabled = !busy;", settings, StringComparison.Ordinal);
+        Assert.Contains("_saveButton.Enabled = !busy;", settings, StringComparison.Ordinal);
+        Assert.Contains("_exportBackupButton.Enabled = !busy;", settings, StringComparison.Ordinal);
+        Assert.Contains("_importBackupButton.Enabled = !busy;", settings, StringComparison.Ordinal);
+        Assert.Contains("UseWaitCursor = busy;", settings, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] segments)
