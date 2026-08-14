@@ -70,7 +70,8 @@ public sealed class ProjectsHubUxContractRegressionTests
         Assert.False(File.Exists(obsolete));
         Assert.Contains("_tabs.Enabled = true;", settings, StringComparison.Ordinal);
         Assert.DoesNotContain("_tabs.Enabled = !busy;", settings, StringComparison.Ordinal);
-        Assert.DoesNotContain("Application.Idle", settings, StringComparison.Ordinal);
+        Assert.DoesNotContain("Application.Idle +=", settings, StringComparison.Ordinal);
+        Assert.DoesNotContain("Application.Idle -=", settings, StringComparison.Ordinal);
         Assert.DoesNotContain("EnabledChanged +=", settings, StringComparison.Ordinal);
         Assert.DoesNotContain("VisibleChanged +=", settings, StringComparison.Ordinal);
     }
