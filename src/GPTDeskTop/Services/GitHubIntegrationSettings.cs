@@ -8,5 +8,10 @@ public sealed record GitHubIntegrationSettings(
     bool WatchIssues,
     string Token)
 {
+    public bool AllAccessibleRepositories { get; init; }
+    public IReadOnlyList<string> SelectedRepositories { get; init; } = Array.Empty<string>();
+
     public static GitHubIntegrationSettings Default => new("", "main", true, true, true, "");
 }
+
+public sealed record GitHubRepositoryInfo(string FullName, string DefaultBranch, bool Private);
