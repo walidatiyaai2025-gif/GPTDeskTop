@@ -8,27 +8,78 @@ namespace GPTDeskTop.Setup;
 internal static class Program
 {
     private const string AppName = "GPTDeskTop";
-    private const string Version = "1.7.0";
+    private const string Version = "2.0.0";
+    private static readonly string[] RequiredPayloadResources =
+    [
+        "Payload.GPTDeskTop.exe",
+        "Payload.appsettings.json"
+    ];
 
     [STAThread]
-    private static void Main(string[] args)
+    private static int Main(string[] args)
     {
+        // CI/release smoke test: validate the exact final setup executable without
+        // installing anything or showing UI. A broken embedded payload must never be
+        // publishable as a release asset again.
+        if (args.Any(a => string.Equals(a, "--verify-payload", StringComparison.OrdinalIgnoreCase)))
+            return VerifyPayloadResources(out _) ? 0 : 23;
+
         ApplicationConfiguration.Initialize();
         try
         {
-            if (args.Any(a => string.Equals(a, "/uninstall", StringComparison.OrdinalIgnoreCase))) { Uninstall(); return; }
-            if (MessageBox.Show($"Install {AppName} v{Version}?\n\nThe application will be installed for the current Windows user.", $"{AppName} Setup", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            if (args.Any(a => string.Equals(a, "/uninstall", StringComparison.OrdinalIgnoreCase))) { Uninstall(); return 0; }
+
+            if (!VerifyPayloadResources(out var payloadError))
+                throw new InvalidOperationException(payloadError);
+
+            if (MessageBox.Show($"Install {AppName} v{Version}?\n\nThe application will be installed for the current Windows user.", $"{AppName} Setup", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return 0;
             Install();
             MessageBox.Show($"{AppName} v{Version} was installed successfully.\n\nA desktop and Start Menu shortcut were created.", $"{AppName} Setup", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return 0;
         }
-        catch (Exception ex) { MessageBox.Show(ex.ToString(), $"{AppName} Setup Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.ToString(), $"{AppName} Setup Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return 1;
+        }
+    }
+
+    private static bool VerifyPayloadResources(out string error)
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        var names = assembly.GetManifestResourceNames().ToHashSet(StringComparer.Ordinal);
+        foreach (var resourceName in RequiredPayloadResources)
+        {
+            if (!names.Contains(resourceName))
+            {
+                error = $"Installer payload resource is missing: {resourceName}";
+                return false;
+            }
+
+            using var stream = assembly.GetManifestResourceStream(resourceName);
+            if (stream is null || stream.Length <= 0)
+            {
+                error = $"Installer payload resource is empty or unreadable: {resourceName}";
+                return false;
+            }
+        }
+
+        using var executable = assembly.GetManifestResourceStream("Payload.GPTDeskTop.exe");
+        if (executable is null || executable.Length < 1024 * 1024)
+        {
+            error = "Installer application payload is unexpectedly small; refusing to install.";
+            return false;
+        }
+
+        error = string.Empty;
+        return true;
     }
 
     private static void Install()
     {
         var installDir = GetInstallDirectory(); Directory.CreateDirectory(installDir); StopRunningApplication();
         ExtractRequiredResource("Payload.GPTDeskTop.exe", Path.Combine(installDir, "GPTDeskTop.exe"), true);
-        ExtractOptionalResource("Payload.appsettings.json", Path.Combine(installDir, "appsettings.json"), false);
+        ExtractRequiredResource("Payload.appsettings.json", Path.Combine(installDir, "appsettings.json"), false);
         ExtractOptionalResource("Payload.Version.txt", Path.Combine(installDir, "Version.txt"), true);
         ExtractOptionalResource("Payload.ReleaseNotes.txt", Path.Combine(installDir, "ReleaseNotes.txt"), true);
         var setupCopy = Path.Combine(installDir, "GPTDeskTop-Setup.exe"); File.Copy(Environment.ProcessPath ?? Application.ExecutablePath, setupCopy, true);
