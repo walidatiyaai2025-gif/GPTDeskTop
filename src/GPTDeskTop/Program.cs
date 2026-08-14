@@ -13,6 +13,8 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        var startupTimer = Stopwatch.StartNew();
+
         if (CrashRecoveryProcessProbe.IsProbeCommand(args))
         {
             Environment.ExitCode = CrashRecoveryProcessProbe.Run(args);
@@ -90,8 +92,8 @@ internal static class Program
             if (ApplicationBuildIdentity.StableBuildId is not null)
                 mainForm.Text = $"GPTDeskTop {ApplicationBuildIdentity.DisplayVersion}";
 
-            // Production development-plan runtime: the dashboard and lifecycle controls
-            // are bound to dynamic saved-monitor resolution before the UI is shown.
+            // The development runtime remains eager because it may need to resume an active plan after
+            // crash/takeover recovery. Only the operator dashboard is visual state.
             var resolver = new SavedMonitorTabResolver(chrome);
             var targetFactory = new DevelopmentTaskMonitorTargetFactory(database, resolver, chrome);
             var developmentEngine = new DevelopmentTaskEngine();
@@ -132,16 +134,33 @@ internal static class Program
                 TabStop = false,
                 IsExpanded = runtimeHealthExpanded
             };
-            var supportBundleService = new SupportBundleService(chrome, monitor, database, config);
-            var supportDiagnostics = new SupportDiagnosticsControl(supportBundleService)
+
+            // Support diagnostics is relatively heavy (bundle/service UI) and is not runtime-critical.
+            // Create it only when Runtime Health details are actually opened.
+            SupportDiagnosticsControl? supportDiagnostics = null;
+            void EnsureSupportDiagnostics()
             {
-                Dock = DockStyle.Top,
-                TabStop = false,
-                Visible = runtimeHealthExpanded
-            };
+                if (supportDiagnostics is not null && !supportDiagnostics.IsDisposed)
+                    return;
+
+                var supportBundleService = new SupportBundleService(chrome, monitor, database, config);
+                supportDiagnostics = new SupportDiagnosticsControl(supportBundleService)
+                {
+                    Dock = DockStyle.Top,
+                    TabStop = false,
+                    Visible = runtimeHealth.IsExpanded
+                };
+                mainForm.Controls.Add(supportDiagnostics);
+                mainForm.Controls.SetChildIndex(supportDiagnostics, 0);
+            }
+
             runtimeHealth.ExpandedChanged += async (_, _) =>
             {
-                supportDiagnostics.Visible = runtimeHealth.IsExpanded;
+                if (runtimeHealth.IsExpanded)
+                    EnsureSupportDiagnostics();
+                if (supportDiagnostics is not null && !supportDiagnostics.IsDisposed)
+                    supportDiagnostics.Visible = runtimeHealth.IsExpanded;
+
                 try
                 {
                     await database.SetSettingAsync(
@@ -153,36 +172,14 @@ internal static class Program
                     await ExceptionLogService.LogAsync(ex, "Program.PersistRuntimeHealthState");
                 }
             };
-            mainForm.Controls.Add(supportDiagnostics);
-            mainForm.Controls.SetChildIndex(supportDiagnostics, 0);
             mainForm.Controls.Add(runtimeHealth);
             mainForm.Controls.SetChildIndex(runtimeHealth, 0);
+            if (runtimeHealthExpanded)
+                EnsureSupportDiagnostics();
 
-            var historyWorkspaceExpanded = string.Equals(
-                database.GetSettingAsync("Ui.HistoryWorkspace.Expanded").GetAwaiter().GetResult(),
-                "1",
-                StringComparison.Ordinal);
-            var historyWorkspace = new HistoryWorkspaceControl(database)
-            {
-                Dock = DockStyle.Bottom,
-                TabStop = false,
-                IsExpanded = historyWorkspaceExpanded
-            };
-            historyWorkspace.ExpandedChanged += async (_, _) =>
-            {
-                try
-                {
-                    await database.SetSettingAsync(
-                        "Ui.HistoryWorkspace.Expanded",
-                        historyWorkspace.IsExpanded ? "1" : "0");
-                }
-                catch (Exception ex)
-                {
-                    await ExceptionLogService.LogAsync(ex, "Program.PersistHistoryWorkspaceState");
-                }
-            };
-            mainForm.Controls.Add(historyWorkspace);
-            mainForm.Controls.SetChildIndex(historyWorkspace, 0);
+            // MainForm already owns the canonical Stored History surface. The former additional
+            // HistoryWorkspaceControl duplicated a second grid, event wiring and 500-row refresh at
+            // cold start, so it is intentionally no longer constructed here.
 
             using var metrics = new HomeMetricsService(mainForm, database, monitor);
 
@@ -192,9 +189,6 @@ internal static class Program
                     if (mainForm.IsDisposed || mainForm.Disposing)
                         throw new InvalidOperationException("The current GPTDeskTop instance is already shutting down.");
 
-                    // Persist the live window/splitter layout before the offer is ACKed so the
-                    // replacement process restores the latest operator workspace, not only the
-                    // last layout captured by a normal application exit.
                     await PersistOperatorLayoutForInstanceHandoffAsync(mainForm, cancellationToken);
 
                     var savedMonitors = await database.GetSavedMonitorsAsync(cancellationToken);
@@ -209,6 +203,19 @@ internal static class Program
 
             mainForm.Shown += async (_, _) =>
             {
+                startupTimer.Stop();
+                try
+                {
+                    await database.SetSettingAsync("Runtime.LastUiStartupMs", startupTimer.ElapsedMilliseconds.ToString());
+                    await database.SetSettingAsync(
+                        "Runtime.LastUiStartupBudget",
+                        startupTimer.ElapsedMilliseconds <= 3000 ? "PASS" : "WARN");
+                }
+                catch (Exception ex)
+                {
+                    await ExceptionLogService.LogAsync(ex, "Program.RecordUiStartupBudget");
+                }
+
                 try
                 {
                     var recoveryMode = currentStartupWasUnclean
@@ -406,9 +413,6 @@ internal static class Program
             }
         }
 
-        // Deliberately bypass MainForm's normal close path here. Normal close tears down
-        // monitor Chrome tabs; a committed instance takeover must leave those tabs and any
-        // in-progress ChatGPT generation alive for the new process to reattach safely.
         Environment.Exit(0);
     }
 
