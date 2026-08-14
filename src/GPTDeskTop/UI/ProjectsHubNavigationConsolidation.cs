@@ -15,25 +15,41 @@ internal static class ProjectsHubNavigationConsolidation
 
     [ModuleInitializer]
     internal static void Initialize()
-        => Application.Idle += (_, _) => TryConsolidateOpenMainForms();
+        => Application.Idle += OnApplicationIdle;
 
-    private static void TryConsolidateOpenMainForms()
+    private static void OnApplicationIdle(object? sender, EventArgs e)
     {
+        if (TryConsolidateOpenMainForms())
+            Application.Idle -= OnApplicationIdle;
+    }
+
+    private static bool TryConsolidateOpenMainForms()
+    {
+        var foundMain = false;
+        var allReady = true;
         foreach (var main in Application.OpenForms.OfType<MainForm>().ToArray())
         {
-            if (!main.IsHandleCreated || main.IsDisposed || main.Disposing || Consolidated.Contains(main.Handle))
+            foundMain = true;
+            if (!main.IsHandleCreated || main.IsDisposed || main.Disposing)
+                continue;
+            if (Consolidated.Contains(main.Handle))
                 continue;
 
             try
             {
                 if (TryConsolidate(main))
                     Consolidated.Add(main.Handle);
+                else
+                    allReady = false;
             }
             catch (Exception ex)
             {
+                allReady = false;
                 _ = ExceptionLogService.LogAsync(ex, "ProjectsHubNavigationConsolidation");
             }
         }
+
+        return foundMain && allReady;
     }
 
     internal static bool TryConsolidate(MainForm main)
