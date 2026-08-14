@@ -49,11 +49,11 @@ public sealed class ProjectExecutionController
     {
         ArgumentNullException.ThrowIfNull(state);
         if (state.Tasks.Any(t => t.Status == ProjectTaskStatus.AwaitingApproval)
-            || IsStatus(state.Status, "WAITING_FOR_HUMAN", "HUMAN_REQUIRED"))
+            || IsStatus(state.Status, "WAITING_FOR_HUMAN", "HUMAN_REQUIRED", "AWAITING_APPROVAL"))
             return new(false, "Project requires human action before automation can continue.");
 
-        if (IsStatus(state.Status, "RUNNING", "WAITING_FOR_REPLY"))
-            return new(true, "Project is already running/waiting for ChatGPT. No duplicate message was sent.");
+        if (IsAutomationOwnedStatus(state.Status))
+            return new(true, "Project automation already owns this work cycle. No duplicate message was sent.");
 
         var monitor = (await _database.GetSavedMonitorsAsync(cancellationToken))
             .FirstOrDefault(x => x.Id == monitorId);
@@ -67,11 +67,22 @@ public sealed class ProjectExecutionController
         if (tab is null)
             return new(false, "The monitor conversation is not open in the managed Chrome session. Open/recover it, then retry.");
 
+        state.Status = "ACTIVE";
+        state.CurrentMonitorId = monitor.Id;
+        state.CurrentChatId = monitor.Url;
+        state.NextAction = "Starting the selected monitor and preparing a verified continuation message.";
+        await _store.SaveAsync(state, cancellationToken);
+
         if (!_monitorService.IsMonitorRunning(monitor.Id))
             await _monitorService.StartMonitorAsync(monitor, tab);
 
         if (!_monitorService.IsMonitorRunning(monitor.Id))
-            return new(false, "The monitor could not be started. Check the monitor activity log for the exact reason.");
+        {
+            state.Status = "BLOCKED";
+            state.NextAction = "The monitor could not be started. Check the monitor activity log for the exact reason.";
+            await _store.SaveAsync(state, cancellationToken);
+            return new(false, state.NextAction);
+        }
 
         var message = string.IsNullOrWhiteSpace(monitor.AutoReply) ? "كمل" : monitor.AutoReply.Trim();
         var sent = await _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken);
@@ -84,9 +95,7 @@ public sealed class ProjectExecutionController
             return new(false, state.NextAction);
         }
 
-        state.CurrentMonitorId = monitor.Id;
-        state.CurrentChatId = monitor.Url;
-        state.Status = "WAITING_FOR_REPLY";
+        state.Status = "GENERATING";
         state.NextAction = "Monitor is running. Waiting for ChatGPT response and GitHub progress evidence.";
         state.LastVerifiedAt = DateTimeOffset.UtcNow;
         await _store.SaveAsync(state, cancellationToken);
@@ -109,23 +118,36 @@ public sealed class ProjectExecutionController
         ArgumentNullException.ThrowIfNull(state);
         if (state.CurrentMonitorId > 0 && _monitorService.IsMonitorRunning(state.CurrentMonitorId))
             await _monitorService.StopMonitorAsync(state.CurrentMonitorId);
-        state.Status = "STOPPED";
-        state.NextAction = "Stopped by operator.";
+        state.Status = "IDLE";
+        state.NextAction = "Stopped by operator. Choose Start / Continue Project when ready to resume.";
         state.CurrentMonitorId = 0;
+        state.CurrentChatId = string.Empty;
         await _store.SaveAsync(state, cancellationToken);
-        return new(true, "Project automation stopped.");
+        return new(true, "Project automation stopped and returned to IDLE.");
     }
 
     public async Task<ProjectExecutionResult> RetryAsync(ProjectState state, long monitorId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
-        if (state.Tasks.Any(t => t.Status == ProjectTaskStatus.AwaitingApproval))
+        if (state.Tasks.Any(t => t.Status == ProjectTaskStatus.AwaitingApproval)
+            || IsStatus(state.Status, "WAITING_FOR_HUMAN", "HUMAN_REQUIRED", "AWAITING_APPROVAL"))
             return new(false, "Human approval is still required; Retry is intentionally blocked.");
-        state.Status = "IDLE";
+
+        state.Status = "RECOVERING";
         state.RetryCount++;
+        state.NextAction = "Bounded operator retry requested.";
+        await _store.SaveAsync(state, cancellationToken);
+
+        // RECOVERING is an automation-owned state, so reset to IDLE before entering the normal
+        // StartOrContinue duplicate-send gate. This keeps retries explicit and idempotent.
+        state.Status = "IDLE";
         await _store.SaveAsync(state, cancellationToken);
         return await StartOrContinueAsync(state, monitorId, cancellationToken);
     }
+
+    public static bool IsAutomationOwnedStatus(string? status) => IsStatus(status,
+        "ACTIVE", "GENERATING", "WAITING_EXTERNAL", "MODEL_DELAYED_RESPONSE", "SUSPECTED_STALL",
+        "VERIFYING", "RECOVERING", "ROTATING_CHAT", "RUNNING", "WAITING_FOR_REPLY");
 
     private static bool IsStatus(string? value, params string[] candidates) =>
         candidates.Any(x => string.Equals(value?.Trim(), x, StringComparison.OrdinalIgnoreCase));
