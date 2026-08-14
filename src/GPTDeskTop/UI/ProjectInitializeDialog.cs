@@ -12,14 +12,20 @@ public sealed class ProjectInitializeDialog : Form
     public string Branch => _branch.Text.Trim();
     public string MainGoal => _goal.Text.Trim();
 
-    public ProjectInitializeDialog()
+    public ProjectInitializeDialog(string? repositoryUrl = null, string? branch = null, string? mainGoal = null, bool editMode = false)
     {
-        Text = "Initialize GitHub Project";
+        Text = editMode ? "Edit Project" : "Initialize GitHub Project";
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(640, 390);
         Size = new Size(700, 430);
         AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = FluentTheme.Background;
+
+        _repository.Text = repositoryUrl ?? string.Empty;
+        _branch.Text = string.IsNullOrWhiteSpace(branch) ? "main" : branch;
+        _goal.Text = mainGoal ?? string.Empty;
+        _ok.Text = editMode ? "Save Project" : "Initialize Project";
+        if (editMode) _repository.ReadOnly = true;
 
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 5, Padding = new Padding(18), BackColor = FluentTheme.Background };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145));
@@ -30,7 +36,7 @@ public sealed class ProjectInitializeDialog : Form
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
 
-        var title = FluentTheme.CreateSectionTitle("Initialize Project Automation");
+        var title = FluentTheme.CreateSectionTitle(editMode ? "Edit Project" : "Initialize Project Automation");
         root.Controls.Add(title, 0, 0); root.SetColumnSpan(title, 2);
         root.Controls.Add(MakeLabel("Repository URL"), 0, 1); root.Controls.Add(_repository, 1, 1);
         root.Controls.Add(MakeLabel("Branch"), 0, 2); root.Controls.Add(_branch, 1, 2);
