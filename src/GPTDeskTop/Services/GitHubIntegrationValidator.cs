@@ -6,9 +6,9 @@ public static class GitHubIntegrationValidator
     {
         var value = repository?.Trim();
         if (string.IsNullOrWhiteSpace(value)) return "Repository is required (owner/repo).";
-        var parts = value.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length != 2) return "Repository must use owner/repo format.";
-        if (parts.Any(p => p.Length == 0 || p.Any(ch => char.IsWhiteSpace(ch)))) return "Repository contains invalid whitespace.";
+        if (value.Any(char.IsWhiteSpace)) return "Repository contains invalid whitespace.";
+        var parts = value.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 2 || parts.Any(p => p.Length == 0)) return "Repository must use owner/repo format.";
         return null;
     }
 
@@ -17,7 +17,7 @@ public static class GitHubIntegrationValidator
 
     public static (string Owner, string Repo) SplitRepository(string repository)
     {
-        var parts = repository.Trim().Split('/', 2, StringSplitOptions.TrimEntries);
+        var parts = repository.Trim().Split('/', 2);
         return (parts[0], parts[1]);
     }
 }
