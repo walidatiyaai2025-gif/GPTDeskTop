@@ -1,25 +1,25 @@
-# MONLOCK-001 — Chat composer/send-button interlock
+# MONLOCK — ChatGPT composer interlock hardening
 
-## Symptom
-After an assistant response arrives, the ChatGPT send button can remain temporarily unavailable while GPTDeskTop automation is preparing or retrying the next continuation message.
+## Operator evidence
+The operator reported that the ChatGPT send button became locked while a monitor-controlled conversation was receiving a response. Supplied runtime evidence also showed repeated send-storm suppression events around monitor activity.
 
-## Evidence from operator diagnostics
-The supplied runtime logs show repeated `send-storm-suppressed` events and, later, a short CDP endpoint outage followed by successful recovery. The monitor itself remains enabled/running. This makes repeated send preparation during transient composer state a high-risk path that must be gated before any DOM mutation.
+## Root cause
+The historical send path could focus/write the composer before final send readiness was known. During a long ChatGPT response, transient editor/send states therefore risked automation touching the composer while ChatGPT still owned the generation cycle.
 
-## Root-risk in current send path
-`ChromeDevToolsService.SendChatMessageAsync` currently writes/focuses the editor before it checks whether the send path is actually ready. `SendChatMessageVerifiedAsync` can retry that path during its verification deadline. Therefore a transient disabled/generating composer can receive repeated automation-side focus/input mutations even when no send should occur yet.
+## Production contract
+Monitor automation must observe first and mutate only after a deterministic readiness gate is clear. A generating response, missing/disabled canonical editor, disabled/missing Send button, or current rendered error is a defer state. Defer states are passive waits and never justify reload/recreate by themselves.
 
-## Required behavior
-1. Observe composer state using a read-only probe before touching the editor.
-2. If ChatGPT is generating, editor is disabled/missing, or send is disabled/missing, wait passively; do not focus, select, inject text, click, press Enter, reload, or recreate the tab solely for that condition.
-3. Mutate the composer only after the gate reports `ReadyToSend`.
-4. After a send attempt, verify a new user turn before retrying.
-5. Keep bounded retry/send-storm protection and CDP recovery independent from composer readiness.
+## Completed hardening
+- MONLOCK-001: diagnosis and operator evidence recorded.
+- MONLOCK-002: deterministic `ChatComposerInterlockPolicy` added.
+- MONLOCK-003: read-only `ChatComposerReadinessScript` added.
+- MONLOCK-004: readiness gate wired before editor mutation and before submit.
+- MONLOCK-005: generating/disabled-send states remain passive waits.
+- MONLOCK-006: source regression coverage proves generation cannot reach editor mutation and synthetic Enter is absent.
+- MONLOCK-007: recovery sequence test proves disabled Send transitions to exactly one ReadyToSend decision after generation ends.
+- MONLOCK-008: 10,000-poll endurance test proves a long generating window never becomes mutation-ready.
+- MONLOCK-009: runtime diagnostics expose only latest decision, stable reason code, and timestamp; prompt/message text is not recorded.
+- MONLOCK-010: automation targets only `#prompt-textarea` / canonical textarea and never generic `[contenteditable=true]`, preserving unrelated/manual editable surfaces.
 
-## Implemented building blocks
-- `ChatComposerInterlockPolicy` — deterministic decision gate.
-- `ChatComposerReadinessScript` — read-only DOM readiness probe with no focus/input/click side effects.
-- This contract documents the integration rule and diagnostic rationale.
-
-## Follow-up integration
-Wire the readiness probe into `SendChatMessageVerifiedAsync` before every call that can mutate the composer, then add runtime regression coverage proving zero editor mutations while generating/disabled.
+## Security/privacy note
+Composer diagnostics intentionally contain no prompt, response, repository secret, token, or conversation body. They record only readiness state metadata.
