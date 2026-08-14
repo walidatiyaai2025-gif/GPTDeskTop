@@ -2,45 +2,29 @@ namespace GPTDeskTop.RuntimeTests;
 
 public sealed class SettingsContentRenderRecoveryRegressionTests
 {
-    private static string Source
-        => File.ReadAllText(Path.GetFullPath(Path.Combine(
+    [Fact]
+    public void ObsoleteLateRenderRecoveryBootstrapIsRemoved()
+    {
+        var path = RepositoryPath("src", "GPTDeskTop", "UI", "SettingsContentRenderRecovery.cs");
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public void SettingsOwnsStableBusyRenderingWithoutIdleRepair()
+    {
+        var settings = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "UI", "SettingsForm.cs"));
+
+        Assert.Contains("_tabs.Enabled = true;", settings, StringComparison.Ordinal);
+        Assert.DoesNotContain("Application.Idle", settings, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnabledChanged +=", settings, StringComparison.Ordinal);
+        Assert.DoesNotContain("VisibleChanged +=", settings, StringComparison.Ordinal);
+        Assert.DoesNotContain("BeginInvoke", settings, StringComparison.Ordinal);
+        Assert.DoesNotContain("Refresh()", settings, StringComparison.Ordinal);
+    }
+
+    private static string RepositoryPath(params string[] segments)
+        => Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory,
             "..", "..", "..", "..", "..",
-            "src", "GPTDeskTop", "UI", "SettingsContentRenderRecovery.cs")));
-
-    [Fact]
-    public void SettingsGuardHooksEachSettingsFormOnce()
-    {
-        var source = Source;
-
-        Assert.Contains("EnsureHooked(form)", source, StringComparison.Ordinal);
-        Assert.Contains("if (state.Hooked) return;", source, StringComparison.Ordinal);
-        Assert.Contains("tabs.EnabledChanged +=", source, StringComparison.Ordinal);
-        Assert.Contains("KeepSettingsTabsEnabled(tabs)", source, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void SettingsTabsNeverEnterDisabledPaintingPath()
-    {
-        var source = Source;
-
-        Assert.Contains("if (tabs.IsDisposed || tabs.Disposing || tabs.Enabled) return;", source, StringComparison.Ordinal);
-        Assert.Contains("tabs.Enabled = true", source, StringComparison.Ordinal);
-        Assert.Contains("disabled TabControl", source, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void GuardDoesNotRepaintOrTouchBusinessSettings()
-    {
-        var source = Source;
-
-        Assert.DoesNotContain("Invalidate(", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("Update()", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("Refresh()", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("BeginInvoke", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("Timer", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("LocalDatabase", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("SaveSettingsAsync", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("SetSettingAsync", source, StringComparison.Ordinal);
-    }
+            Path.Combine(segments)));
 }
