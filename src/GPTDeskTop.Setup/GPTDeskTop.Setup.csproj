@@ -21,6 +21,17 @@
   </PropertyGroup>
 
   <!--
+    These required resources are declared during project evaluation, not dynamically
+    inside a target. PrepareInstallerPayload creates the files before resource
+    processing begins. Declaring them here guarantees that both normal builds and the
+    nested single-file publish see Payload.GPTDeskTop.exe in the manifest.
+  -->
+  <ItemGroup Condition="'$(RunPackagingTargets)' == 'true'">
+    <EmbeddedResource Include="$(PublishDir)\GPTDeskTop.exe" LogicalName="Payload.GPTDeskTop.exe" />
+    <EmbeddedResource Include="$(PublishDir)\appsettings.json" LogicalName="Payload.appsettings.json" />
+  </ItemGroup>
+
+  <!--
     No ProjectReference to GPTDeskTop or any build helper. Setup creates payload by path.
     The solution declares GPTDeskTop as an explicit dependency of this project, so a
     full solution build completes the application build before Setup starts publishing.
@@ -32,9 +43,8 @@
     <MakeDir Directories="$(PublishDir)" />
     <Exec Command="dotnet publish &quot;$(AppProject)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o &quot;$(PublishDir)&quot;" />
     <Error Condition="!Exists('$(PublishDir)\GPTDeskTop.exe')" Text="Published GPTDeskTop payload was not created: $(PublishDir)\GPTDeskTop.exe" />
+    <Error Condition="!Exists('$(PublishDir)\appsettings.json')" Text="Published appsettings payload was not created: $(PublishDir)\appsettings.json" />
     <ItemGroup>
-      <EmbeddedResource Include="$(PublishDir)\GPTDeskTop.exe" LogicalName="Payload.GPTDeskTop.exe" />
-      <EmbeddedResource Include="$(PublishDir)\appsettings.json" LogicalName="Payload.appsettings.json" Condition="Exists('$(PublishDir)\appsettings.json')" />
       <EmbeddedResource Include="$(PublishDir)\Version.txt" LogicalName="Payload.Version.txt" Condition="Exists('$(PublishDir)\Version.txt')" />
       <EmbeddedResource Include="$(PublishDir)\ReleaseNotes.txt" LogicalName="Payload.ReleaseNotes.txt" Condition="Exists('$(PublishDir)\ReleaseNotes.txt')" />
     </ItemGroup>
