@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using GPTDeskTop.Data;
 using GPTDeskTop.Services;
 
 namespace GPTDeskTop.UI;
@@ -36,6 +37,8 @@ internal static class ProjectMonitorUiBootstrap
 
     private static void InjectMainButton(MainForm main)
     {
+        ConfigureRuntimeContext(main);
+
         var settingsButton = FindDescendants(main)
             .OfType<Button>()
             .FirstOrDefault(b => string.Equals(b.Text, "Settings", StringComparison.OrdinalIgnoreCase));
@@ -48,6 +51,16 @@ internal static class ProjectMonitorUiBootstrap
         settingsButton.Parent.Controls.Add(button);
         var settingsIndex = settingsButton.Parent.Controls.GetChildIndex(settingsButton);
         settingsButton.Parent.Controls.SetChildIndex(button, Math.Max(0, settingsIndex));
+    }
+
+    private static void ConfigureRuntimeContext(MainForm main)
+    {
+        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var database = typeof(MainForm).GetField("_database", flags)?.GetValue(main) as LocalDatabase;
+        var monitor = typeof(MainForm).GetField("_monitor", flags)?.GetValue(main) as ChatGptMonitorService;
+        var chrome = typeof(MainForm).GetField("_chrome", flags)?.GetValue(main) as ChromeDevToolsService;
+        if (database is not null && monitor is not null && chrome is not null)
+            ProjectExecutionRuntimeContext.Configure(database, monitor, chrome);
     }
 
     private static void InjectSettingsTab(SettingsForm settings)
