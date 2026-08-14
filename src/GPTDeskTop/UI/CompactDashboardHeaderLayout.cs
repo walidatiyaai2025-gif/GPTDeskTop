@@ -10,19 +10,19 @@ internal static class CompactDashboardHeaderLayoutBootstrap
 }
 
 /// <summary>
-/// Final layout owner for the compact main-dashboard status header. The visual makeover is
-/// deliberately applied first, then this layer removes fixed vertical chrome so Live Activity
-/// keeps the reclaimed space without changing any metric binding or operator behavior.
+/// Single physical-layout owner for the compact main-dashboard status header. The visual makeover
+/// is applied first, then this layer owns the final DPI-scaled height and metric arrangement so no
+/// later presentation pass can give reclaimed operator-workspace height back to dashboard chrome.
 /// </summary>
 internal static class CompactDashboardHeaderLayout
 {
-    private const int HeaderLogicalHeight = 56;
-    private const int RootVerticalPadding = 10;
-    private const int HeaderHorizontalPadding = 14;
-    private const int HeaderVerticalPadding = 5;
-    private const int HeaderBottomMargin = 6;
+    private const int HeaderLogicalHeight = 44;
+    private const int RootVerticalPadding = 8;
+    private const int HeaderHorizontalPadding = 10;
+    private const int HeaderVerticalPadding = 2;
+    private const int HeaderBottomMargin = 3;
     private const int MetricLogicalWidth = 108;
-    private const int MetricLogicalHeight = 40;
+    private const int MetricLogicalHeight = 30;
 
     private const string HeaderGuidance = "ChatGPT monitoring, recovery and conversation automation";
 
@@ -45,8 +45,6 @@ internal static class CompactDashboardHeaderLayout
         if (registration.Installed)
             return true;
 
-        // MainDashboardExperience is the visual makeover owner. Calling it here makes ordering
-        // deterministic even if module-initializer subscription order changes between builds.
         MainDashboardExperience.Apply(form);
 
         if (!TryResolveHeader(form, out var parts))
@@ -108,11 +106,26 @@ internal static class CompactDashboardHeaderLayout
         if (title is null || subtitle is null)
             return false;
 
-        var chips = metrics.Controls.OfType<Panel>().ToArray();
-        if (chips.Length != 4)
+        var chipPanels = metrics.Controls.OfType<Panel>().ToArray();
+        if (chipPanels.Length != 4)
             return false;
 
-        parts = new HeaderParts(root, header, headerLayout, titleBlock, title, subtitle, metrics, chips);
+        var metricChips = new List<MetricChipParts>(chipPanels.Length);
+        foreach (var chip in chipPanels)
+        {
+            var chipLayout = chip.Controls.OfType<TableLayoutPanel>().FirstOrDefault();
+            if (chipLayout is null)
+                return false;
+
+            var caption = chipLayout.GetControlFromPosition(0, 0) as Label;
+            var value = chipLayout.GetControlFromPosition(0, 1) as Label;
+            if (caption is null || value is null)
+                return false;
+
+            metricChips.Add(new MetricChipParts(chip, chipLayout, caption, value));
+        }
+
+        parts = new HeaderParts(root, header, headerLayout, titleBlock, title, subtitle, metrics, metricChips.ToArray());
         return true;
     }
 
@@ -128,6 +141,13 @@ internal static class CompactDashboardHeaderLayout
         parts.Subtitle.AccessibleDescription = HeaderGuidance + ".";
         registration.ToolTip?.SetToolTip(parts.Title, HeaderGuidance + ".");
         registration.ToolTip?.SetToolTip(parts.Header, HeaderGuidance + " with live status metrics.");
+
+        foreach (var metric in parts.MetricChips)
+        {
+            metric.Caption.AccessibleName = metric.Caption.Text;
+            metric.Value.AccessibleDescription = $"Current {metric.Caption.Text} value";
+            registration.ToolTip?.SetToolTip(metric.Caption, metric.Caption.Text);
+        }
     }
 
     private static void ApplyPhysicalLayout(Registration registration)
@@ -145,7 +165,7 @@ internal static class CompactDashboardHeaderLayout
         parts.Header.Padding = new Padding(
             Scale(parts.Header, HeaderHorizontalPadding),
             Scale(parts.Header, HeaderVerticalPadding),
-            Scale(parts.Header, 10),
+            Scale(parts.Header, 8),
             Scale(parts.Header, HeaderVerticalPadding));
         parts.Header.Margin = new Padding(0, 0, 0, Scale(parts.Header, HeaderBottomMargin));
 
@@ -158,7 +178,6 @@ internal static class CompactDashboardHeaderLayout
         parts.TitleBlock.RowStyles[1].SizeType = SizeType.Absolute;
         parts.TitleBlock.RowStyles[1].Height = 0;
 
-        // Keep the purpose text for accessibility/tooltips while removing its visual row.
         parts.Subtitle.Visible = false;
         parts.Subtitle.TabStop = false;
         parts.Title.TextAlign = ContentAlignment.MiddleLeft;
@@ -168,25 +187,56 @@ internal static class CompactDashboardHeaderLayout
         parts.Metrics.Margin = Padding.Empty;
         parts.Metrics.WrapContents = false;
 
-        foreach (var chip in parts.MetricChips)
-        {
-            chip.Width = Scale(chip, MetricLogicalWidth);
-            chip.Height = Scale(chip, MetricLogicalHeight);
-            chip.MinimumSize = new Size(Scale(chip, MetricLogicalWidth), Scale(chip, MetricLogicalHeight));
-            chip.Padding = new Padding(Scale(chip, 8), Scale(chip, 3), Scale(chip, 8), Scale(chip, 2));
-            chip.Margin = new Padding(Scale(chip, 4), 0, 0, 0);
+        foreach (var metric in parts.MetricChips)
+            ApplyMetricChip(metric);
+    }
 
-            var chipLayout = chip.Controls.OfType<TableLayoutPanel>().FirstOrDefault();
-            if (chipLayout is null) continue;
-            chipLayout.Margin = Padding.Empty;
-            chipLayout.Padding = Padding.Empty;
-            if (chipLayout.RowStyles.Count >= 2)
+    private static void ApplyMetricChip(MetricChipParts metric)
+    {
+        if (metric.Panel.IsDisposed || metric.Layout.IsDisposed || metric.Caption.IsDisposed || metric.Value.IsDisposed)
+            return;
+
+        metric.Panel.Width = Scale(metric.Panel, MetricLogicalWidth);
+        metric.Panel.Height = Scale(metric.Panel, MetricLogicalHeight);
+        metric.Panel.MinimumSize = new Size(Scale(metric.Panel, MetricLogicalWidth), Scale(metric.Panel, MetricLogicalHeight));
+        metric.Panel.MaximumSize = new Size(Scale(metric.Panel, MetricLogicalWidth), Scale(metric.Panel, MetricLogicalHeight));
+        metric.Panel.Padding = new Padding(Scale(metric.Panel, 6), Scale(metric.Panel, 2), Scale(metric.Panel, 6), Scale(metric.Panel, 2));
+        metric.Panel.Margin = new Padding(Scale(metric.Panel, 3), 0, 0, 0);
+
+        metric.Layout.SuspendLayout();
+        try
+        {
+            metric.Layout.Margin = Padding.Empty;
+            metric.Layout.Padding = Padding.Empty;
+
+            if (metric.Layout.RowCount != 1 || metric.Layout.ColumnCount != 2)
             {
-                chipLayout.RowStyles[0].SizeType = SizeType.Percent;
-                chipLayout.RowStyles[0].Height = 44;
-                chipLayout.RowStyles[1].SizeType = SizeType.Percent;
-                chipLayout.RowStyles[1].Height = 56;
+                metric.Layout.Controls.Remove(metric.Caption);
+                metric.Layout.Controls.Remove(metric.Value);
+                metric.Layout.RowStyles.Clear();
+                metric.Layout.ColumnStyles.Clear();
+                metric.Layout.RowCount = 1;
+                metric.Layout.ColumnCount = 2;
+                metric.Layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+                metric.Layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
+                metric.Layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
+                metric.Layout.Controls.Add(metric.Caption, 0, 0);
+                metric.Layout.Controls.Add(metric.Value, 1, 0);
             }
+
+            metric.Caption.Dock = DockStyle.Fill;
+            metric.Caption.TextAlign = ContentAlignment.MiddleLeft;
+            metric.Caption.AutoEllipsis = true;
+            metric.Caption.Margin = Padding.Empty;
+
+            metric.Value.Dock = DockStyle.Fill;
+            metric.Value.TextAlign = ContentAlignment.MiddleRight;
+            metric.Value.AutoEllipsis = true;
+            metric.Value.Margin = Padding.Empty;
+        }
+        finally
+        {
+            metric.Layout.ResumeLayout(true);
         }
     }
 
@@ -218,5 +268,11 @@ internal static class CompactDashboardHeaderLayout
         Label Title,
         Label Subtitle,
         FlowLayoutPanel Metrics,
-        Panel[] MetricChips);
+        MetricChipParts[] MetricChips);
+
+    private sealed record MetricChipParts(
+        Panel Panel,
+        TableLayoutPanel Layout,
+        Label Caption,
+        Label Value);
 }
