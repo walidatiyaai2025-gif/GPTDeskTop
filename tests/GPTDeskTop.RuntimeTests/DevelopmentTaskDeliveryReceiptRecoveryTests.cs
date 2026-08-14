@@ -1,6 +1,6 @@
 namespace GPTDeskTop.RuntimeTests;
 
-public sealed class DevelopmentTaskDeliveryReceiptTests
+public sealed class DevelopmentTaskDeliveryReceiptRecoveryTests
 {
     private static string RepositoryPath(params string[] segments)
         => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "GPTDeskTop", Path.Combine(segments)));
