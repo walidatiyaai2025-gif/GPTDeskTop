@@ -66,6 +66,13 @@ internal static class ProjectMonitorUiBootstrap
             ProjectExecutionRuntimeContext.Configure(database, monitor, chrome);
     }
 
+    private static LocalDatabase GetDatabase(MainForm main)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        return typeof(MainForm).GetField("_database", flags)?.GetValue(main) as LocalDatabase
+            ?? throw new InvalidOperationException("GPTDeskTop database is not available for the Projects Hub.");
+    }
+
     private static void ShowProjectsHub(MainForm owner)
     {
         if (_dashboardForm is null || _dashboardForm.IsDisposed)
@@ -85,11 +92,80 @@ internal static class ProjectMonitorUiBootstrap
 
     private static async Task StartNewProjectMonitorAsync(MainForm owner)
     {
+        var database = GetDatabase(owner);
+        var wizardService = new NewProjectMonitorWizardService(database);
+        IReadOnlyList<NewProjectRepositoryOption> options;
+        try
+        {
+            options = await wizardService.LoadRepositoryOptionsAsync();
+        }
+        catch (Exception ex)
+        {
+            await ExceptionLogService.LogAsync(ex, "ProjectsHub.LoadRepositoryOptions");
+            MessageBox.Show(owner, "Saved GitHub repository profiles could not be loaded. Open Git Settings and verify the repository credentials.", "New Project Monitor", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ShowGitSettings(owner, database);
+            return;
+        }
+
+        if (options.Count == 0)
+        {
+            MessageBox.Show(owner, "No saved GitHub repository profile is available. Configure a repository once; after that project creation is silent.", "New Project Monitor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ShowGitSettings(owner, database);
+            return;
+        }
+
+        using var wizard = new NewProjectMonitorWizardForm(options);
+        if (wizard.ShowDialog(owner) != DialogResult.OK) return;
+
+        NewProjectGitHubPreflightResult preflight;
+        try
+        {
+            preflight = await wizardService.ValidateAsync(wizard.Draft);
+        }
+        catch (Exception ex)
+        {
+            await ExceptionLogService.LogAsync(ex, "ProjectsHub.GitHubPreflight");
+            MessageBox.Show(owner, "GitHub validation could not be completed. No ChatGPT conversation was created.", "New Project Monitor", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (!preflight.Success)
+        {
+            MessageBox.Show(owner, preflight.Message + "\r\n\r\nNo ChatGPT conversation was created.", "GitHub validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (preflight.RequiresCredentialUi)
+                ShowGitSettings(owner, database);
+            return;
+        }
+
+        NewProjectMonitorPendingContext.Set(wizard.Draft with { Branch = preflight.Branch });
+
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
         var method = typeof(MainForm).GetMethod("CreateNewChatMonitorAsync", flags)
             ?? throw new MissingMethodException(nameof(MainForm), "CreateNewChatMonitorAsync");
         if (method.Invoke(owner, null) is Task task)
             await task;
+    }
+
+    private static void ShowGitSettings(IWin32Window owner, LocalDatabase database)
+    {
+        var control = new GitHubIntegrationControl(database);
+        using var form = new Form
+        {
+            Text = "GPTDeskTop · Git Settings",
+            StartPosition = FormStartPosition.CenterParent,
+            MinimumSize = new Size(900, 700),
+            Size = new Size(1040, 820),
+            AutoScaleMode = AutoScaleMode.Dpi,
+            BackColor = FluentTheme.Background
+        };
+        form.Controls.Add(control);
+        form.Shown += async (_, _) =>
+        {
+            try { await control.LoadAsync(); }
+            catch (Exception ex) { await ExceptionLogService.LogAsync(ex, "ProjectsHub.GitSettings.Load"); }
+        };
+        FluentTheme.Apply(form);
+        form.ShowDialog(owner);
     }
 
     private static IEnumerable<Control> FindDescendants(Control root)
