@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using GPTDeskTop.Models;
@@ -10,21 +11,16 @@ internal static class ProjectMonitorExecutionUiBootstrap
     private static readonly HashSet<nint> Injected = new();
 
     [ModuleInitializer]
-    internal static void Initialize()
-    {
-        Application.Idle += (_, _) => TryInject();
-    }
+    internal static void Initialize() => Application.Idle += (_, _) => TryInject();
 
     private static void TryInject()
     {
         foreach (Form form in Application.OpenForms.Cast<Form>().ToArray())
+        foreach (var dashboard in FindDescendants(form).OfType<ProjectMonitorDashboardControl>())
         {
-            foreach (var dashboard in FindDescendants(form).OfType<ProjectMonitorDashboardControl>())
-            {
-                if (!dashboard.IsHandleCreated || dashboard.IsDisposed || !Injected.Add(dashboard.Handle)) continue;
-                try { Inject(dashboard); }
-                catch (Exception ex) { _ = ExceptionLogService.LogAsync(ex, "ProjectMonitorExecutionUiBootstrap.Inject"); }
-            }
+            if (!dashboard.IsHandleCreated || dashboard.IsDisposed || !Injected.Add(dashboard.Handle)) continue;
+            try { Inject(dashboard); }
+            catch (Exception ex) { _ = ExceptionLogService.LogAsync(ex, "ProjectMonitorExecutionUiBootstrap.Inject"); }
         }
     }
 
@@ -33,7 +29,6 @@ internal static class ProjectMonitorExecutionUiBootstrap
         var flags = BindingFlags.Instance | BindingFlags.NonPublic;
         var projects = typeof(ProjectMonitorDashboardControl).GetField("_projects", flags)?.GetValue(dashboard) as DataGridView;
         if (projects is null) return;
-
         var header = FindDescendants(dashboard).OfType<FlowLayoutPanel>().FirstOrDefault();
         if (header is null) return;
 
@@ -43,31 +38,27 @@ internal static class ProjectMonitorExecutionUiBootstrap
             return ProjectExecutionRuntimeContext.Controller;
         }
 
-        var monitorPicker = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 220,
-            AccessibleName = "Project execution monitor"
-        };
-        var initialize = new Button { Text = "Initialize Project", AutoSize = true };
-        var start = new Button { Text = "Start / Continue Project", AutoSize = true };
+        var monitorPicker = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 205, AccessibleName = "Project execution monitor" };
+        var initialize = new Button { Text = "Initialize", AutoSize = true };
+        var start = new Button { Text = "Start / Continue", AutoSize = true };
         var pause = new Button { Text = "Pause", AutoSize = true };
         var stop = new Button { Text = "Stop", AutoSize = true };
         var retry = new Button { Text = "Retry", AutoSize = true };
-        var runtimeStatus = new Label
-        {
-            Text = GetController() is null ? "Runtime unavailable" : "Ready",
-            AutoSize = true,
-            ForeColor = FluentTheme.Muted,
-            Padding = new Padding(8, 8, 0, 0),
-            AutoEllipsis = true
-        };
+        var openChat = new Button { Text = "Open Chat", AutoSize = true };
+        var edit = new Button { Text = "Edit", AutoSize = true };
+        var archive = new Button { Text = "Archive", AutoSize = true };
+        var gitSettings = new Button { Text = "Git Settings", AutoSize = true };
+        var runtimeStatus = new Label { Text = GetController() is null ? "Runtime unavailable" : "Ready", AutoSize = true, ForeColor = FluentTheme.Muted, Padding = new Padding(8, 8, 0, 0), AutoEllipsis = true };
 
         FluentTheme.StyleButton(initialize);
         FluentTheme.StyleButton(start, primary: true);
         FluentTheme.StyleButton(pause);
         FluentTheme.StyleButton(stop, danger: true);
         FluentTheme.StyleButton(retry);
+        FluentTheme.StyleButton(openChat);
+        FluentTheme.StyleButton(edit);
+        FluentTheme.StyleButton(archive, danger: true);
+        FluentTheme.StyleButton(gitSettings);
 
         header.Controls.Add(new Label { Text = "Monitor", AutoSize = true, Padding = new Padding(8, 8, 0, 0), ForeColor = FluentTheme.Muted });
         header.Controls.Add(monitorPicker);
@@ -76,25 +67,24 @@ internal static class ProjectMonitorExecutionUiBootstrap
         header.Controls.Add(pause);
         header.Controls.Add(stop);
         header.Controls.Add(retry);
+        header.Controls.Add(openChat);
+        header.Controls.Add(edit);
+        header.Controls.Add(archive);
+        header.Controls.Add(gitSettings);
         header.Controls.Add(runtimeStatus);
 
         async Task ReloadMonitorsAsync()
         {
             monitorPicker.Items.Clear();
             var controller = GetController();
-            if (controller is null)
-            {
-                runtimeStatus.Text = "Runtime unavailable";
-                return;
-            }
-
+            if (controller is null) { runtimeStatus.Text = "Runtime unavailable"; return; }
             try
             {
                 var monitors = await controller.GetMonitorsAsync();
                 foreach (var monitor in monitors.Where(x => x.Enabled).OrderBy(x => x.Title, StringComparer.OrdinalIgnoreCase))
                     monitorPicker.Items.Add(new MonitorChoice(monitor.Id, $"#{monitor.Id} · {monitor.Title}"));
                 if (monitorPicker.Items.Count > 0) monitorPicker.SelectedIndex = 0;
-                runtimeStatus.Text = monitorPicker.Items.Count == 0 ? "No enabled saved monitors" : "Ready";
+                runtimeStatus.Text = monitorPicker.Items.Count == 0 ? "No enabled monitors" : "Ready";
             }
             catch (Exception ex)
             {
@@ -111,15 +101,18 @@ internal static class ProjectMonitorExecutionUiBootstrap
             var state = SelectedProject();
             var hasRuntime = GetController() is not null;
             var hasMonitor = SelectedMonitorId() > 0;
-            var human = state?.Tasks.Any(t => t.Status == ProjectTaskStatus.AwaitingApproval) == true
-                        || IsStatus(state?.Status, "WAITING_FOR_HUMAN", "HUMAN_REQUIRED", "AWAITING_APPROVAL");
+            var human = state?.Tasks.Any(t => t.Status == ProjectTaskStatus.AwaitingApproval) == true || IsStatus(state?.Status, "WAITING_FOR_HUMAN", "HUMAN_REQUIRED", "AWAITING_APPROVAL");
             var active = IsAutomationOwnedStatus(state?.Status);
+            var archived = IsStatus(state?.Status, "ARCHIVED");
             initialize.Enabled = hasRuntime;
-            start.Enabled = hasRuntime && hasMonitor && state is not null && !human && !active;
+            start.Enabled = hasRuntime && hasMonitor && state is not null && !human && !active && !archived;
             pause.Enabled = hasRuntime && state is not null && active;
-            stop.Enabled = hasRuntime && state is not null && !IsStatus(state.Status, "PROJECT_COMPLETE", "COMPLETED");
-            retry.Enabled = hasRuntime && hasMonitor && state is not null && !human
-                            && IsStatus(state.Status, "BLOCKED", "RECOVERING", "STALLED", "TOOL_LOOP_DETECTED", "MODEL_DELAY_TIMEOUT");
+            stop.Enabled = hasRuntime && state is not null && !archived && !IsStatus(state.Status, "PROJECT_COMPLETE", "COMPLETED");
+            retry.Enabled = hasRuntime && hasMonitor && state is not null && !human && !archived && IsStatus(state.Status, "BLOCKED", "RECOVERING", "STALLED", "TOOL_LOOP_DETECTED", "MODEL_DELAY_TIMEOUT");
+            openChat.Enabled = hasRuntime && state is not null && !string.IsNullOrWhiteSpace(state.CurrentChatId);
+            edit.Enabled = hasRuntime && state is not null && !active && !archived;
+            archive.Enabled = hasRuntime && state is not null && !archived;
+            gitSettings.Enabled = true;
         }
 
         projects.SelectionChanged += (_, _) => UpdateButtons();
@@ -138,49 +131,64 @@ internal static class ProjectMonitorExecutionUiBootstrap
                 runtimeStatus.Text = $"Initialized {state.ProjectName} · {state.CurrentBranch}";
                 await dashboard.RefreshAsync(false);
             }
-            catch (Exception ex)
-            {
-                runtimeStatus.Text = "Initialize failed";
-                MessageBox.Show(dashboard.FindForm(), ex.Message, "Project initialization failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                await ExceptionLogService.LogAsync(ex, "ProjectMonitorExecution.Initialize");
-            }
+            catch (Exception ex) { await ShowFailureAsync("Initialize failed", ex, "ProjectMonitorExecution.Initialize"); }
             finally { SetBusy(false); }
         };
 
         start.Click += async (_, _) =>
         {
-            var controller = GetController();
-            var state = SelectedProject();
-            var monitorId = SelectedMonitorId();
+            var controller = GetController(); var state = SelectedProject(); var monitorId = SelectedMonitorId();
             if (controller is null || state is null || monitorId <= 0) return;
             await ExecuteAsync("Starting project…", () => controller.StartOrContinueAsync(state, monitorId));
         };
-
         pause.Click += async (_, _) =>
         {
-            var controller = GetController();
-            var state = SelectedProject();
+            var controller = GetController(); var state = SelectedProject();
             if (controller is null || state is null) return;
             await ExecuteAsync("Pausing project…", () => controller.PauseAsync(state));
         };
-
         stop.Click += async (_, _) =>
         {
-            var controller = GetController();
-            var state = SelectedProject();
+            var controller = GetController(); var state = SelectedProject();
             if (controller is null || state is null) return;
             if (MessageBox.Show(dashboard.FindForm(), $"Stop automation for {state.ProjectName}?", "Stop project", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             await ExecuteAsync("Stopping project…", () => controller.StopAsync(state));
         };
-
         retry.Click += async (_, _) =>
         {
-            var controller = GetController();
-            var state = SelectedProject();
-            var monitorId = SelectedMonitorId();
+            var controller = GetController(); var state = SelectedProject(); var monitorId = SelectedMonitorId();
             if (controller is null || state is null || monitorId <= 0) return;
             await ExecuteAsync("Retrying project…", () => controller.RetryAsync(state, monitorId));
         };
+        openChat.Click += async (_, _) =>
+        {
+            var controller = GetController(); var state = SelectedProject();
+            if (controller is null || state is null) return;
+            try
+            {
+                var url = await controller.GetConversationUrlAsync(state);
+                if (string.IsNullOrWhiteSpace(url)) { MessageBox.Show(dashboard.FindForm(), "No saved ChatGPT conversation is attached to this project.", "Open Chat", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                runtimeStatus.Text = "Chat opened";
+            }
+            catch (Exception ex) { await ShowFailureAsync("Open chat failed", ex, "ProjectMonitorExecution.OpenChat"); }
+        };
+        edit.Click += async (_, _) =>
+        {
+            var controller = GetController(); var state = SelectedProject();
+            if (controller is null || state is null) return;
+            using var dialog = new ProjectInitializeDialog(state.RepoUrl, state.CurrentBranch, state.MainGoal, editMode: true);
+            if (dialog.ShowDialog(dashboard.FindForm()) != DialogResult.OK) return;
+            await ExecuteAsync("Saving project…", () => controller.UpdateProjectAsync(state, dialog.MainGoal, dialog.Branch));
+        };
+        archive.Click += async (_, _) =>
+        {
+            var controller = GetController(); var state = SelectedProject();
+            if (controller is null || state is null) return;
+            if (MessageBox.Show(dashboard.FindForm(), $"Archive {state.ProjectName}?\n\nThis stops its active monitor and removes it from active automation without deleting evidence.", "Archive project", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            await ExecuteAsync("Archiving project…", () => controller.ArchiveAsync(state));
+        };
+        gitSettings.Click += async (_, _) => await GitHubIntegrationUiBootstrap.ShowGitSettingsAsync(dashboard.FindForm());
 
         async Task ExecuteAsync(string busyText, Func<Task<ProjectExecutionResult>> action)
         {
@@ -189,27 +197,23 @@ internal static class ProjectMonitorExecutionUiBootstrap
                 SetBusy(true, busyText);
                 var result = await action();
                 runtimeStatus.Text = result.Message;
-                if (!result.Success)
-                    MessageBox.Show(dashboard.FindForm(), result.Message, "Project automation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                if (!result.Success) MessageBox.Show(dashboard.FindForm(), result.Message, "Project automation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 await dashboard.RefreshAsync(false);
             }
-            catch (Exception ex)
-            {
-                runtimeStatus.Text = "Operation failed";
-                MessageBox.Show(dashboard.FindForm(), ex.Message, "Project automation failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                await ExceptionLogService.LogAsync(ex, "ProjectMonitorExecution.Command");
-            }
+            catch (Exception ex) { await ShowFailureAsync("Operation failed", ex, "ProjectMonitorExecution.Command"); }
             finally { SetBusy(false); }
+        }
+
+        async Task ShowFailureAsync(string text, Exception ex, string context)
+        {
+            runtimeStatus.Text = text;
+            MessageBox.Show(dashboard.FindForm(), ex.Message, "Projects Hub", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            await ExceptionLogService.LogAsync(ex, context);
         }
 
         void SetBusy(bool busy, string? text = null)
         {
-            monitorPicker.Enabled = !busy;
-            initialize.Enabled = !busy;
-            start.Enabled = !busy;
-            pause.Enabled = !busy;
-            stop.Enabled = !busy;
-            retry.Enabled = !busy;
+            foreach (var control in new Control[] { monitorPicker, initialize, start, pause, stop, retry, openChat, edit, archive, gitSettings }) control.Enabled = !busy;
             if (!string.IsNullOrWhiteSpace(text)) runtimeStatus.Text = text;
             if (!busy) UpdateButtons();
         }
@@ -219,12 +223,8 @@ internal static class ProjectMonitorExecutionUiBootstrap
     }
 
     private static bool IsAutomationOwnedStatus(string? status) => IsStatus(status,
-        "ACTIVE", "GENERATING", "WAITING_EXTERNAL", "MODEL_DELAYED_RESPONSE", "SUSPECTED_STALL",
-        "VERIFYING", "RECOVERING", "ROTATING_CHAT", "RUNNING", "WAITING_FOR_REPLY");
-
-    private static bool IsStatus(string? value, params string[] candidates) =>
-        candidates.Any(x => string.Equals(value?.Trim(), x, StringComparison.OrdinalIgnoreCase));
-
+        "ACTIVE", "GENERATING", "WAITING_EXTERNAL", "MODEL_DELAYED_RESPONSE", "SUSPECTED_STALL", "VERIFYING", "RECOVERING", "ROTATING_CHAT", "RUNNING", "WAITING_FOR_REPLY");
+    private static bool IsStatus(string? value, params string[] candidates) => candidates.Any(x => string.Equals(value?.Trim(), x, StringComparison.OrdinalIgnoreCase));
     private static IEnumerable<Control> FindDescendants(Control root)
     {
         foreach (Control child in root.Controls)
@@ -233,9 +233,5 @@ internal static class ProjectMonitorExecutionUiBootstrap
             foreach (var descendant in FindDescendants(child)) yield return descendant;
         }
     }
-
-    private sealed record MonitorChoice(long Id, string Label)
-    {
-        public override string ToString() => Label;
-    }
+    private sealed record MonitorChoice(long Id, string Label) { public override string ToString() => Label; }
 }
