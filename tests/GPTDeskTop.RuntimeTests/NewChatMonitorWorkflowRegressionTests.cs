@@ -34,10 +34,11 @@ public sealed class NewChatMonitorWorkflowRegressionTests
     public void WorkflowRequiresVerifiedSendThenStableIdentityBeforeMonitorRegistrationAndStart()
     {
         var source = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "Services", "NewChatMonitorWorkflowService.cs"));
+        var selector = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "Services", "NewChatStableTargetSelector.cs"));
 
         var createIndex = source.IndexOf("CreateFreshChatTabAsync", StringComparison.Ordinal);
         var verifiedSendIndex = source.IndexOf("SendInitialMessageVerifiedAsync(openedTab", StringComparison.Ordinal);
-        var stableIdentityIndex = source.IndexOf("ResolveStableConversationAsync(openedTab", StringComparison.Ordinal);
+        var stableIdentityIndex = source.IndexOf("ResolveStableConversationAsync(", verifiedSendIndex, StringComparison.Ordinal);
         var registerIndex = source.IndexOf("RegisterMonitorIfConversationAvailableAsync", StringComparison.Ordinal);
         var startIndex = source.IndexOf("StartMonitorAsync(savedMonitor, stableTab)", StringComparison.Ordinal);
         var resumeIntentIndex = source.IndexOf("SetMonitorDesiredRunningAsync", StringComparison.Ordinal);
@@ -48,8 +49,14 @@ public sealed class NewChatMonitorWorkflowRegressionTests
         Assert.True(registerIndex > stableIdentityIndex);
         Assert.True(startIndex > registerIndex);
         Assert.True(resumeIntentIndex > startIndex);
+
+        Assert.Contains("PreexistingTargetIds", source, StringComparison.Ordinal);
+        Assert.Contains("NewChatStableTargetSelector.Select", source, StringComparison.Ordinal);
+        Assert.Contains("requireNewTurn: false", source, StringComparison.Ordinal);
         Assert.Contains("SendChatMessageVerifiedAsync", source, StringComparison.Ordinal);
-        Assert.Contains("RuntimeHealthPresentation.IsChatGptConversationUrl", source, StringComparison.Ordinal);
+        Assert.Contains("RuntimeHealthPresentation.IsChatGptConversationUrl", selector, StringComparison.Ordinal);
+        Assert.Contains("!preexistingTargetIds.Contains(tab.Id)", selector, StringComparison.Ordinal);
+        Assert.Contains("replacements.Count == 1", selector, StringComparison.Ordinal);
         Assert.Contains("NewChatBootstrapSent", source, StringComparison.Ordinal);
     }
 
