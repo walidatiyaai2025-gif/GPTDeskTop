@@ -90,6 +90,7 @@ public sealed class ProjectState
     public string NextAction { get; set; } = string.Empty;
     public int ChatGeneration { get; set; } = 1;
     public string CurrentChatId { get; set; } = string.Empty;
+    public long CurrentMonitorId { get; set; }
     public int HealthScore { get; set; } = 100;
     public int RetryCount { get; set; }
     public DateTimeOffset? LastVerifiedAt { get; set; }
