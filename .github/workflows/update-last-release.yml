@@ -213,6 +213,16 @@ jobs:
           Write-Host "Stable build ID: $buildId"
           Write-Host "SHA-256: $hash"
 
+      - name: Upload verified portable EXE
+        if: steps.source.outputs.publish == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-Portable-main
+          path: Last release/GPTDeskTop.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
       - name: Commit latest stable executable to main
         if: steps.source.outputs.publish == 'true'
         shell: pwsh
