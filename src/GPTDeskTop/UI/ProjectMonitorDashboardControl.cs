@@ -10,21 +10,28 @@ public sealed class ProjectMonitorDashboardControl : UserControl
     private readonly DataGridView _projects = new();
     private readonly DataGridView _tasks = new();
     private readonly RichTextBox _details = new() { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = FluentTheme.Surface };
-    private readonly Button _refresh = new() { Text = "Refresh Projects", AutoSize = true };
+    private readonly Button _newProject = new() { Text = "New Project Monitor", AutoSize = true };
+    private readonly Button _refresh = new() { Text = "Refresh", AutoSize = true };
     private readonly CheckBox _autoRefresh = new() { Text = "Auto refresh", Checked = true, AutoSize = true };
     private readonly Label _summary = new() { Text = "No project state loaded.", Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = FluentTheme.Muted, TextAlign = ContentAlignment.MiddleLeft };
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 3000 };
     private readonly List<ProjectState> _states = new();
+    private readonly Func<Task>? _startNewProjectMonitor;
     private bool _loading;
+    private bool _startingProject;
 
-    public ProjectMonitorDashboardControl()
+    public ProjectMonitorDashboardControl(Func<Task>? startNewProjectMonitor = null)
     {
+        _startNewProjectMonitor = startNewProjectMonitor;
         Dock = DockStyle.Fill;
         BackColor = FluentTheme.Background;
         ConfigureProjectsGrid();
         ConfigureTasksGrid();
         BuildUi();
-        FluentTheme.StyleButton(_refresh, primary: true);
+        FluentTheme.StyleButton(_newProject, primary: true);
+        FluentTheme.StyleButton(_refresh);
+        _newProject.Enabled = _startNewProjectMonitor is not null;
+        _newProject.Click += async (_, _) => await StartNewProjectMonitorAsync();
         _refresh.Click += async (_, _) => await RefreshAsync();
         _autoRefresh.CheckedChanged += (_, _) => _timer.Enabled = _autoRefresh.Checked;
         _timer.Tick += async (_, _) => await RefreshAsync(preserveSelection: true);
@@ -39,6 +46,23 @@ public sealed class ProjectMonitorDashboardControl : UserControl
             else if (!Visible) _timer.Enabled = false;
         };
         Disposed += (_, _) => _timer.Dispose();
+    }
+
+    private async Task StartNewProjectMonitorAsync()
+    {
+        if (_startNewProjectMonitor is null || _startingProject) return;
+        _startingProject = true;
+        _newProject.Enabled = false;
+        try
+        {
+            await _startNewProjectMonitor();
+            await RefreshAsync(preserveSelection: false);
+        }
+        finally
+        {
+            _startingProject = false;
+            _newProject.Enabled = true;
+        }
     }
 
     public async Task RefreshAsync(bool preserveSelection = true)
@@ -92,7 +116,7 @@ public sealed class ProjectMonitorDashboardControl : UserControl
 
             var totals = _states.Select(ProjectProgressService.Calculate).ToArray();
             _summary.Text = _states.Count == 0
-                ? "No project-state records yet. Project monitor results will appear here as projects are registered and updated."
+                ? "No projects yet. Choose New Project Monitor to create a fresh ChatGPT conversation and start monitoring it."
                 : $"Projects: {_states.Count} · Tasks: {totals.Sum(x => x.Total)} · Completed: {totals.Sum(x => x.Completed)} · Active: {totals.Sum(x => x.InProgress + x.Verifying)} · Blocked: {totals.Sum(x => x.Blocked)} · Human approval: {totals.Sum(x => x.AwaitingApproval)}";
 
             if (!string.IsNullOrWhiteSpace(selectedId))
@@ -110,19 +134,20 @@ public sealed class ProjectMonitorDashboardControl : UserControl
     private void BuildUi()
     {
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(12), BackColor = FluentTheme.Background };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 55));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
 
-        var header = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, BackColor = FluentTheme.Background };
-        header.Controls.Add(FluentTheme.CreateSectionTitle("Project Monitor Dashboard"));
+        var header = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, BackColor = FluentTheme.Background, AutoScroll = true };
+        header.Controls.Add(FluentTheme.CreateSectionTitle("Projects"));
+        header.Controls.Add(_newProject);
         header.Controls.Add(_refresh);
         header.Controls.Add(_autoRefresh);
         root.Controls.Add(header, 0, 0);
         root.Controls.Add(_summary, 0, 1);
 
-        root.Controls.Add(CreatePanel("Projects — live status and latest result", _projects), 0, 2);
+        root.Controls.Add(CreatePanel("All project monitors — status, progress and latest result", _projects), 0, 2);
         var bottom = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterWidth = 6, BackColor = FluentTheme.Background };
         bottom.Panel1.Padding = new Padding(0, 6, 4, 0);
         bottom.Panel2.Padding = new Padding(4, 6, 0, 0);
