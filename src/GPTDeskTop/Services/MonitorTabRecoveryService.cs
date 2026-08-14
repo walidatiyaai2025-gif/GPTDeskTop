@@ -13,7 +13,7 @@ public sealed record MonitorTabRecoveryResult(
 public static class MonitorTabRecoveryService
 {
     private static readonly SemaphoreSlim RecoveryGate = new(1, 1);
-    private static readonly TimeSpan ChromeRecoveryGracePeriod = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan ChromeRecoveryGracePeriod = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan ConversationReadyTimeout = TimeSpan.FromSeconds(60);
 
     public static async Task<MonitorTabRecoveryResult> EnsureMonitorTabAsync(
@@ -36,21 +36,25 @@ public static class MonitorTabRecoveryService
             var tabs = await TryGetTabsWithGracePeriodAsync(chrome, cancellationToken).ConfigureAwait(false);
             var existing = tabs is null ? null : SavedMonitorTabResolver.Resolve(monitor, tabs).Tab;
             if (existing is not null)
+            {
+                await PersistRuntimeTargetAsync(database, monitor, existing, cancellationToken).ConfigureAwait(false);
                 return new MonitorTabRecoveryResult(existing, Recreated: false, BrowserRestarted: false, FollowUpSent: false);
+            }
 
             var browserRestarted = false;
             ChromeTab recoveredTab;
 
-            if (tabs is { Count: > 0 })
+            if (tabs is not null)
             {
+                // /json/list succeeded, so CDP is healthy even when it currently reports zero pages.
+                // An empty target list is not a browser crash. Recreate only the saved conversation
+                // and keep the monitor browser/process alive; this is the video-repro reacquisition path.
                 recoveredTab = await chrome.CreateTabAsync(monitor.Url, cancellationToken).ConfigureAwait(false);
             }
             else
             {
-                // Give any in-flight running-monitor CDP recovery a grace period above. If CDP is
-                // still unavailable, tear down only the monitor browser we own and reopen the exact
-                // saved conversation. This path is also used after a normal application restart,
-                // where the previous monitor Chrome process was intentionally closed.
+                // Only a genuinely unavailable CDP endpoint is allowed to restart the monitor browser.
+                // Never tear Chrome down merely because a healthy endpoint temporarily has no targets.
                 try
                 {
                     await chrome.CloseAllMonitorTabsAsync(cancellationToken).ConfigureAwait(false);
@@ -66,11 +70,20 @@ public static class MonitorTabRecoveryService
                     ?? throw new TimeoutException($"Monitor #{monitor.Id} conversation did not become available after Chrome recovery.");
             }
 
-            await WaitForChatReadyAsync(chrome, recoveredTab, cancellationToken).ConfigureAwait(false);
-            await ApplyConfiguredModelAsync(chrome, monitor, recoveredTab, cancellationToken).ConfigureAwait(false);
+            var recoveredState = await WaitForChatReachableAsync(chrome, recoveredTab, cancellationToken).ConfigureAwait(false);
+            await PersistRuntimeTargetAsync(database, monitor, recoveredTab, cancellationToken).ConfigureAwait(false);
+
+            // Model switching and continuation sends are mutations. Never perform either while the
+            // recovered conversation is actively generating: reacquisition must be passive and must
+            // not interrupt a long ChatGPT response or create a duplicate 'continue' turn.
+            if (!recoveredState.IsGenerating)
+                await ApplyConfiguredModelAsync(chrome, monitor, recoveredTab, cancellationToken).ConfigureAwait(false);
 
             var followUpSent = false;
-            if (sendFollowUpWhenRecreated && !string.IsNullOrWhiteSpace(monitor.AutoReply))
+            if (sendFollowUpWhenRecreated
+                && !recoveredState.IsGenerating
+                && string.IsNullOrWhiteSpace(recoveredState.ErrorText)
+                && !string.IsNullOrWhiteSpace(monitor.AutoReply))
             {
                 followUpSent = await SendFollowUpOnceAsync(
                     chrome,
@@ -88,12 +101,26 @@ public static class MonitorTabRecoveryService
                     recoveredTab.Title,
                     cancellationToken).ConfigureAwait(false);
             }
+            else if (recoveredState.IsGenerating)
+            {
+                await database.AddLogAsync(
+                    "System",
+                    string.Empty,
+                    "Recovered conversation is still generating. Runtime target was rebound without sending a follow-up.",
+                    "MonitorTabReboundGenerating",
+                    monitor.Id,
+                    recoveredTab.Id,
+                    recoveredTab.Title,
+                    cancellationToken).ConfigureAwait(false);
+            }
 
             await database.AddLogAsync(
                 "System",
                 monitor.Url,
-                browserRestarted ? "Monitor Chrome restarted and saved conversation reopened." : "Saved monitor conversation tab recreated.",
-                "MonitorTabRecreated",
+                browserRestarted
+                    ? "Monitor Chrome restarted and saved conversation reopened."
+                    : "Saved monitor conversation target reacquired without restarting Chrome.",
+                browserRestarted ? "MonitorTabRecreated" : "MonitorTabRebound",
                 monitor.Id,
                 recoveredTab.Id,
                 recoveredTab.Title,
@@ -122,6 +149,26 @@ public static class MonitorTabRecoveryService
         }
     }
 
+    private static async Task PersistRuntimeTargetAsync(
+        LocalDatabase database,
+        SavedMonitor monitor,
+        ChromeTab tab,
+        CancellationToken cancellationToken)
+    {
+        var updated = await database.UpdateMonitorRuntimeTargetIfConversationMatchesAsync(
+            monitor.Id,
+            monitor.Url,
+            tab.Id,
+            tab.Title,
+            cancellationToken).ConfigureAwait(false);
+
+        if (!updated)
+            throw new InvalidOperationException($"Monitor #{monitor.Id} conversation identity changed while its Chrome target was being rebound.");
+
+        monitor.TabId = tab.Id;
+        monitor.Title = tab.Title;
+    }
+
     private static async Task<List<ChromeTab>?> TryGetTabsWithGracePeriodAsync(
         ChromeDevToolsService chrome,
         CancellationToken cancellationToken)
@@ -132,6 +179,8 @@ public static class MonitorTabRecoveryService
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
+                // A successful empty list is a healthy CDP response. Return it immediately so the
+                // caller can create the saved conversation target without restarting Chrome.
                 return await chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -164,17 +213,14 @@ public static class MonitorTabRecoveryService
                     return resolved;
 
                 // Chrome may have started with an intermediate page before honoring the exact URL.
-                // Once a controllable page exists, create the saved conversation target explicitly.
-                if (tabs.Count > 0)
+                // Once the CDP endpoint responds, create the saved conversation target explicitly.
+                try
                 {
-                    try
-                    {
-                        return await chrome.CreateTabAsync(monitor.Url, cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        // Continue the bounded wait; Chrome may still be initializing its CDP targets.
-                    }
+                    return await chrome.CreateTabAsync(monitor.Url, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Continue the bounded wait; Chrome may still be initializing its CDP targets.
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -188,7 +234,7 @@ public static class MonitorTabRecoveryService
         return null;
     }
 
-    private static async Task WaitForChatReadyAsync(
+    private static async Task<ChatPageState> WaitForChatReachableAsync(
         ChromeDevToolsService chrome,
         ChromeTab tab,
         CancellationToken cancellationToken)
@@ -200,9 +246,9 @@ public static class MonitorTabRecoveryService
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var state = await chrome.GetChatStateAsync(tab, cancellationToken).ConfigureAwait(false);
-                if (!state.IsGenerating)
-                    return;
+                // A successful state read is enough to establish a healthy target. IsGenerating is
+                // intentionally NOT a readiness failure; long responses must remain passive waits.
+                return await chrome.GetChatStateAsync(tab, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -213,7 +259,7 @@ public static class MonitorTabRecoveryService
         }
 
         throw new TimeoutException(
-            $"Recovered ChatGPT conversation did not become ready within {ConversationReadyTimeout.TotalSeconds:0} seconds."
+            $"Recovered ChatGPT conversation did not become reachable within {ConversationReadyTimeout.TotalSeconds:0} seconds."
             + (lastError is null ? string.Empty : $" Last error: {lastError.Message}"));
     }
 
@@ -250,9 +296,6 @@ public static class MonitorTabRecoveryService
         if (followUp.Length == 0)
             return Task.FromResult(false);
 
-        // Recovery must create a NEW continuation turn even when the previous user turn used the
-        // same repeated text (for example "كمل"). The verified sender keeps one baseline message
-        // count and only accepts a newly-added matching user turn as the delivery receipt.
         return chrome.SendChatMessageVerifiedAsync(
             tab,
             followUp,
