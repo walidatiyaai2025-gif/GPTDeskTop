@@ -30,13 +30,18 @@ internal static class ProjectMonitorExecutionUiBootstrap
 
     private static void Inject(ProjectMonitorDashboardControl dashboard)
     {
-        var controller = ProjectExecutionRuntimeContext.Controller;
         var flags = BindingFlags.Instance | BindingFlags.NonPublic;
         var projects = typeof(ProjectMonitorDashboardControl).GetField("_projects", flags)?.GetValue(dashboard) as DataGridView;
         if (projects is null) return;
 
         var header = FindDescendants(dashboard).OfType<FlowLayoutPanel>().FirstOrDefault();
         if (header is null) return;
+
+        ProjectExecutionController? GetController()
+        {
+            ProjectExecutionRuntimeContext.TryConfigureFromForm(dashboard.FindForm());
+            return ProjectExecutionRuntimeContext.Controller;
+        }
 
         var monitorPicker = new ComboBox
         {
@@ -51,7 +56,7 @@ internal static class ProjectMonitorExecutionUiBootstrap
         var retry = new Button { Text = "Retry", AutoSize = true };
         var runtimeStatus = new Label
         {
-            Text = controller is null ? "Runtime unavailable" : "Ready",
+            Text = GetController() is null ? "Runtime unavailable" : "Ready",
             AutoSize = true,
             ForeColor = FluentTheme.Muted,
             Padding = new Padding(8, 8, 0, 0),
@@ -76,7 +81,13 @@ internal static class ProjectMonitorExecutionUiBootstrap
         async Task ReloadMonitorsAsync()
         {
             monitorPicker.Items.Clear();
-            if (controller is null) return;
+            var controller = GetController();
+            if (controller is null)
+            {
+                runtimeStatus.Text = "Runtime unavailable";
+                return;
+            }
+
             try
             {
                 var monitors = await controller.GetMonitorsAsync();
@@ -98,20 +109,17 @@ internal static class ProjectMonitorExecutionUiBootstrap
         void UpdateButtons()
         {
             var state = SelectedProject();
-            var hasRuntime = controller is not null;
+            var hasRuntime = GetController() is not null;
             var hasMonitor = SelectedMonitorId() > 0;
             var human = state?.Tasks.Any(t => t.Status == ProjectTaskStatus.AwaitingApproval) == true
-                        || string.Equals(state?.Status, "WAITING_FOR_HUMAN", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(state?.Status, "HUMAN_REQUIRED", StringComparison.OrdinalIgnoreCase);
-            var active = string.Equals(state?.Status, "RUNNING", StringComparison.OrdinalIgnoreCase)
-                         || string.Equals(state?.Status, "WAITING_FOR_REPLY", StringComparison.OrdinalIgnoreCase);
+                        || IsStatus(state?.Status, "WAITING_FOR_HUMAN", "HUMAN_REQUIRED", "AWAITING_APPROVAL");
+            var active = IsAutomationOwnedStatus(state?.Status);
             initialize.Enabled = hasRuntime;
             start.Enabled = hasRuntime && hasMonitor && state is not null && !human && !active;
             pause.Enabled = hasRuntime && state is not null && active;
-            stop.Enabled = hasRuntime && state is not null && !string.Equals(state.Status, "COMPLETED", StringComparison.OrdinalIgnoreCase);
+            stop.Enabled = hasRuntime && state is not null && !IsStatus(state.Status, "PROJECT_COMPLETE", "COMPLETED");
             retry.Enabled = hasRuntime && hasMonitor && state is not null && !human
-                            && (string.Equals(state.Status, "BLOCKED", StringComparison.OrdinalIgnoreCase)
-                                || string.Equals(state.Status, "RECOVERING", StringComparison.OrdinalIgnoreCase));
+                            && IsStatus(state.Status, "BLOCKED", "RECOVERING", "STALLED", "TOOL_LOOP_DETECTED", "MODEL_DELAY_TIMEOUT");
         }
 
         projects.SelectionChanged += (_, _) => UpdateButtons();
@@ -119,6 +127,7 @@ internal static class ProjectMonitorExecutionUiBootstrap
 
         initialize.Click += async (_, _) =>
         {
+            var controller = GetController();
             if (controller is null) return;
             using var dialog = new ProjectInitializeDialog();
             if (dialog.ShowDialog(dashboard.FindForm()) != DialogResult.OK) return;
@@ -140,6 +149,7 @@ internal static class ProjectMonitorExecutionUiBootstrap
 
         start.Click += async (_, _) =>
         {
+            var controller = GetController();
             var state = SelectedProject();
             var monitorId = SelectedMonitorId();
             if (controller is null || state is null || monitorId <= 0) return;
@@ -148,6 +158,7 @@ internal static class ProjectMonitorExecutionUiBootstrap
 
         pause.Click += async (_, _) =>
         {
+            var controller = GetController();
             var state = SelectedProject();
             if (controller is null || state is null) return;
             await ExecuteAsync("Pausing project…", () => controller.PauseAsync(state));
@@ -155,6 +166,7 @@ internal static class ProjectMonitorExecutionUiBootstrap
 
         stop.Click += async (_, _) =>
         {
+            var controller = GetController();
             var state = SelectedProject();
             if (controller is null || state is null) return;
             if (MessageBox.Show(dashboard.FindForm(), $"Stop automation for {state.ProjectName}?", "Stop project", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
@@ -163,6 +175,7 @@ internal static class ProjectMonitorExecutionUiBootstrap
 
         retry.Click += async (_, _) =>
         {
+            var controller = GetController();
             var state = SelectedProject();
             var monitorId = SelectedMonitorId();
             if (controller is null || state is null || monitorId <= 0) return;
@@ -204,6 +217,13 @@ internal static class ProjectMonitorExecutionUiBootstrap
         _ = ReloadMonitorsAsync();
         UpdateButtons();
     }
+
+    private static bool IsAutomationOwnedStatus(string? status) => IsStatus(status,
+        "ACTIVE", "GENERATING", "WAITING_EXTERNAL", "MODEL_DELAYED_RESPONSE", "SUSPECTED_STALL",
+        "VERIFYING", "RECOVERING", "ROTATING_CHAT", "RUNNING", "WAITING_FOR_REPLY");
+
+    private static bool IsStatus(string? value, params string[] candidates) =>
+        candidates.Any(x => string.Equals(value?.Trim(), x, StringComparison.OrdinalIgnoreCase));
 
     private static IEnumerable<Control> FindDescendants(Control root)
     {
