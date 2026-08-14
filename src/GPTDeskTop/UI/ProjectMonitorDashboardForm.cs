@@ -2,11 +2,12 @@ namespace GPTDeskTop.UI;
 
 public sealed class ProjectMonitorDashboardForm : Form
 {
-    private readonly ProjectMonitorDashboardControl _dashboard = new();
+    private readonly ProjectMonitorDashboardControl _dashboard;
 
-    public ProjectMonitorDashboardForm()
+    public ProjectMonitorDashboardForm(Func<Task>? startNewProjectMonitor = null)
     {
-        Text = "GPTDeskTop · Project Monitor";
+        _dashboard = new ProjectMonitorDashboardControl(startNewProjectMonitor);
+        Text = "GPTDeskTop · Projects";
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(1050, 700);

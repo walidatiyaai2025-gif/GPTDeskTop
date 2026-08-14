@@ -56,6 +56,11 @@ jobs:
           if (-not (Test-Path $resultPath)) { throw 'Passive chat-wait probe did not create result.json.' }
 
           $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+          $activity = @($result.Activity | ForEach-Object { [string]$_ })
+          $recoveryStartCount = @($activity | Where-Object { $_ -like '*ChatGPT error saved. Opening a fresh chat and continuing under the same Monitor ID*' }).Count
+          $recoveryCompletedCount = @($activity | Where-Object { $_ -like '*ChatGPT error recovery complete. New conversation is monitored as Monitor #*' }).Count
+          $verifiedContinuationCount = @($activity | Where-Object { $_ -like '*Verified message accepted on attempt*' }).Count
+
           $failed = $false
           if ($result.SlowText -ne 'slow-complete-load-1') { Write-Host "ASSERTION: Slow/generating tab was unexpectedly reloaded or did not complete, final text='$($result.SlowText)'."; $failed = $true }
           if ($result.RecoveryText -ne 'recovery-received:qa-error-continuation') { Write-Host "ASSERTION: Fresh recovery chat did not receive the configured continuation message, final text='$($result.RecoveryText)'."; $failed = $true }
@@ -63,9 +68,9 @@ jobs:
           if ($result.ReboundErrorMonitorUrl -ne 'https://chatgpt.com/c/qa-passive-wait-recovery') { Write-Host "ASSERTION: Saved monitor was not rebound to the fresh conversation URL: '$($result.ReboundErrorMonitorUrl)'."; $failed = $true }
           if ([string]::IsNullOrWhiteSpace([string]$result.RecoveryTabId) -or $result.ReboundErrorMonitorTabId -ne $result.RecoveryTabId) { Write-Host "ASSERTION: Saved monitor target does not match the verified fresh recovery tab. saved='$($result.ReboundErrorMonitorTabId)' recovery='$($result.RecoveryTabId)'."; $failed = $true }
           if ([int]$result.SlowFalseRecoveryActivityCount -ne 0) { Write-Host "ASSERTION: Historical error text on the slow tab caused a false recovery; count=$($result.SlowFalseRecoveryActivityCount)."; $failed = $true }
-          if ([int]$result.ErrorRecoveryStartActivityCount -ne 1) { Write-Host "ASSERTION: Expected exactly one explicit-error fresh-chat recovery start, got $($result.ErrorRecoveryStartActivityCount)."; $failed = $true }
-          if ([int]$result.ErrorRecoveryCompletedActivityCount -ne 1) { Write-Host "ASSERTION: Expected exactly one committed explicit-error recovery, got $($result.ErrorRecoveryCompletedActivityCount)."; $failed = $true }
-          if ([int]$result.VerifiedContinuationActivityCount -lt 1) { Write-Host 'ASSERTION: Continuation delivery was never verified in the fresh chat.'; $failed = $true }
+          if ($recoveryStartCount -ne 1) { Write-Host "ASSERTION: Expected exactly one explicit-error fresh-chat recovery start in activity trace, got $recoveryStartCount."; $failed = $true }
+          if ($recoveryCompletedCount -ne 1) { Write-Host "ASSERTION: Expected exactly one committed explicit-error recovery in activity trace, got $recoveryCompletedCount."; $failed = $true }
+          if ($verifiedContinuationCount -lt 1) { Write-Host 'ASSERTION: Continuation delivery was never verified in the fresh chat activity trace.'; $failed = $true }
           if ([int]$result.ElapsedTimeRefreshActivityCount -ne 0) { Write-Host "ASSERTION: Elapsed time still triggered refresh behavior; count=$($result.ElapsedTimeRefreshActivityCount)."; $failed = $true }
           if ($result.OldErrorTabStillOpen -eq $true) { Write-Host 'ASSERTION: Errored old tab remained open after the verified handoff committed.'; $failed = $true }
           if ($result.RecoveryTabOpen -ne $true) { Write-Host 'ASSERTION: Fresh recovery tab is not open after handoff.'; $failed = $true }
@@ -73,9 +78,9 @@ jobs:
 
           if ($failed) {
             Write-Host '--- Passive probe activity trace ---'
-            foreach ($line in @($result.Activity)) { Write-Host $line }
+            foreach ($line in $activity) { Write-Host $line }
             Write-Host '--- End passive probe activity trace ---'
             throw 'Passive chat-wait behavioral assertions failed. See activity trace above.'
           }
 
-          Write-Host "Verified passive wait + fresh-chat recovery: slow=$($result.SlowText), recovery=$($result.RecoveryText), monitorId=$($result.ErrorMonitorId), newTab=$($result.RecoveryTabId), elapsedRefreshes=$($result.ElapsedTimeRefreshActivityCount)."
+          Write-Host "Verified passive wait + fresh-chat recovery: slow=$($result.SlowText), recovery=$($result.RecoveryText), monitorId=$($result.ErrorMonitorId), newTab=$($result.RecoveryTabId), starts=$recoveryStartCount, completed=$recoveryCompletedCount, elapsedRefreshes=$($result.ElapsedTimeRefreshActivityCount)."
