@@ -58,19 +58,20 @@ internal static class ProjectMonitorUiBootstrap
 
     private static void ConfigureRuntimeContext(MainForm main)
     {
-        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        var database = typeof(MainForm).GetField("_database", flags)?.GetValue(main) as LocalDatabase;
-        var monitor = typeof(MainForm).GetField("_monitor", flags)?.GetValue(main) as ChatGptMonitorService;
-        var chrome = typeof(MainForm).GetField("_chrome", flags)?.GetValue(main) as ChromeDevToolsService;
-        if (database is not null && monitor is not null && chrome is not null)
-            ProjectExecutionRuntimeContext.Configure(database, monitor, chrome);
+        var (database, monitor, chrome) = GetRuntime(main);
+        ProjectExecutionRuntimeContext.Configure(database, monitor, chrome);
     }
 
-    private static LocalDatabase GetDatabase(MainForm main)
+    private static (LocalDatabase Database, ChatGptMonitorService Monitor, ChromeDevToolsService Chrome) GetRuntime(MainForm main)
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        return typeof(MainForm).GetField("_database", flags)?.GetValue(main) as LocalDatabase
+        var database = typeof(MainForm).GetField("_database", flags)?.GetValue(main) as LocalDatabase
             ?? throw new InvalidOperationException("GPTDeskTop database is not available for the Projects Hub.");
+        var monitor = typeof(MainForm).GetField("_monitor", flags)?.GetValue(main) as ChatGptMonitorService
+            ?? throw new InvalidOperationException("GPTDeskTop monitor service is not available for the Projects Hub.");
+        var chrome = typeof(MainForm).GetField("_chrome", flags)?.GetValue(main) as ChromeDevToolsService
+            ?? throw new InvalidOperationException("GPTDeskTop Chrome service is not available for the Projects Hub.");
+        return (database, monitor, chrome);
     }
 
     private static void ShowProjectsHub(MainForm owner)
@@ -92,7 +93,7 @@ internal static class ProjectMonitorUiBootstrap
 
     private static async Task StartNewProjectMonitorAsync(MainForm owner)
     {
-        var database = GetDatabase(owner);
+        var (database, monitor, chrome) = GetRuntime(owner);
         var wizardService = new NewProjectMonitorWizardService(database);
         IReadOnlyList<NewProjectRepositoryOption> options;
         try
@@ -138,12 +139,27 @@ internal static class ProjectMonitorUiBootstrap
         }
 
         NewProjectMonitorPendingContext.Set(wizard.Draft with { Branch = preflight.Branch });
-
-        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        var method = typeof(MainForm).GetMethod("CreateNewChatMonitorAsync", flags)
-            ?? throw new MissingMethodException(nameof(MainForm), "CreateNewChatMonitorAsync");
-        if (method.Invoke(owner, null) is Task task)
-            await task;
+        try
+        {
+            var validatedDraft = NewProjectMonitorPendingContext.Take()
+                ?? throw new InvalidOperationException("The validated New Project Monitor draft was lost before project creation.");
+            var creator = new NewProjectMonitorCreationService(chrome, monitor, database);
+            var result = await creator.ExecuteAsync(validatedDraft);
+            await database.AddLogAsync(
+                "System",
+                $"Project monitor {result.ProjectId} created and bound to saved monitor #{result.Workflow.Monitor.Id}.",
+                string.Empty,
+                "NewProjectMonitorCreated",
+                result.Workflow.Monitor.Id,
+                result.Workflow.ConversationTab.Id,
+                result.Workflow.ConversationTab.Title);
+        }
+        catch (Exception ex)
+        {
+            NewProjectMonitorPendingContext.Clear();
+            await ExceptionLogService.LogAsync(ex, "ProjectsHub.CreateProjectMonitor");
+            MessageBox.Show(owner, $"The project monitor could not be created.\r\n\r\n{ex.Message}", "New Project Monitor", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private static void ShowGitSettings(IWin32Window owner, LocalDatabase database)
