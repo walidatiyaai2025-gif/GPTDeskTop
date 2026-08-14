@@ -56,6 +56,13 @@ The project-monitor surface is **Projects Hub**.
 ### GitHub UI
 `GitHubIntegrationControl` is constructed only inside `ProjectMonitorUiBootstrap.ShowGitSettings`, which is reached only when first-time/missing/invalid repository credentials require operator action. Silent GitHub preflight uses stored credentials without constructing GitHub UI.
 
+## Task evidence
+
+- UISTART-003: duplicate dead navigation bootstrap removed.
+- UISTART-004: legacy compact `Monitors` navigation removed by the single Projects owner.
+- UISTART-006: Projects dashboard construction verified lazy and protected by regression test.
+- UISTART-007: GitHub control construction verified lazy and protected by regression test.
+
 ## Remaining startup/UI work
 
 1. Defer Development Plan / Runtime Health / Support / History visual controls until first operator activation where runtime contracts permit it.
