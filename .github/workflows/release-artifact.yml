@@ -68,6 +68,14 @@ jobs:
           path: Dist/
           if-no-files-found: error
 
+      - name: Upload setup-only artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-Setup-Only
+          path: Dist/GPTDeskTop-Setup.exe
+          if-no-files-found: error
+          compression-level: 0
+
       - name: Publish GitHub Release
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         shell: pwsh
