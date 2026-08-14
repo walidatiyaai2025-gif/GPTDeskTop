@@ -5,15 +5,29 @@ namespace GPTDeskTop.Services;
 
 public sealed class GitHubApiProbeService
 {
+    private const int PageSize = 100;
+    private const int MaxRepositoryPages = 20;
+    private const int MaxBranchPages = 100;
+    private readonly HttpMessageHandler? _httpMessageHandler;
+
+    public GitHubApiProbeService(HttpMessageHandler? httpMessageHandler = null)
+    {
+        _httpMessageHandler = httpMessageHandler;
+    }
+
     public async Task<IReadOnlyList<GitHubRepositoryInfo>> ListRepositoriesAsync(string token, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("GitHub token is required.");
         using var client = CreateClient(token);
         var repos = new List<GitHubRepositoryInfo>();
-        for (var page = 1; page <= 20; page++)
+        for (var page = 1; page <= MaxRepositoryPages; page++)
         {
-            using var doc = await GetJsonAsync(client, $"user/repos?per_page=100&page={page}&affiliation=owner,collaborator,organization_member&sort=full_name", cancellationToken);
+            using var doc = await GetJsonAsync(
+                client,
+                $"user/repos?per_page={PageSize}&page={page}&affiliation=owner,collaborator,organization_member&sort=full_name",
+                cancellationToken);
             if (doc.RootElement.ValueKind != JsonValueKind.Array) break;
+
             var count = 0;
             foreach (var item in doc.RootElement.EnumerateArray())
             {
@@ -24,14 +38,21 @@ public sealed class GitHubApiProbeService
                 var isPrivate = item.TryGetProperty("private", out var p) && p.GetBoolean();
                 repos.Add(new GitHubRepositoryInfo(fullName, defaultBranch, isPrivate));
             }
-            if (count < 100) break;
+
+            if (count < PageSize) break;
         }
-        return repos.DistinctBy(x => x.FullName, StringComparer.OrdinalIgnoreCase).OrderBy(x => x.FullName, StringComparer.OrdinalIgnoreCase).ToArray();
+
+        return repos
+            .DistinctBy(x => x.FullName, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x.FullName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     public async Task<GitHubConnectionResult> TestAsync(GitHubIntegrationSettings settings, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(settings.Token)) return new(false, "GitHub token is required.", null, null, false, Array.Empty<string>());
+        if (string.IsNullOrWhiteSpace(settings.Token))
+            return new(false, "GitHub token is required.", null, null, false, Array.Empty<string>());
+
         if (settings.AllAccessibleRepositories)
         {
             try
@@ -40,38 +61,103 @@ public sealed class GitHubApiProbeService
                 using var user = await GetJsonAsync(client, "user", cancellationToken);
                 var login = user.RootElement.TryGetProperty("login", out var loginNode) ? loginNode.GetString() : null;
                 var repos = await ListRepositoriesAsync(settings.Token, cancellationToken);
-                if (repos.Count == 0) return new(false, "Connected, but the token exposes no repositories.", login, null, false, Array.Empty<string>());
+                if (repos.Count == 0)
+                    return new(false, "Connected, but the token exposes no repositories.", login, null, false, Array.Empty<string>());
                 return new(true, $"Connected as {login ?? "GitHub user"}. {repos.Count} accessible repositories loaded.", login, null, false, Array.Empty<string>());
             }
-            catch (Exception ex) { return new(false, $"GitHub connection failed: {ex.Message}", null, null, false, Array.Empty<string>()); }
+            catch (Exception ex)
+            {
+                return new(false, $"GitHub connection failed: {ex.Message}", null, null, false, Array.Empty<string>());
+            }
         }
 
         var repositoryError = GitHubIntegrationValidator.ValidateRepository(settings.Repository);
-        if (repositoryError is not null) return new(false, repositoryError, null, null, false, Array.Empty<string>());
+        if (repositoryError is not null)
+            return new(false, repositoryError, null, null, false, Array.Empty<string>());
+
         var branchError = GitHubIntegrationValidator.ValidateBranch(settings.Branch);
-        if (branchError is not null) return new(false, branchError, null, null, false, Array.Empty<string>());
+        if (branchError is not null)
+            return new(false, branchError, null, null, false, Array.Empty<string>());
+
         var (owner, repo) = GitHubIntegrationValidator.SplitRepository(settings.Repository);
         using var singleClient = CreateClient(settings.Token);
         try
         {
             using var user = await GetJsonAsync(singleClient, "user", cancellationToken);
             var login = user.RootElement.TryGetProperty("login", out var loginNode) ? loginNode.GetString() : null;
-            using var repoDoc = await GetJsonAsync(singleClient, $"repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}", cancellationToken);
-            var defaultBranch = repoDoc.RootElement.TryGetProperty("default_branch", out var defaultNode) ? defaultNode.GetString() : null;
+
+            using var repoDoc = await GetJsonAsync(
+                singleClient,
+                $"repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}",
+                cancellationToken);
+            var defaultBranch = repoDoc.RootElement.TryGetProperty("default_branch", out var defaultNode)
+                ? defaultNode.GetString()
+                : null;
             var isPrivate = repoDoc.RootElement.TryGetProperty("private", out var privateNode) && privateNode.GetBoolean();
-            using var branchesDoc = await GetJsonAsync(singleClient, $"repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}/branches?per_page=100", cancellationToken);
-            var branches = branchesDoc.RootElement.ValueKind == JsonValueKind.Array ? branchesDoc.RootElement.EnumerateArray().Select(x => x.TryGetProperty("name", out var n) ? n.GetString() : null).Where(x => !string.IsNullOrWhiteSpace(x)).Cast<string>().OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray() : Array.Empty<string>();
-            if (!branches.Contains(settings.Branch, StringComparer.Ordinal)) return new(false, $"Connected, but branch '{settings.Branch}' was not found.", login, defaultBranch, isPrivate, branches);
+
+            var branches = await ListBranchesAsync(singleClient, owner, repo, cancellationToken);
+            if (!branches.Contains(settings.Branch, StringComparer.Ordinal))
+                return new(false, $"Connected, but branch '{settings.Branch}' was not found.", login, defaultBranch, isPrivate, branches);
+
             return new(true, $"Connected as {login ?? "GitHub user"}. Repository and branch are accessible.", login, defaultBranch, isPrivate, branches);
         }
-        catch (HttpRequestException ex) { return new(false, $"GitHub connection failed: {ex.Message}", null, null, false, Array.Empty<string>()); }
-        catch (TaskCanceledException) { return new(false, "GitHub connection timed out.", null, null, false, Array.Empty<string>()); }
-        catch (Exception ex) { return new(false, $"GitHub validation failed: {ex.Message}", null, null, false, Array.Empty<string>()); }
+        catch (HttpRequestException ex)
+        {
+            return new(false, $"GitHub connection failed: {ex.Message}", null, null, false, Array.Empty<string>());
+        }
+        catch (TaskCanceledException)
+        {
+            return new(false, "GitHub connection timed out.", null, null, false, Array.Empty<string>());
+        }
+        catch (Exception ex)
+        {
+            return new(false, $"GitHub validation failed: {ex.Message}", null, null, false, Array.Empty<string>());
+        }
     }
 
-    private static HttpClient CreateClient(string token)
+    private async Task<IReadOnlyList<string>> ListBranchesAsync(
+        HttpClient client,
+        string owner,
+        string repo,
+        CancellationToken cancellationToken)
     {
-        var client = new HttpClient { BaseAddress = new Uri("https://api.github.com/"), Timeout = TimeSpan.FromSeconds(20) };
+        var branches = new List<string>();
+        var escapedOwner = Uri.EscapeDataString(owner);
+        var escapedRepo = Uri.EscapeDataString(repo);
+
+        for (var page = 1; page <= MaxBranchPages; page++)
+        {
+            using var branchesDoc = await GetJsonAsync(
+                client,
+                $"repos/{escapedOwner}/{escapedRepo}/branches?per_page={PageSize}&page={page}",
+                cancellationToken);
+            if (branchesDoc.RootElement.ValueKind != JsonValueKind.Array) break;
+
+            var count = 0;
+            foreach (var item in branchesDoc.RootElement.EnumerateArray())
+            {
+                count++;
+                var branch = item.TryGetProperty("name", out var nameNode) ? nameNode.GetString() : null;
+                if (!string.IsNullOrWhiteSpace(branch)) branches.Add(branch);
+            }
+
+            if (count < PageSize) break;
+        }
+
+        return branches
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private HttpClient CreateClient(string token)
+    {
+        var client = _httpMessageHandler is null
+            ? new HttpClient()
+            : new HttpClient(_httpMessageHandler, disposeHandler: false);
+        client.BaseAddress = new Uri("https://api.github.com/");
+        client.Timeout = TimeSpan.FromSeconds(20);
         client.DefaultRequestHeaders.UserAgent.ParseAdd("GPTDeskTop/2.0");
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
@@ -83,13 +169,23 @@ public sealed class GitHubApiProbeService
     {
         using var response = await client.GetAsync(path, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode) throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {ExtractGitHubMessage(body)}");
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {ExtractGitHubMessage(body)}");
         return JsonDocument.Parse(body);
     }
 
     private static string ExtractGitHubMessage(string body)
     {
-        try { using var doc = JsonDocument.Parse(body); if (doc.RootElement.TryGetProperty("message", out var node)) return node.GetString() ?? "GitHub API error"; } catch { }
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("message", out var node))
+                return node.GetString() ?? "GitHub API error";
+        }
+        catch
+        {
+        }
+
         return "GitHub API error";
     }
 }
