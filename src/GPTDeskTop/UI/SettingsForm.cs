@@ -152,7 +152,7 @@ public sealed class SettingsForm : Form
         var layout = CreateSettingsLayout(8);
         AddSectionTitle(layout, 0, "Desktop notifications", "Control how long notifications remain visible and whether an operator sound is played.");
         AddRow(layout, 2, "Balloon duration", _notificationDuration, "Display duration in seconds.");
-        AddRow(layout, 3, "Balloon sound", _soundType, "Windows notification sound used when sound is enabled.");
+        AddRow(layout, 3, "Balloon sound", _soundType, "Windows sound used for desktop notifications.");
         layout.Controls.Add(_soundEnabled, 0, 5);
         layout.SetColumnSpan(_soundEnabled, 2);
         page.Controls.Add(layout);
@@ -294,7 +294,10 @@ public sealed class SettingsForm : Form
     private void SetBusy(bool busy, string status)
     {
         _busy = busy;
-        _tabs.Enabled = !busy;
+        // Keep the Settings content tree continuously enabled. Busy state disables only mutating
+        // actions and uses status/wait-cursor feedback, so async I/O cannot trigger blank disabled
+        // TabControl painting or require a late Application.Idle repair pass.
+        _tabs.Enabled = true;
         _saveButton.Enabled = !busy;
         _exportBackupButton.Enabled = !busy;
         _importBackupButton.Enabled = !busy;
@@ -556,6 +559,7 @@ public sealed class SettingsForm : Form
                 MessageBoxIcon.Error);
         }
     }
+
     private bool EnsureConfigurationImportRuntimeSafe()
     {
         if (!_hasRunningMonitors()) return true;
@@ -569,6 +573,4 @@ public sealed class SettingsForm : Form
             MessageBoxIcon.Warning);
         return false;
     }
-
-
 }
