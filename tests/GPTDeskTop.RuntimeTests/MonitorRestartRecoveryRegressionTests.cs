@@ -24,9 +24,11 @@ public sealed class MonitorRestartRecoveryRegressionTests
 
         var source = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
         Assert.Contains(
-            "if (!requireNewTurn && string.Equals(before.LastText, expected, StringComparison.Ordinal)) return true;",
+            "MonitorDeliveryRecoveryPolicy.CanReuseMatchingUserTailAsReceipt",
             source,
             StringComparison.Ordinal);
+        Assert.Contains("deliveryState.AssistantCount", source, StringComparison.Ordinal);
+        Assert.Contains("deliveryState.IsGenerating", source, StringComparison.Ordinal);
         Assert.Contains(
             "current.Count > before.Count && string.Equals(current.LastText, expected, StringComparison.Ordinal)",
             source,
