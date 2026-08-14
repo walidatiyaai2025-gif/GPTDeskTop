@@ -7,6 +7,8 @@ public sealed record NewChatMonitorWorkflowResult(SavedMonitor Monitor, ChromeTa
 
 public sealed class NewChatMonitorWorkflowService
 {
+    private sealed record FreshChatContext(ChromeTab OpenedTab, HashSet<string> PreexistingTargetIds);
+
     private readonly ChromeDevToolsService _chrome;
     private readonly ChatGptMonitorService _monitor;
     private readonly LocalDatabase _database;
@@ -37,14 +39,18 @@ public sealed class NewChatMonitorWorkflowService
         ChromeTab? openedTab = null;
         try
         {
-            openedTab = await CreateFreshChatTabAsync(cancellationToken).ConfigureAwait(false);
+            var freshChat = await CreateFreshChatTabAsync(cancellationToken).ConfigureAwait(false);
+            openedTab = freshChat.OpenedTab;
             var sent = await SendInitialMessageVerifiedAsync(openedTab, initialChatMessage, cancellationToken).ConfigureAwait(false);
 
             // The first send normally navigates ChatGPT from the new-chat shell to /c/{conversation-id}.
-            // A CDP target can therefore be valid enough to accept the click but stale when the receipt
-            // is read. Resolve the stable conversation and verify the SAME user message there before
-            // declaring failure. requireNewTurn:false prevents a duplicate send when the message already landed.
-            var stableTab = await ResolveStableConversationAsync(openedTab, cancellationToken).ConfigureAwait(false);
+            // ChatGPT can also replace the CDP target during that transition. Resolve either the original
+            // target after it becomes stable or the one unambiguous stable target that appeared after this
+            // workflow started. The baseline target set prevents attaching to an older conversation.
+            var stableTab = await ResolveStableConversationAsync(
+                openedTab,
+                freshChat.PreexistingTargetIds,
+                cancellationToken).ConfigureAwait(false);
             if (!sent && stableTab is not null)
             {
                 sent = await _chrome.SendChatMessageVerifiedAsync(
@@ -57,7 +63,10 @@ public sealed class NewChatMonitorWorkflowService
             if (!sent)
                 throw new InvalidOperationException("The initial ChatGPT message could not be verified after stable-conversation recovery. The new tab was kept open for inspection and no duplicate monitor was created.");
 
-            stableTab ??= await ResolveStableConversationAsync(openedTab, cancellationToken).ConfigureAwait(false);
+            stableTab ??= await ResolveStableConversationAsync(
+                openedTab,
+                freshChat.PreexistingTargetIds,
+                cancellationToken).ConfigureAwait(false);
             if (stableTab is null)
                 throw new InvalidOperationException("The new ChatGPT target did not expose a stable conversation URL after verified delivery. No monitor was created.");
 
@@ -102,13 +111,17 @@ public sealed class NewChatMonitorWorkflowService
         }
     }
 
-    private async Task<ChromeTab> CreateFreshChatTabAsync(CancellationToken cancellationToken)
+    private async Task<FreshChatContext> CreateFreshChatTabAsync(CancellationToken cancellationToken)
     {
         try
         {
             var existingTabs = await _chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
             if (existingTabs.Count > 0)
-                return await _chrome.CreateNewChatTabAsync(cancellationToken).ConfigureAwait(false);
+            {
+                var baseline = existingTabs.Select(tab => tab.Id).ToHashSet(StringComparer.Ordinal);
+                var opened = await _chrome.CreateNewChatTabAsync(cancellationToken).ConfigureAwait(false);
+                return new FreshChatContext(opened, baseline);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException && ChromeTransportFailureClassifier.IsTransient(ex))
         {
@@ -129,7 +142,11 @@ public sealed class NewChatMonitorWorkflowService
             {
                 var tabs = await _chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
                 if (tabs.Count > 0)
-                    return await _chrome.CreateNewChatTabAsync(cancellationToken).ConfigureAwait(false);
+                {
+                    var baseline = tabs.Select(tab => tab.Id).ToHashSet(StringComparer.Ordinal);
+                    var opened = await _chrome.CreateNewChatTabAsync(cancellationToken).ConfigureAwait(false);
+                    return new FreshChatContext(opened, baseline);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -192,6 +209,7 @@ public sealed class NewChatMonitorWorkflowService
 
     private async Task<ChromeTab?> ResolveStableConversationAsync(
         ChromeTab openedTab,
+        IReadOnlySet<string> preexistingTargetIds,
         CancellationToken cancellationToken)
     {
         var deadline = DateTimeOffset.UtcNow.AddSeconds(20);
@@ -201,9 +219,9 @@ public sealed class NewChatMonitorWorkflowService
             try
             {
                 var tabs = await _chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
-                var current = tabs.FirstOrDefault(tab => string.Equals(tab.Id, openedTab.Id, StringComparison.Ordinal));
-                if (current is not null && RuntimeHealthPresentation.IsChatGptConversationUrl(current.Url))
-                    return current;
+                var stable = NewChatStableTargetSelector.Select(openedTab, preexistingTargetIds, tabs);
+                if (stable is not null)
+                    return stable;
             }
             catch (Exception ex) when (ex is not OperationCanceledException && ChromeTransportFailureClassifier.IsTransient(ex))
             {
