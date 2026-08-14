@@ -5,19 +5,37 @@ public sealed class ProjectsHubUxContractRegressionTests
     [Fact]
     public void OneProjectsHubReplacesUserFacingLegacyMonitorCrudNavigation()
     {
-        var consolidation = ReadSource("src", "GPTDeskTop", "UI", "ProjectsHubNavigationConsolidation.cs");
         var hub = ReadSource("src", "GPTDeskTop", "UI", "ProjectMonitorUiBootstrap.cs");
         var dashboard = ReadSource("src", "GPTDeskTop", "UI", "ProjectMonitorDashboardControl.cs");
+        var obsoleteConsolidation = RepositoryPath("src", "GPTDeskTop", "UI", "ProjectsHubNavigationConsolidation.cs");
 
-        Assert.Contains("FirstOrDefault(item => string.Equals(item.Text, \"Monitors\"", consolidation, StringComparison.Ordinal);
-        Assert.Contains("root.DropDownItems.Remove(obsoleteMonitorMenu);", consolidation, StringComparison.Ordinal);
-        Assert.Contains("new ToolStripMenuItem(\"Projects Hub\")", consolidation, StringComparison.Ordinal);
-        Assert.Contains("Tag = projectsButton", consolidation, StringComparison.Ordinal);
-        Assert.Contains("InvokeButton(projectsButton)", consolidation, StringComparison.Ordinal);
-
-        Assert.Contains("Any(b => string.Equals(b.Text, \"Projects\"", hub, StringComparison.Ordinal);
+        Assert.False(File.Exists(obsoleteConsolidation));
+        Assert.Contains("FirstOrDefault(item => string.Equals(item.Text, \"Monitors\"", hub, StringComparison.Ordinal);
+        Assert.Contains("root.DropDownItems.Remove(obsoleteMonitorMenu);", hub, StringComparison.Ordinal);
+        Assert.Contains("new ToolStripMenuItem(\"Projects Hub\")", hub, StringComparison.Ordinal);
+        Assert.Contains("Tag = projectsButton", hub, StringComparison.Ordinal);
+        Assert.Contains("InvokeButton(projectsButton)", hub, StringComparison.Ordinal);
+        Assert.Contains("EnsureProjectsButton", hub, StringComparison.Ordinal);
         Assert.Contains("private static ProjectMonitorDashboardForm? _dashboardForm", hub, StringComparison.Ordinal);
         Assert.Contains("Text = \"New Project Monitor\"", dashboard, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProjectsAndGitHubHeavyUiRemainLazyUntilOperatorOpensThem()
+    {
+        var program = ReadSource("src", "GPTDeskTop", "Program.cs");
+        var hub = ReadSource("src", "GPTDeskTop", "UI", "ProjectMonitorUiBootstrap.cs");
+
+        Assert.DoesNotContain("new ProjectMonitorDashboardForm", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new GitHubIntegrationControl", program, StringComparison.Ordinal);
+
+        var showProjectsIndex = hub.IndexOf("private static void ShowProjectsHub", StringComparison.Ordinal);
+        var dashboardCtorIndex = hub.IndexOf("new ProjectMonitorDashboardForm", StringComparison.Ordinal);
+        Assert.True(showProjectsIndex >= 0 && dashboardCtorIndex > showProjectsIndex);
+
+        var showGitIndex = hub.IndexOf("private static void ShowGitSettings", StringComparison.Ordinal);
+        var githubCtorIndex = hub.IndexOf("new GitHubIntegrationControl", StringComparison.Ordinal);
+        Assert.True(showGitIndex >= 0 && githubCtorIndex > showGitIndex);
     }
 
     [Fact]
