@@ -5,7 +5,7 @@ namespace GPTDeskTop.Services;
 /// generating or while the editor is unavailable. Preparation and submission are deliberately
 /// separate gates because ChatGPT normally keeps the Send button disabled while the composer is
 /// empty; automation may prepare text only after the editor/generation gate is clear, then must
-/// pass the stricter send-enabled gate before any click/Enter mutation.
+/// pass the stricter send-enabled gate before any click mutation.
 /// </summary>
 public static class ChatComposerInterlockPolicy
 {
@@ -15,16 +15,16 @@ public static class ChatComposerInterlockPolicy
         bool editorEnabled,
         bool hasRenderedError)
     {
-        if (hasRenderedError)
-            return ComposerAutomationDecision.DeferForRenderedError;
+        var decision = hasRenderedError
+            ? ComposerAutomationDecision.DeferForRenderedError
+            : isGenerating
+                ? ComposerAutomationDecision.DeferWhileGenerating
+                : !editorPresent || !editorEnabled
+                    ? ComposerAutomationDecision.DeferUntilEditorReady
+                    : ComposerAutomationDecision.ReadyToPrepare;
 
-        if (isGenerating)
-            return ComposerAutomationDecision.DeferWhileGenerating;
-
-        if (!editorPresent || !editorEnabled)
-            return ComposerAutomationDecision.DeferUntilEditorReady;
-
-        return ComposerAutomationDecision.ReadyToPrepare;
+        ChatComposerDecisionDiagnostics.Record(decision);
+        return decision;
     }
 
     public static ComposerAutomationDecision DecideBeforeSubmit(
@@ -39,10 +39,12 @@ public static class ChatComposerInterlockPolicy
         if (preparation != ComposerAutomationDecision.ReadyToPrepare)
             return preparation;
 
-        if (!sendButtonPresent || !sendButtonEnabled)
-            return ComposerAutomationDecision.DeferUntilSendReady;
+        var decision = !sendButtonPresent || !sendButtonEnabled
+            ? ComposerAutomationDecision.DeferUntilSendReady
+            : ComposerAutomationDecision.ReadyToSend;
 
-        return ComposerAutomationDecision.ReadyToSend;
+        ChatComposerDecisionDiagnostics.Record(decision);
+        return decision;
     }
 
     public static ComposerAutomationDecision Decide(
@@ -54,6 +56,46 @@ public static class ChatComposerInterlockPolicy
         bool hasRenderedError)
         => DecideBeforeSubmit(isGenerating, editorPresent, editorEnabled, sendButtonPresent, sendButtonEnabled, hasRenderedError);
 }
+
+/// <summary>
+/// Lightweight runtime diagnostics for composer gating. No prompt or conversation text is ever
+/// recorded here; only the latest readiness decision, a stable reason code and timestamp.
+/// </summary>
+public static class ChatComposerDecisionDiagnostics
+{
+    private static readonly object Sync = new();
+    private static ComposerDecisionSnapshot _last = new(
+        ComposerAutomationDecision.DeferUntilEditorReady,
+        "not-observed",
+        DateTimeOffset.MinValue);
+
+    public static ComposerDecisionSnapshot Last
+    {
+        get { lock (Sync) return _last; }
+    }
+
+    internal static void Record(ComposerAutomationDecision decision)
+    {
+        var reason = decision switch
+        {
+            ComposerAutomationDecision.ReadyToPrepare => "editor-ready",
+            ComposerAutomationDecision.ReadyToSend => "send-ready",
+            ComposerAutomationDecision.DeferWhileGenerating => "chatgpt-generating",
+            ComposerAutomationDecision.DeferUntilEditorReady => "editor-not-ready",
+            ComposerAutomationDecision.DeferUntilSendReady => "send-not-ready",
+            ComposerAutomationDecision.DeferForRenderedError => "rendered-error",
+            _ => "unknown"
+        };
+
+        lock (Sync)
+            _last = new ComposerDecisionSnapshot(decision, reason, DateTimeOffset.UtcNow);
+    }
+}
+
+public sealed record ComposerDecisionSnapshot(
+    ComposerAutomationDecision Decision,
+    string Reason,
+    DateTimeOffset ObservedAtUtc);
 
 public enum ComposerAutomationDecision
 {
