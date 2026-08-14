@@ -3,8 +3,10 @@ using System.Runtime.CompilerServices;
 namespace GPTDeskTop.UI;
 
 /// <summary>
-/// Hooks SettingsForm once and stabilizes its tab surface after the async settings load finishes.
-/// This intentionally avoids the previous per-idle repaint loop, which could cause visible blinking.
+/// Keeps the Settings TabControl enabled while asynchronous settings I/O is running.
+/// Disabling a WinForms TabControl can hand child painting to the disabled visual-style path,
+/// which caused the visible blank/flicker regression on some Windows/DPI combinations.
+/// Busy state is represented by the status text/cursor and action buttons instead.
 /// </summary>
 internal static class SettingsContentRenderRecoveryBootstrap
 {
@@ -28,120 +30,29 @@ internal static class SettingsContentRenderRecoveryBootstrap
 
         var state = States.GetValue(form, _ => new RenderState());
         if (state.Hooked) return;
-        state.Hooked = true;
 
         var tabs = Descendants(form).OfType<TabControl>().FirstOrDefault();
-        var status = Descendants(form).OfType<Label>()
-            .FirstOrDefault(label => label.AccessibleRole == AccessibleRole.StatusBar);
-        if (tabs is null || status is null) return;
+        if (tabs is null) return;
 
-        status.TextChanged += (_, _) =>
-        {
-            if (IsLoaded(status.Text))
-                ScheduleOneShotStabilization(form, tabs, state);
-        };
+        state.Hooked = true;
 
-        tabs.EnabledChanged += (_, _) =>
-        {
-            if (tabs.Enabled && IsLoaded(status.Text))
-                ScheduleOneShotStabilization(form, tabs, state);
-        };
+        // Root fix: never let the settings content surface enter WinForms' disabled TabControl
+        // painting path. SetBusy still disables Save/Import/Export and updates the wait cursor.
+        tabs.EnabledChanged += (_, _) => KeepSettingsTabsEnabled(tabs);
+        KeepSettingsTabsEnabled(tabs);
 
         form.VisibleChanged += (_, _) =>
         {
-            if (!form.Visible) return;
-            state.Stabilized = false;
-            if (IsLoaded(status.Text))
-                ScheduleOneShotStabilization(form, tabs, state);
+            if (form.Visible)
+                KeepSettingsTabsEnabled(tabs);
         };
-
-        if (IsLoaded(status.Text))
-            ScheduleOneShotStabilization(form, tabs, state);
     }
 
-    private static bool IsLoaded(string? status)
-        => status?.StartsWith("Settings loaded", StringComparison.OrdinalIgnoreCase) == true;
-
-    private static void ScheduleOneShotStabilization(SettingsForm form, TabControl tabs, RenderState state)
+    private static void KeepSettingsTabsEnabled(TabControl tabs)
     {
-        if (state.Scheduled || state.Stabilized || form.IsDisposed || form.Disposing) return;
-        state.Scheduled = true;
-
-        // Run after the current async-load/UI-style callbacks have drained. A second BeginInvoke
-        // keeps this behind presentation hooks without introducing a timer or a recurring repaint.
-        form.BeginInvoke(new Action(() =>
-        {
-            if (form.IsDisposed || form.Disposing) return;
-            form.BeginInvoke(new Action(() =>
-            {
-                state.Scheduled = false;
-                if (form.IsDisposed || form.Disposing || state.Stabilized) return;
-                StabilizeLoadedSettings(form, tabs);
-                state.Stabilized = true;
-            }));
-        }));
+        if (tabs.IsDisposed || tabs.Disposing || tabs.Enabled) return;
+        tabs.Enabled = true;
     }
-
-    private static void StabilizeLoadedSettings(SettingsForm form, TabControl tabs)
-    {
-        form.SuspendLayout();
-        tabs.SuspendLayout();
-        try
-        {
-            tabs.Visible = true;
-            tabs.Enabled = true;
-            tabs.ForeColor = FluentTheme.Text;
-            if (tabs.TabPages.Count > 0 && tabs.SelectedIndex < 0)
-                tabs.SelectedIndex = 0;
-
-            foreach (TabPage page in tabs.TabPages)
-            {
-                page.UseVisualStyleBackColor = false;
-                page.Visible = true;
-                page.BackColor = FluentTheme.Surface;
-                page.ForeColor = FluentTheme.Text;
-
-                foreach (var layout in Descendants(page).OfType<TableLayoutPanel>())
-                {
-                    layout.Visible = true;
-                    layout.BackColor = FluentTheme.Surface;
-                    layout.ForeColor = FluentTheme.Text;
-                }
-
-                foreach (var label in Descendants(page).OfType<Label>())
-                {
-                    label.Visible = true;
-                    if (label.ForeColor == label.BackColor || IsSemanticStatusSurface(label.ForeColor))
-                        label.ForeColor = label.Font.Bold ? FluentTheme.Text : FluentTheme.Muted;
-                }
-
-                foreach (var input in Descendants(page).Where(IsSettingsInput))
-                    input.Visible = true;
-            }
-        }
-        finally
-        {
-            tabs.ResumeLayout(performLayout: true);
-            form.ResumeLayout(performLayout: true);
-        }
-
-        // Exactly one invalidation after load. Do not call Update/Refresh in an idle loop.
-        tabs.Invalidate(invalidateChildren: true);
-        form.Invalidate(invalidateChildren: true);
-    }
-
-    private static bool IsSettingsInput(Control control)
-        => control is TextBoxBase
-           or NumericUpDown
-           or ComboBox
-           or CheckBox
-           or Button;
-
-    private static bool IsSemanticStatusSurface(Color color)
-        => color == FluentTheme.SuccessSubtle
-           || color == FluentTheme.InfoSubtle
-           || color == FluentTheme.WarningSubtle
-           || color == FluentTheme.DangerSubtle;
 
     private static IEnumerable<Control> Descendants(Control root)
     {
@@ -156,7 +67,5 @@ internal static class SettingsContentRenderRecoveryBootstrap
     private sealed class RenderState
     {
         internal bool Hooked { get; set; }
-        internal bool Scheduled { get; set; }
-        internal bool Stabilized { get; set; }
     }
 }
