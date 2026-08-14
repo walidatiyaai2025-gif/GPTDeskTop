@@ -12,36 +12,53 @@ internal static class ProjectMonitorUiBootstrap
 
     [ModuleInitializer]
     internal static void Initialize()
+        => Application.Idle += OnApplicationIdle;
+
+    private static void OnApplicationIdle(object? sender, EventArgs e)
     {
-        Application.Idle += (_, _) => TryInstallProjectsEntry();
+        if (TryInstallProjectsEntry())
+            Application.Idle -= OnApplicationIdle;
     }
 
-    private static void TryInstallProjectsEntry()
+    private static bool TryInstallProjectsEntry()
     {
+        var foundMain = false;
+        var allReady = true;
         foreach (var main in Application.OpenForms.OfType<MainForm>().ToArray())
         {
+            foundMain = true;
             try
             {
-                if (!main.IsHandleCreated || main.IsDisposed || main.Disposing || !MainInjected.Add(main.Handle))
+                if (!main.IsHandleCreated || main.IsDisposed || main.Disposing)
+                    continue;
+                if (MainInjected.Contains(main.Handle))
                     continue;
 
                 ConfigureRuntimeContext(main);
-                InjectProjectsButton(main);
+                if (!InjectProjectsButton(main))
+                {
+                    allReady = false;
+                    continue;
+                }
+                MainInjected.Add(main.Handle);
             }
             catch (Exception ex)
             {
+                allReady = false;
                 _ = ExceptionLogService.LogAsync(ex, "ProjectMonitorUiBootstrap.InstallProjectsEntry");
             }
         }
+
+        return foundMain && allReady;
     }
 
-    private static void InjectProjectsButton(MainForm main)
+    private static bool InjectProjectsButton(MainForm main)
     {
         var settingsButton = FindDescendants(main)
             .OfType<Button>()
             .FirstOrDefault(b => string.Equals(b.Text, "Settings", StringComparison.OrdinalIgnoreCase));
-        if (settingsButton?.Parent is null) return;
-        if (FindDescendants(main).OfType<Button>().Any(b => string.Equals(b.Text, "Projects", StringComparison.OrdinalIgnoreCase))) return;
+        if (settingsButton?.Parent is null) return false;
+        if (FindDescendants(main).OfType<Button>().Any(b => string.Equals(b.Text, "Projects", StringComparison.OrdinalIgnoreCase))) return true;
 
         var button = new Button
         {
@@ -54,6 +71,7 @@ internal static class ProjectMonitorUiBootstrap
         settingsButton.Parent.Controls.Add(button);
         var settingsIndex = settingsButton.Parent.Controls.GetChildIndex(settingsButton);
         settingsButton.Parent.Controls.SetChildIndex(button, Math.Max(0, settingsIndex));
+        return true;
     }
 
     private static void ConfigureRuntimeContext(MainForm main)
