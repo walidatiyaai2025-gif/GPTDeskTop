@@ -8,46 +8,49 @@ namespace GPTDeskTop.UI;
 internal static class ProjectMonitorUiBootstrap
 {
     private static readonly HashSet<nint> MainInjected = new();
-    private static readonly HashSet<nint> SettingsInjected = new();
     private static ProjectMonitorDashboardForm? _dashboardForm;
 
     [ModuleInitializer]
     internal static void Initialize()
     {
-        Application.Idle += (_, _) => TryInject();
+        Application.Idle += (_, _) => TryInstallProjectsEntry();
     }
 
-    private static void TryInject()
+    private static void TryInstallProjectsEntry()
     {
-        foreach (Form form in Application.OpenForms.Cast<Form>().ToArray())
+        foreach (var main in Application.OpenForms.OfType<MainForm>().ToArray())
         {
             try
             {
-                if (form is MainForm main && main.IsHandleCreated && !main.IsDisposed && MainInjected.Add(main.Handle))
-                    InjectMainButton(main);
-                else if (form is SettingsForm settings && settings.IsHandleCreated && !settings.IsDisposed && SettingsInjected.Add(settings.Handle))
-                    InjectSettingsTab(settings);
+                if (!main.IsHandleCreated || main.IsDisposed || main.Disposing || !MainInjected.Add(main.Handle))
+                    continue;
+
+                ConfigureRuntimeContext(main);
+                InjectProjectsButton(main);
             }
             catch (Exception ex)
             {
-                _ = ExceptionLogService.LogAsync(ex, "ProjectMonitorUiBootstrap.Inject");
+                _ = ExceptionLogService.LogAsync(ex, "ProjectMonitorUiBootstrap.InstallProjectsEntry");
             }
         }
     }
 
-    private static void InjectMainButton(MainForm main)
+    private static void InjectProjectsButton(MainForm main)
     {
-        ConfigureRuntimeContext(main);
-
         var settingsButton = FindDescendants(main)
             .OfType<Button>()
             .FirstOrDefault(b => string.Equals(b.Text, "Settings", StringComparison.OrdinalIgnoreCase));
         if (settingsButton?.Parent is null) return;
-        if (FindDescendants(main).OfType<Button>().Any(b => string.Equals(b.Text, "Project Monitor", StringComparison.OrdinalIgnoreCase))) return;
+        if (FindDescendants(main).OfType<Button>().Any(b => string.Equals(b.Text, "Projects", StringComparison.OrdinalIgnoreCase))) return;
 
-        var button = new Button { Text = "Project Monitor", AutoSize = true, AccessibleName = "Open project monitor dashboard" };
+        var button = new Button
+        {
+            Text = "Projects",
+            AutoSize = true,
+            AccessibleName = "Open Projects Hub"
+        };
         FluentTheme.StyleButton(button, primary: true);
-        button.Click += (_, _) => ShowDashboard(main);
+        button.Click += (_, _) => ShowProjectsHub(main);
         settingsButton.Parent.Controls.Add(button);
         var settingsIndex = settingsButton.Parent.Controls.GetChildIndex(settingsButton);
         settingsButton.Parent.Controls.SetChildIndex(button, Math.Max(0, settingsIndex));
@@ -63,32 +66,30 @@ internal static class ProjectMonitorUiBootstrap
             ProjectExecutionRuntimeContext.Configure(database, monitor, chrome);
     }
 
-    private static void InjectSettingsTab(SettingsForm settings)
-    {
-        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        var tabs = typeof(SettingsForm).GetField("_tabs", flags)?.GetValue(settings) as TabControl;
-        if (tabs is null || tabs.TabPages.Cast<TabPage>().Any(p => string.Equals(p.Text, "Project Monitor", StringComparison.OrdinalIgnoreCase))) return;
-        var page = new TabPage("Project Monitor") { BackColor = FluentTheme.Background, Padding = new Padding(8) };
-        var dashboard = new ProjectMonitorDashboardControl { Dock = DockStyle.Fill };
-        page.Controls.Add(dashboard);
-        tabs.TabPages.Add(page);
-        _ = dashboard.RefreshAsync();
-    }
-
-    private static void ShowDashboard(IWin32Window owner)
+    private static void ShowProjectsHub(MainForm owner)
     {
         if (_dashboardForm is null || _dashboardForm.IsDisposed)
         {
-            _dashboardForm = new ProjectMonitorDashboardForm();
+            _dashboardForm = new ProjectMonitorDashboardForm(() => StartNewProjectMonitorAsync(owner));
             _dashboardForm.FormClosed += (_, _) => _dashboardForm = null;
             _dashboardForm.Show(owner);
         }
         else
         {
-            if (_dashboardForm.WindowState == FormWindowState.Minimized) _dashboardForm.WindowState = FormWindowState.Normal;
+            if (_dashboardForm.WindowState == FormWindowState.Minimized)
+                _dashboardForm.WindowState = FormWindowState.Normal;
             _dashboardForm.BringToFront();
             _dashboardForm.Activate();
         }
+    }
+
+    private static async Task StartNewProjectMonitorAsync(MainForm owner)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var method = typeof(MainForm).GetMethod("CreateNewChatMonitorAsync", flags)
+            ?? throw new MissingMethodException(nameof(MainForm), "CreateNewChatMonitorAsync");
+        if (method.Invoke(owner, null) is Task task)
+            await task;
     }
 
     private static IEnumerable<Control> FindDescendants(Control root)
@@ -96,7 +97,8 @@ internal static class ProjectMonitorUiBootstrap
         foreach (Control child in root.Controls)
         {
             yield return child;
-            foreach (var descendant in FindDescendants(child)) yield return descendant;
+            foreach (var descendant in FindDescendants(child))
+                yield return descendant;
         }
     }
 }
