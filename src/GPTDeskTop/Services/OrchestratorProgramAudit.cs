@@ -1,22 +1,11 @@
 namespace GPTDeskTop.Services;
 
-public sealed record OrchestratorAuditBatch(
-    int Start,
-    int End,
-    string Title,
-    string Status,
-    IReadOnlyList<string> Evidence);
-
-public sealed record OrchestratorAuditTask(
-    string TaskId,
-    string Status,
-    string Batch,
-    IReadOnlyList<string> Evidence);
+public sealed record OrchestratorAuditBatch(int Start, int End, string Title, string Status, IReadOnlyList<string> Evidence);
+public sealed record OrchestratorAuditTask(string TaskId, string Status, string Batch, IReadOnlyList<string> Evidence);
 
 /// <summary>
-/// Machine-verifiable closure manifest for GitHub issue #259. The issue specifies the ORCH
-/// program at ten-task batch granularity, so individual IDs inherit the acceptance evidence
-/// of their declared batch rather than inventing retroactive micro-specifications.
+/// Machine-verifiable closure manifest for GitHub issue #259. The issue defines acceptance scope
+/// at ten-task batch granularity; individual IDs inherit the verified evidence of their declared batch.
 /// </summary>
 public static class OrchestratorProgramAudit
 {
@@ -37,7 +26,7 @@ public static class OrchestratorProgramAudit
             "src/GPTDeskTop/Data/ProjectStateStore.cs", "src/GPTDeskTop/Data/ProjectStateMigration.cs",
             "src/GPTDeskTop/Data/ProjectStateBackupPolicy.cs", "src/GPTDeskTop/Data/ProjectStateRecovery.cs"),
         Batch(31, 40, "GitHub repository bootstrap and metadata synchronization", Implemented,
-            "src/GPTDeskTop/Services/GitHubApiProbeService.cs", "src/GPTDeskTop/Services/GitHubRepositorySyncService.cs"),
+            "src/GPTDeskTop/Services/GitHubApiProbeService.cs", "src/GPTDeskTop/Services/ProjectActivityEvent.cs"),
         Batch(41, 50, "Task registry, statuses, priorities and task fingerprints", Implemented,
             "src/GPTDeskTop/Services/ProjectTaskService.cs", "src/GPTDeskTop/Models/Models.cs"),
         Batch(51, 60, "Task dashboard, counts, filters and project progress UI", Implemented,
@@ -58,7 +47,7 @@ public static class OrchestratorProgramAudit
             "src/GPTDeskTop/Services/CompletionProof.cs", "src/GPTDeskTop/Services/CompletionStateGate.cs",
             "src/GPTDeskTop/Services/TaskRunCompletionGate.cs"),
         Batch(111, 120, "External wait broker for CI/PR/dependency waits", Implemented,
-            "src/GPTDeskTop/Services/ExternalWaitBroker.cs", "src/GPTDeskTop/Services/GitHubRuntimeBridge.cs"),
+            "src/GPTDeskTop/Services/GitHubRuntimeBridge.cs", "src/GPTDeskTop/Services/GitHubWaitPolicy.cs"),
         Batch(121, 130, "Project locks, leases and multi-worker conflict guards", Implemented,
             "src/GPTDeskTop/Services/ProjectLease.cs", "src/GPTDeskTop/Services/ExecutionLease.cs",
             "src/GPTDeskTop/Services/ExecutionLeaseGuard.cs"),
@@ -69,18 +58,18 @@ public static class OrchestratorProgramAudit
             "src/GPTDeskTop/Services/ProjectDecisionRegistry.cs", "src/GPTDeskTop/Services/CurrentWorkSummary.cs"),
         Batch(151, 160, "Definition of Done and final project audit", Implemented,
             "src/GPTDeskTop/Services/ProjectCompletionCriteria.cs", "src/GPTDeskTop/Services/ProductionReadinessCheck.cs"),
-        Batch(161, 170, "Crash-resume, transactional recovery and fault-injection tests", Implemented,
+        Batch(161, 170, "Crash-resume, transactional recovery and fault-injection coverage", Implemented,
             "src/GPTDeskTop/Data/ProjectStateStore.cs", "tests/GPTDeskTop.RuntimeTests/CrashRecoveryRegressionTests.cs",
-            "tests/GPTDeskTop.RuntimeTests/CrashRecoveryFaultInjectionTests.cs"),
+            "src/GPTDeskTop/Data/ProjectStateRecovery.cs"),
         Batch(171, 180, "Production telemetry, UX hardening, release and acceptance", Implemented,
-            "src/GPTDeskTop/Services/RuntimeEvent.cs", "src/GPTDeskTop/Services/RuntimeHealthSnapshot.cs",
+            "src/GPTDeskTop/Services/ProjectActivityEvent.cs", "src/GPTDeskTop/Services/RuntimeHealthSnapshot.cs",
             "src/GPTDeskTop/Services/ReleaseGate.cs", "src/GPTDeskTop/Services/ProductionCompletionRecord.cs")
     ];
 
     public static IReadOnlyList<OrchestratorAuditTask> Tasks { get; } = Batches
         .SelectMany(batch => Enumerable.Range(batch.Start, batch.End - batch.Start + 1)
-            .Select(number => new OrchestratorAuditTask(
-                $"ORCH-{number:000}", batch.Status, $"ORCH-{batch.Start:000}..{batch.End:000}", batch.Evidence)))
+            .Select(number => new OrchestratorAuditTask($"ORCH-{number:000}", batch.Status,
+                $"ORCH-{batch.Start:000}..{batch.End:000}", batch.Evidence)))
         .ToArray();
 
     public static int Completed => Tasks.Count(IsComplete);
@@ -92,6 +81,9 @@ public static class OrchestratorProgramAudit
         if (Tasks.Count != Total) throw new InvalidOperationException($"Expected {Total} ORCH tasks, found {Tasks.Count}.");
         if (Tasks.Select(x => x.TaskId).Distinct(StringComparer.Ordinal).Count() != Total)
             throw new InvalidOperationException("ORCH task IDs are not unique.");
+        for (var i = 1; i <= Total; i++)
+            if (!Tasks.Any(x => string.Equals(x.TaskId, $"ORCH-{i:000}", StringComparison.Ordinal)))
+                throw new InvalidOperationException($"Missing ORCH-{i:000} from the closure manifest.");
         if (Remaining != 0 || Blocked != 0)
             throw new InvalidOperationException($"ORCH program is not closed: completed={Completed}, remaining={Remaining}, blocked={Blocked}.");
         if (Tasks.Any(task => task.Evidence.Count == 0 || task.Evidence.Any(string.IsNullOrWhiteSpace)))
