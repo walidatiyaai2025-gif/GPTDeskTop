@@ -24,17 +24,43 @@ internal sealed record BrowserProcessDiagnostics(
     int TitledWindows,
     int Responding);
 
+internal sealed record RuntimeInspectorComposerDiagnostics(
+    string Decision,
+    string Reason,
+    DateTimeOffset ObservedAtUtc);
+
+internal sealed record RuntimeInspectorUiOverflow(
+    string FormScope,
+    string ParentType,
+    string ChildType,
+    int Left,
+    int Top,
+    int Right,
+    int Bottom);
+
+internal sealed record RuntimeInspectorUiDiagnostics(
+    int FormsCaptured,
+    int ControlsCaptured,
+    int VisibleControls,
+    int VisibleOverflowCount,
+    IReadOnlyList<RuntimeInspectorUiOverflow> VisibleOverflows);
+
 internal sealed record FieldRuntimeSnapshot(
     DateTimeOffset CapturedUtc,
     object Build,
     IReadOnlyList<object> Monitors,
     IReadOnlyList<object> Browsers,
     BrowserProcessDiagnostics BrowserDiagnostics,
+    RuntimeInspectorComposerDiagnostics ComposerDiagnostics,
+    RuntimeInspectorUiDiagnostics UiDiagnostics,
     IReadOnlyList<object> Ui,
     IReadOnlyList<object> Workers);
 
 internal static class RuntimeInspectorService
 {
+    private const int MaxOverflowRows = 25;
+    private const int OverflowToleranceLogicalPixels = 2;
+
     public static FieldRuntimeSnapshot Capture(Form owner, ChatGptMonitorService monitor)
     {
         var assembly = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
@@ -67,25 +93,64 @@ internal static class RuntimeInspectorService
             TitledWindows: browserRows.Count(row => row.HasMainWindow || !string.IsNullOrWhiteSpace(row.MainWindowTitle)),
             Responding: browserRows.Count(row => row.Responding));
 
+        var composerSnapshot = ChatComposerDecisionDiagnostics.Last;
+        var composerDiagnostics = new RuntimeInspectorComposerDiagnostics(
+            composerSnapshot.Decision.ToString(),
+            composerSnapshot.Reason,
+            composerSnapshot.ObservedAtUtc);
+
         var ui = new List<object>();
-        Walk(owner, 0, ui);
-        WalkToolStrips(owner, ui);
+        var overflows = new List<RuntimeInspectorUiOverflow>();
+        var controlsCaptured = 0;
+        var visibleControls = 0;
+        var forms = ResolveForms(owner);
+        for (var index = 0; index < forms.Count; index++)
+        {
+            var form = forms[index];
+            var formScope = ReferenceEquals(form, owner)
+                ? "MainForm"
+                : $"AuxiliaryForm#{index}:{form.GetType().Name}";
+            Walk(form, formScope, 0, ui, overflows, ref controlsCaptured, ref visibleControls);
+            WalkToolStrips(form, formScope, ui);
+        }
+
+        var uiDiagnostics = new RuntimeInspectorUiDiagnostics(
+            FormsCaptured: forms.Count,
+            ControlsCaptured: controlsCaptured,
+            VisibleControls: visibleControls,
+            VisibleOverflowCount: overflows.Count,
+            VisibleOverflows: overflows.Take(MaxOverflowRows).ToArray());
+
         var workers = monitors.Select(m => (object)new { Kind = "MonitorWorker", Snapshot = m }).ToArray();
-        return new FieldRuntimeSnapshot(DateTimeOffset.UtcNow, build, monitors, browsers, browserDiagnostics, ui, workers);
+        return new FieldRuntimeSnapshot(
+            DateTimeOffset.UtcNow,
+            build,
+            monitors,
+            browsers,
+            browserDiagnostics,
+            composerDiagnostics,
+            uiDiagnostics,
+            ui,
+            workers);
     }
 
-    public static string ToSanitizedJson(FieldRuntimeSnapshot snapshot) => JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+    public static string ToSanitizedJson(FieldRuntimeSnapshot snapshot)
+        => JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
 
     public static string Summary(FieldRuntimeSnapshot snapshot)
     {
         var build = JsonSerializer.Serialize(snapshot.Build);
         var browser = snapshot.BrowserDiagnostics;
+        var composer = snapshot.ComposerDiagnostics;
+        var ui = snapshot.UiDiagnostics;
         return $"GPTDeskTop Runtime Inspector\r\n" +
                $"Captured: {snapshot.CapturedUtc:O}\r\n" +
                $"Build: {build}\r\n" +
                $"Monitors: {snapshot.Monitors.Count}\r\n" +
                $"System browser processes: {browser.Total} (Chrome: {browser.Chrome}, Edge/WebView: {browser.EdgeOrWebView}, titled windows: {browser.TitledWindows})\r\n" +
                $"Browser scope: {browser.Scope} — {browser.OwnershipNote}\r\n" +
+               $"Composer gate: {composer.Reason} ({composer.Decision}) @ {composer.ObservedAtUtc:O}\r\n" +
+               $"UI forms: {ui.FormsCaptured} | visible controls: {ui.VisibleControls} | visible overflows: {ui.VisibleOverflowCount}\r\n" +
                $"UI controls: {snapshot.Ui.Count}\r\n";
     }
 
@@ -116,6 +181,30 @@ internal static class RuntimeInspectorService
         {
             try { Directory.Delete(temp, recursive: true); } catch { }
         }
+    }
+
+    private static IReadOnlyList<Form> ResolveForms(Form owner)
+    {
+        var forms = new List<Form>();
+        var seen = new HashSet<Form>(ReferenceEqualityComparer.Instance);
+
+        void Add(Form? form)
+        {
+            if (form is null || form.IsDisposed || form.Disposing || !seen.Add(form)) return;
+            forms.Add(form);
+        }
+
+        Add(owner);
+        foreach (var owned in owner.OwnedForms)
+            Add(owned);
+
+        foreach (Form form in Application.OpenForms.Cast<Form>().ToArray())
+        {
+            if (ReferenceEquals(form, owner) || ReferenceEquals(form.Owner, owner))
+                Add(form);
+        }
+
+        return forms;
     }
 
     private static IReadOnlyList<object> CaptureMonitorRuntime(ChatGptMonitorService monitor)
@@ -162,11 +251,22 @@ internal static class RuntimeInspectorService
         }
     }
 
-    private static void Walk(Control control, int depth, List<object> output)
+    private static void Walk(
+        Control control,
+        string formScope,
+        int depth,
+        List<object> output,
+        List<RuntimeInspectorUiOverflow> overflows,
+        ref int controlsCaptured,
+        ref int visibleControls)
     {
+        controlsCaptured++;
+        if (control.Visible) visibleControls++;
+
         output.Add(new
         {
             Kind = "Control",
+            FormScope = formScope,
             control.Name,
             Type = control.GetType().FullName,
             control.Visible,
@@ -175,25 +275,67 @@ internal static class RuntimeInspectorService
             Dpi = control.DeviceDpi,
             Depth = depth
         });
-        foreach (Control child in control.Controls) Walk(child, depth + 1, output);
+
+        foreach (Control child in control.Controls)
+        {
+            CaptureVisibleOverflow(control, child, formScope, overflows);
+            Walk(child, formScope, depth + 1, output, overflows, ref controlsCaptured, ref visibleControls);
+        }
     }
 
-    private static void WalkToolStrips(Control root, List<object> output)
+    private static void CaptureVisibleOverflow(
+        Control parent,
+        Control child,
+        string formScope,
+        List<RuntimeInspectorUiOverflow> output)
+    {
+        if (!parent.Visible || !child.Visible)
+            return;
+        if (parent is ScrollableControl scrollable && scrollable.AutoScroll)
+            return;
+
+        var bounds = child.Bounds;
+        var client = parent.ClientSize;
+        if (client.Width <= 0 || client.Height <= 0)
+            return;
+
+        var tolerance = Math.Max(
+            OverflowToleranceLogicalPixels,
+            (int)Math.Round(OverflowToleranceLogicalPixels * Math.Max(96, parent.DeviceDpi) / 96d));
+        var left = Math.Max(0, -bounds.Left);
+        var top = Math.Max(0, -bounds.Top);
+        var right = Math.Max(0, bounds.Right - client.Width);
+        var bottom = Math.Max(0, bounds.Bottom - client.Height);
+        if (left <= tolerance && top <= tolerance && right <= tolerance && bottom <= tolerance)
+            return;
+
+        output.Add(new RuntimeInspectorUiOverflow(
+            formScope,
+            parent.GetType().FullName ?? parent.GetType().Name,
+            child.GetType().FullName ?? child.GetType().Name,
+            left,
+            top,
+            right,
+            bottom));
+    }
+
+    private static void WalkToolStrips(Control root, string formScope, List<object> output)
     {
         foreach (var strip in DescendantsAndSelf(root).OfType<ToolStrip>())
         {
             foreach (ToolStripItem item in strip.Items)
-                WalkToolStripItem(item, depth: 0, output);
+                WalkToolStripItem(item, formScope, depth: 0, output);
         }
     }
 
-    private static void WalkToolStripItem(ToolStripItem item, int depth, List<object> output)
+    private static void WalkToolStripItem(ToolStripItem item, string formScope, int depth, List<object> output)
     {
         var owner = item.Owner;
         var bounds = item.Bounds;
         output.Add(new
         {
             Kind = "ToolStripItem",
+            FormScope = formScope,
             item.Name,
             item.Text,
             Type = item.GetType().FullName,
@@ -208,7 +350,7 @@ internal static class RuntimeInspectorService
 
         if (item is not ToolStripDropDownItem dropDown) return;
         foreach (ToolStripItem child in dropDown.DropDownItems)
-            WalkToolStripItem(child, depth + 1, output);
+            WalkToolStripItem(child, formScope, depth + 1, output);
     }
 
     private static IEnumerable<Control> DescendantsAndSelf(Control root)
