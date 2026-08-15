@@ -58,7 +58,7 @@ public sealed class OperatorWorkspaceV2RegressionTests
         Assert.DoesNotContain("SupportDiagnosticsControl", prerequisites, StringComparison.Ordinal);
         Assert.DoesNotContain("HistoryWorkspaceControl", prerequisites, StringComparison.Ordinal);
         Assert.Contains("SupportDiagnosticsControl? supportDiagnostics = null;", program, StringComparison.Ordinal);
-        Assert.Contains("SupportDiagnosticsControl EnsureSupportDiagnostics()", program, StringComparison.Ordinal);
+        Assert.Contains("void EnsureSupportDiagnostics()", program, StringComparison.Ordinal);
     }
 
     [Fact]
