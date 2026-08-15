@@ -24,7 +24,11 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
         Assert.True(generationCheck >= 0);
         Assert.True(responseRead > generationCheck);
         Assert.Contains(
-            "state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText };",
+            "state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, autoFollow:",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "state.autoFollow?.snapshot?.()",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -44,11 +48,11 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
         Assert.Contains(
-            "private const string ChatStateReadExpression = \"window.__gptDesktopChatStateCache?.version === 4 ? window.__gptDesktopChatStateCache.read() : null\";",
+            "private const string ChatStateReadExpression = \"window.__gptDesktopChatStateCache?.version === 5 ? window.__gptDesktopChatStateCache.read() : null\";",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
-            "state.observer = new MutationObserver(() => { state.dirty = true; });",
+            "state.observer = new MutationObserver(() => { state.dirty = true; state.autoFollow?.onMutation?.(); });",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -68,14 +72,18 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             source,
             StringComparison.Ordinal);
         Assert.Contains(
-            "value = await EvaluateAsync(tab, ChatStateInstallExpression, cancellationToken, false);",
+            "value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false);",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "private const string ChatStateInstallExpressionTemplate = \"\"\"",
             source,
             StringComparison.Ordinal);
 
         var readExpressionStart = source.IndexOf("private const string ChatStateReadExpression", StringComparison.Ordinal);
-        var installExpressionStart = source.IndexOf("private const string ChatStateInstallExpression", StringComparison.Ordinal);
+        var installExpressionStart = source.IndexOf("private const string ChatStateInstallExpressionTemplate", StringComparison.Ordinal);
         Assert.True(readExpressionStart >= 0 && installExpressionStart > readExpressionStart);
-        Assert.True(installExpressionStart - readExpressionStart < 260);
+        Assert.True(installExpressionStart - readExpressionStart < 280);
     }
 
     [Fact]
