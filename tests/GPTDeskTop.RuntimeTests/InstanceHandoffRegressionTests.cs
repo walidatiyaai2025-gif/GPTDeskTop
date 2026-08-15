@@ -68,7 +68,7 @@ public sealed class InstanceHandoffRegressionTests
         Assert.Contains("Environment.Exit(0);", method, StringComparison.Ordinal);
         Assert.DoesNotContain("CloseAllMonitorTabsAsync", method, StringComparison.Ordinal);
         Assert.DoesNotContain("Process.Kill", method, StringComparison.Ordinal);
-        Assert.Contains("in-progress ChatGPT generation alive", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("chrome.", method, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
