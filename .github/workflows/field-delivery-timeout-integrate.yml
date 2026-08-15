@@ -6,6 +6,7 @@ on:
       - agent/field-delivery-timeout-recovery
     paths:
       - 'scripts/apply-field-delivery-timeout-recovery.py'
+      - 'scripts/prepare-field-delivery-timeout-patch.py'
       - '.github/workflows/field-delivery-timeout-integrate.yml'
   workflow_dispatch:
 
@@ -20,6 +21,8 @@ jobs:
         with:
           ref: agent/field-delivery-timeout-recovery
           fetch-depth: 0
+      - name: Prepare deterministic selector
+        run: python scripts/prepare-field-delivery-timeout-patch.py
       - name: Apply FIELDERR integration
         run: python scripts/apply-field-delivery-timeout-recovery.py
       - name: Commit integrated source and regression tests
