@@ -162,14 +162,38 @@ public static class LastWorkingStateService
                     sendFollowUpWhenRecreated: true,
                     cancellationToken).ConfigureAwait(false);
 
+                // A recovered tab already receives one follow-up inside MonitorTabRecoveryService.
+                // The historical gap was the exact opposite path: when the saved conversation was
+                // already open, recovery returned it immediately and startup never issued the first
+                // continuation. Send exactly one verified NEW turn before starting the worker so a
+                // repeated tail such as "كمل" cannot be mistaken for a fresh receipt.
+                var startupFollowUpAttempted = recovery.Recreated || !string.IsNullOrWhiteSpace(savedMonitor.AutoReply);
+                var startupFollowUpSent = recovery.FollowUpSent;
+                if (!recovery.Recreated && !string.IsNullOrWhiteSpace(savedMonitor.AutoReply))
+                {
+                    startupFollowUpSent = await SendExistingTabStartupFollowUpAsync(
+                        chrome,
+                        database,
+                        savedMonitor,
+                        recovery.Tab,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                // Delivery failure/uncertainty must not prevent the monitor worker from resuming.
+                // If ChatGPT was still generating, the normal monitor loop observes the completed
+                // response later and continues from that fresh response without a blind resend.
                 await monitorService.StartMonitorAsync(savedMonitor, recovery.Tab).ConfigureAwait(false);
                 if (monitorService.IsMonitorRunning(savedMonitor.Id))
                 {
-                    var reason = !recovery.Recreated
-                        ? "PersistedWorkingState"
-                        : recovery.FollowUpSent
+                    var reason = recovery.Recreated
+                        ? startupFollowUpSent
                             ? "RecreatedTabAndFollowUpSent"
-                            : "RecreatedTabFollowUpFailed";
+                            : "RecreatedTabFollowUpFailed"
+                        : !startupFollowUpAttempted
+                            ? "PersistedWorkingStateNoFollowUpConfigured"
+                            : startupFollowUpSent
+                                ? "PersistedWorkingStateAndFollowUpSent"
+                                : "PersistedWorkingStateFollowUpDeferred";
                     outcomes.Add(new LastWorkingStateResumeOutcome(savedMonitor.Id, "Resumed", reason));
                 }
                 else
@@ -201,6 +225,61 @@ public static class LastWorkingStateService
 
         await PersistResumeDiagnosticsAsync(database, outcomes, cancellationToken).ConfigureAwait(false);
         return new LastWorkingStateResumeResult(outcomes.OrderBy(outcome => outcome.MonitorId).ToArray());
+    }
+
+    private static async Task<bool> SendExistingTabStartupFollowUpAsync(
+        ChromeDevToolsService chrome,
+        LocalDatabase database,
+        SavedMonitor monitor,
+        ChromeTab tab,
+        CancellationToken cancellationToken)
+    {
+        var followUp = monitor.AutoReply.Trim();
+        using var flightScope = RuntimeFlightRecorder.BeginScope(monitor.Id, tab.Id, tab.Url);
+        try
+        {
+            var sent = await chrome.SendChatMessageVerifiedAsync(
+                tab,
+                followUp,
+                cancellationToken,
+                requireNewTurn: true).ConfigureAwait(false);
+
+            await database.AddLogAsync(
+                "Outbound",
+                followUp,
+                string.Empty,
+                sent ? "StartupResumeFollowUpSent" : "StartupResumeFollowUpDeferred",
+                monitor.Id,
+                tab.Id,
+                tab.Title,
+                cancellationToken).ConfigureAwait(false);
+            return sent;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            ExceptionLogService.Log(ex, "LastWorkingState.StartupFollowUp", monitor.Id, tab.Id, monitor.Title);
+            try
+            {
+                await database.AddLogAsync(
+                    "System",
+                    string.Empty,
+                    ex.GetType().Name,
+                    "StartupResumeFollowUpDeferred",
+                    monitor.Id,
+                    tab.Id,
+                    tab.Title,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception logEx) when (logEx is not OperationCanceledException)
+            {
+                ExceptionLogService.Log(logEx, "LastWorkingState.StartupFollowUpLog", monitor.Id, tab.Id, monitor.Title);
+            }
+            return false;
+        }
     }
 
     private static async Task PersistResumeDiagnosticsAsync(
