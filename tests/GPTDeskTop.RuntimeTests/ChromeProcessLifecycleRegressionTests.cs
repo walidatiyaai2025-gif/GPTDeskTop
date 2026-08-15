@@ -85,8 +85,10 @@ public sealed class ChromeProcessLifecycleRegressionTests
         Assert.True(end > start);
         var handoff = source[start..end];
 
+        Assert.Contains("monitor.StopAllAsync()", handoff, StringComparison.Ordinal);
+        Assert.Contains("CrashRecoveryStateService.MarkCleanShutdownAsync", handoff, StringComparison.Ordinal);
         Assert.DoesNotContain("CloseAllMonitorTabsAsync", handoff, StringComparison.Ordinal);
-        Assert.Contains("leave those tabs", handoff, StringComparison.Ordinal);
+        Assert.DoesNotContain("Process.Kill", handoff, StringComparison.Ordinal);
         Assert.Contains("Environment.Exit(0)", handoff, StringComparison.Ordinal);
     }
 }
