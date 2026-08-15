@@ -11,21 +11,23 @@ public sealed class VerifiedSendTransportRecoveryRegressionTests
         return File.ReadAllText(path);
     }
 
+    private static string VerifiedSendMethod(string source)
+    {
+        var methodStart = source.IndexOf("public async Task<bool> SendChatMessageVerifiedAsync", StringComparison.Ordinal);
+        var helperStart = source.IndexOf("private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync", methodStart, StringComparison.Ordinal);
+        Assert.True(methodStart >= 0 && helperStart > methodStart);
+        return source[methodStart..helperStart];
+    }
+
     [Fact]
     public void InitialVerifiedSendSnapshotUsesBoundedTransientRecoveryInsteadOfEscapingTimeout()
     {
-        var source = ServiceSource();
-        var methodStart = source.IndexOf("public async Task<bool> SendChatMessageVerifiedAsync", StringComparison.Ordinal);
-        var helperStart = source.IndexOf("private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync", methodStart, StringComparison.Ordinal);
+        var method = VerifiedSendMethod(ServiceSource());
 
-        Assert.True(methodStart >= 0);
-        Assert.True(helperStart > methodStart);
-
-        var method = source[methodStart..helperStart];
         Assert.Contains("var deadline = DateTimeOffset.UtcNow.AddSeconds(30);", method, StringComparison.Ordinal);
         Assert.Contains("var before = await TryGetUserMessageSnapshotAsync", method, StringComparison.Ordinal);
         Assert.Contains("while (!before.Success && DateTimeOffset.UtcNow < deadline)", method, StringComparison.Ordinal);
-        Assert.Contains("if (!before.Success) return false;", method, StringComparison.Ordinal);
+        Assert.Contains("baseline-unreadable", method, StringComparison.Ordinal);
         Assert.DoesNotContain("var before = await GetUserMessageSnapshotAsync", method, StringComparison.Ordinal);
     }
 
@@ -47,21 +49,62 @@ public sealed class VerifiedSendTransportRecoveryRegressionTests
     }
 
     [Fact]
-    public void SendTimeoutVerifiesDomBeforeAnyFurtherSendAttempt()
+    public void SuccessfulClickRemainsUnacknowledgedUntilNewUserTurnReceiptAppears()
+    {
+        var method = VerifiedSendMethod(ServiceSource());
+
+        Assert.Contains("const int maxSubmitAttempts = 2;", method, StringComparison.Ordinal);
+        Assert.Contains("var receiptGrace = TimeSpan.FromSeconds(3);", method, StringComparison.Ordinal);
+        Assert.Contains("unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow", method, StringComparison.Ordinal);
+        Assert.Contains("physical-submit-unacknowledged", method, StringComparison.Ordinal);
+        Assert.Contains("current.Count > before.Count && string.Equals(current.LastText, expected", method, StringComparison.Ordinal);
+        Assert.Contains("ReconcileUnacknowledgedSubmitAsync", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("physicalSendAccepted", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RecoverableTransportDuringSubmitReconcilesBeforeAnyRetry()
+    {
+        var method = VerifiedSendMethod(ServiceSource());
+        var send = method.IndexOf("submitted = await SendChatMessageAsync(tab, message", StringComparison.Ordinal);
+        var transientCatch = method.IndexOf("IsRecoverableMonitorTransportException(ex)", send, StringComparison.Ordinal);
+        var uncertain = method.IndexOf("transport-uncertain-submit", transientCatch, StringComparison.Ordinal);
+        var continueAfterUncertain = method.IndexOf("continue;", uncertain, StringComparison.Ordinal);
+
+        Assert.True(send >= 0 && transientCatch > send && uncertain > transientCatch && continueAfterUncertain > uncertain);
+        Assert.Contains("submitAttempts++;", method[transientCatch..continueAfterUncertain], StringComparison.Ordinal);
+        Assert.Contains("unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;", method[transientCatch..continueAfterUncertain], StringComparison.Ordinal);
+        Assert.DoesNotContain("SendChatMessageAsync(tab, message", method[transientCatch..continueAfterUncertain], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReconciliationNeedsStablePostRefreshAbsenceBeforeAuthorizingOneRetry()
     {
         var source = ServiceSource();
-        var methodStart = source.IndexOf("public async Task<bool> SendChatMessageVerifiedAsync", StringComparison.Ordinal);
-        var helperStart = source.IndexOf("private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync", methodStart, StringComparison.Ordinal);
-        var method = source[methodStart..helperStart];
+        var helperStart = source.IndexOf("private async Task<UnacknowledgedSubmitReconciliationResult> ReconcileUnacknowledgedSubmitAsync", StringComparison.Ordinal);
+        var snapshotStart = source.IndexOf("private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync", helperStart, StringComparison.Ordinal);
+        Assert.True(helperStart >= 0 && snapshotStart > helperStart);
+        var helper = source[helperStart..snapshotStart];
 
-        var currentSnapshot = method.IndexOf("var current = await TryGetUserMessageSnapshotAsync", StringComparison.Ordinal);
-        var send = method.IndexOf("SendChatMessageAsync(tab, message", StringComparison.Ordinal);
-        var transientCatch = method.IndexOf("IsRecoverableMonitorTransportException(ex)", send, StringComparison.Ordinal);
-        var invalidate = method.IndexOf("_sessionPool.Invalidate(tab.Id);", transientCatch, StringComparison.Ordinal);
-        var continueAfterTimeout = method.IndexOf("continue;", invalidate, StringComparison.Ordinal);
+        Assert.Contains("RefreshStuckComposerAsync(tab, cancellationToken)", helper, StringComparison.Ordinal);
+        Assert.Contains("ChatGptConversationIdentity.IsSame(originalUrl, tab.Url)", helper, StringComparison.Ordinal);
+        Assert.Contains("var stableAbsenceReads = 0;", helper, StringComparison.Ordinal);
+        Assert.Contains("stableAbsenceReads++;", helper, StringComparison.Ordinal);
+        Assert.Contains("stableAbsenceReads >= 2", helper, StringComparison.Ordinal);
+        Assert.Contains("receiptAfterRefresh.Count != baselineUserTurnCount", helper, StringComparison.Ordinal);
+        Assert.Contains("UnacknowledgedSubmitReconciliationResult.RetryAuthorized", helper, StringComparison.Ordinal);
+    }
 
-        Assert.True(currentSnapshot >= 0 && send > currentSnapshot);
-        Assert.True(transientCatch > send && invalidate > transientCatch && continueAfterTimeout > invalidate);
-        Assert.DoesNotContain("ChromeDevToolsService.VerifySend", method, StringComparison.Ordinal);
+    [Fact]
+    public void GeneratingOrRenderedErrorFailsClosedInsteadOfBlindlyRetrying()
+    {
+        var method = VerifiedSendMethod(ServiceSource());
+
+        Assert.Contains("pendingReadiness.HasRenderedError", method, StringComparison.Ordinal);
+        Assert.Contains("rendered-error-after-submit", method, StringComparison.Ordinal);
+        Assert.Contains("pendingReadiness.IsGenerating", method, StringComparison.Ordinal);
+        Assert.Contains("generation-after-submit", method, StringComparison.Ordinal);
+        Assert.Contains("ambiguous-post-submit-reconciliation", method, StringComparison.Ordinal);
+        Assert.Contains("retry-limit-reached-without-receipt", method, StringComparison.Ordinal);
     }
 }
