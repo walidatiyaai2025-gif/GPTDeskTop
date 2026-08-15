@@ -56,9 +56,10 @@ public sealed class ShutdownLoadingOverlay : Panel
         var progressHost = new Panel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(120, 11, 120, 11),
+            Padding = new Padding(16, 11, 16, 11),
             BackColor = FluentTheme.Surface
         };
+        progressHost.SizeChanged += (_, _) => ApplyResponsiveProgressPadding(progressHost);
         progressHost.Controls.Add(_progress);
 
         card.Controls.Add(title, 0, 0);
@@ -92,5 +93,19 @@ public sealed class ShutdownLoadingOverlay : Panel
         _statusLabel.Text = status;
         if (Visible)
             Update();
+    }
+
+    private static void ApplyResponsiveProgressPadding(Panel progressHost)
+    {
+        var width = Math.Max(0, progressHost.ClientSize.Width);
+        var horizontalPadding = Math.Clamp(width / 8, 16, 120);
+        if (horizontalPadding * 2 >= width)
+            horizontalPadding = Math.Max(0, (width - 1) / 2);
+
+        if (progressHost.Padding.Left == horizontalPadding
+            && progressHost.Padding.Right == horizontalPadding)
+            return;
+
+        progressHost.Padding = new Padding(horizontalPadding, 11, horizontalPadding, 11);
     }
 }
