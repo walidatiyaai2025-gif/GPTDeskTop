@@ -31,6 +31,8 @@ public sealed class CompactDashboardHeaderUiRegressionTests
 
         Assert.Contains("parts.HeaderLayout.Dock = DockStyle.Fill;", source, StringComparison.Ordinal);
         Assert.Contains("parts.HeaderLayout.AutoSize = false;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.HeaderLayout.RowStyles[0].SizeType = SizeType.Percent;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.HeaderLayout.RowStyles[0].Height = 100F;", source, StringComparison.Ordinal);
         Assert.Contains("parts.TitleBlock.Dock = DockStyle.Fill;", source, StringComparison.Ordinal);
         Assert.Contains("parts.TitleBlock.AutoSize = false;", source, StringComparison.Ordinal);
         Assert.Contains("parts.TitleBlock.MinimumSize = Size.Empty;", source, StringComparison.Ordinal);
@@ -39,6 +41,8 @@ public sealed class CompactDashboardHeaderUiRegressionTests
         Assert.Contains("parts.Metrics.AutoSize = false;", source, StringComparison.Ordinal);
         Assert.Contains("parts.Metrics.MinimumSize = Size.Empty;", source, StringComparison.Ordinal);
         Assert.Contains("parts.Metrics.MaximumSize = Size.Empty;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.HeaderLayout.PerformLayout();", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Header.PerformLayout();", source, StringComparison.Ordinal);
     }
 
     [Fact]

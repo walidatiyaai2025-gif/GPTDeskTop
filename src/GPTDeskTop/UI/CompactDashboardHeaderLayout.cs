@@ -179,6 +179,18 @@ internal static class CompactDashboardHeaderLayout
         parts.HeaderLayout.Margin = Padding.Empty;
         parts.HeaderLayout.Padding = Padding.Empty;
 
+        // Dock/AutoSize alone does not override an AutoSize/absolute TableLayout row. Field
+        // evidence showed the parent at 37px while both visible children retained 100px bounds.
+        // Own the physical row explicitly so the layout engine is required to allocate exactly
+        // the available client height to both cells.
+        if (parts.HeaderLayout.RowStyles.Count == 0)
+            parts.HeaderLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        else
+        {
+            parts.HeaderLayout.RowStyles[0].SizeType = SizeType.Percent;
+            parts.HeaderLayout.RowStyles[0].Height = 100F;
+        }
+
         parts.TitleBlock.Dock = DockStyle.Fill;
         parts.TitleBlock.AutoSize = false;
         parts.TitleBlock.MinimumSize = Size.Empty;
@@ -205,6 +217,11 @@ internal static class CompactDashboardHeaderLayout
 
         foreach (var metric in parts.MetricChips)
             ApplyMetricChip(metric);
+
+        // Force one deterministic layout pass after changing the row contract. This prevents a
+        // stale pre-compact 100px preferred size from surviving until a later resize/repaint.
+        parts.HeaderLayout.PerformLayout();
+        parts.Header.PerformLayout();
     }
 
     private static void ApplyMetricChip(MetricChipParts metric)
