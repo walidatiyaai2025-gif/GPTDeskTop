@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
+using GPTDeskTop.Services;
 
 namespace GPTDeskTop.Runtime;
 
@@ -35,6 +36,9 @@ internal sealed class OutboundDeliveryCoordinator
         Action<string>? activity,
         CancellationToken cancellationToken)
     {
+        using var flightScope = RuntimeFlightRecorder.BeginScope(monitorId, conversationKey);
+        RuntimeFlightRecorder.Record("Delivery", "OperationRequested", reason: "logical-send");
+
         var gate = _gates.GetOrAdd(monitorId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -47,6 +51,7 @@ internal sealed class OutboundDeliveryCoordinator
                 && previous.Phase is OutboundDeliveryPhase.Sending or OutboundDeliveryPhase.ReconcileRequired
                 && now - previous.UpdatedUtc < TimeSpan.FromMinutes(2))
             {
+                RuntimeFlightRecorder.Record("Delivery", "DuplicateSuppressed", "suppressed", "uncertain-or-in-flight");
                 activity?.Invoke("Exactly-once guard: identical delivery is already uncertain/in-flight; composer mutation suppressed while state is reconciled.");
                 return false;
             }
@@ -60,13 +65,14 @@ internal sealed class OutboundDeliveryCoordinator
                 now,
                 "persisted-before-physical-send");
             _snapshots[monitorId] = sending;
+            RuntimeFlightRecorder.Record("Delivery", "PhysicalSubmitRequested", "started", "persisted-before-send");
 
             bool accepted;
             try
             {
                 accepted = await physicalSend().ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex)
             {
                 _snapshots[monitorId] = sending with
                 {
@@ -74,6 +80,7 @@ internal sealed class OutboundDeliveryCoordinator
                     UpdatedUtc = DateTimeOffset.UtcNow,
                     Reason = "physical-send-threw; observe-before-any-future-send"
                 };
+                RuntimeFlightRecorder.Record("Delivery", "PhysicalSubmitCompleted", "uncertain", ex.GetType().Name);
                 throw;
             }
 
@@ -85,6 +92,11 @@ internal sealed class OutboundDeliveryCoordinator
                     ? "verified-user-message-receipt"
                     : "receipt-not-confirmed; no blind retry"
             };
+            RuntimeFlightRecorder.Record(
+                "Delivery",
+                "PhysicalSubmitCompleted",
+                accepted ? "confirmed" : "uncertain",
+                accepted ? "verified-user-turn" : "receipt-not-confirmed");
             return accepted;
         }
         finally
@@ -98,7 +110,10 @@ internal sealed class OutboundDeliveryCoordinator
     public void MarkCompleted(long monitorId)
     {
         if (_snapshots.TryGetValue(monitorId, out var state))
+        {
             _snapshots[monitorId] = state with { Phase = OutboundDeliveryPhase.Completed, UpdatedUtc = DateTimeOffset.UtcNow, Reason = "response-observed" };
+            RuntimeFlightRecorder.Record("Delivery", "OperationCompleted", "completed", "response-observed", monitorId);
+        }
     }
 
     internal static string Fingerprint(string text)
