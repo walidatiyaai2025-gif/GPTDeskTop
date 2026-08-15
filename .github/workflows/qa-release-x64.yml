@@ -62,11 +62,40 @@ jobs:
           if (-not (Test-Path $path)) { throw "Release|x64 solution build did not produce $path." }
           Write-Host "Verified application compile output: $path"
 
+      - name: Verify published application PE and process launchability
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'Output/Publish/GPTDeskTop.exe').Path
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path $exe
+
+          $workingDirectory = Split-Path $exe -Parent
+          $root = Join-Path $env:RUNNER_TEMP "gptdesktop-release-x64-launch-$env:GITHUB_RUN_ID"
+          $db = Join-Path $root 'launch.db'
+          $resultPath = Join-Path $root 'launch.json'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          try {
+            $probe = Start-Process -FilePath $exe -WorkingDirectory $workingDirectory -ArgumentList @('--qa-crash-probe-verify', $db, $resultPath) -PassThru -Wait
+            if ($probe.ExitCode -ne 0) {
+              $errorPath = "$resultPath.error.txt"
+              if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
+              throw "Release|x64 published application failed process launch probe. ExitCode=$($probe.ExitCode)"
+            }
+            if (-not (Test-Path $resultPath)) { throw 'Release|x64 published application did not create a startup receipt.' }
+            $receipt = Get-Content $resultPath -Raw | ConvertFrom-Json
+            if ([int]$receipt.ProcessId -le 0) { throw 'Release|x64 published application returned an invalid startup receipt.' }
+            Write-Host "Verified published GPTDeskTop.exe can be loaded by Windows and execute managed startup code (PID $($receipt.ProcessId))."
+          }
+          finally {
+            Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Verify standalone setup output
         shell: pwsh
         run: |
           $path = 'Output/Setup/GPTDeskTop-Setup.exe'
           if (-not (Test-Path $path)) { throw "Release|x64 solution build did not produce standalone setup $path." }
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path $path
           $versionPath = 'Output/Setup/Version.txt'
           if (-not (Test-Path $versionPath)) { throw "Standalone setup version receipt is missing: $versionPath." }
           $version = Get-Content $versionPath -Raw
@@ -78,6 +107,14 @@ jobs:
           if ($version -notmatch $expectedReceipt) { throw "Unexpected setup version receipt. Expected v$expectedVersion, got: $version" }
           Write-Host "Verified standalone setup output: $path"
           Write-Host $version
+
+      - name: Verify embedded setup payload
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path 'Output/Setup/GPTDeskTop-Setup.exe').Path
+          $probe = Start-Process -FilePath $setup -ArgumentList '--verify-payload' -PassThru -Wait
+          if ($probe.ExitCode -ne 0) { throw "Standalone setup rejected its embedded payload. ExitCode=$($probe.ExitCode)" }
+          Write-Host 'Verified setup embedded payload includes a valid Windows x64 application image.'
 
       - name: Verify setup compile output
         shell: pwsh

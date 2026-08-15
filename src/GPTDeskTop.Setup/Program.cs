@@ -71,8 +71,67 @@ internal static class Program
             return false;
         }
 
+        if (!VerifyWindowsX64Pe(executable, out error))
+            return false;
+
         error = string.Empty;
         return true;
+    }
+
+    private static bool VerifyWindowsX64Pe(Stream executable, out string error)
+    {
+        try
+        {
+            if (!executable.CanSeek || executable.Length < 256)
+            {
+                error = "Installer application payload is not a seekable PE image.";
+                return false;
+            }
+
+            using var reader = new BinaryReader(executable, System.Text.Encoding.UTF8, leaveOpen: true);
+            executable.Position = 0;
+            if (reader.ReadUInt16() != 0x5A4D)
+            {
+                error = "Installer application payload does not begin with the DOS MZ signature.";
+                return false;
+            }
+
+            executable.Position = 0x3C;
+            var peOffset = reader.ReadInt32();
+            if (peOffset < 0x40 || peOffset + 26 >= executable.Length)
+            {
+                error = "Installer application payload contains an invalid PE header offset.";
+                return false;
+            }
+
+            executable.Position = peOffset;
+            if (reader.ReadUInt32() != 0x00004550)
+            {
+                error = "Installer application payload does not contain a PE signature.";
+                return false;
+            }
+
+            if (reader.ReadUInt16() != 0x8664)
+            {
+                error = "Installer application payload is not AMD64/x64.";
+                return false;
+            }
+
+            executable.Position = peOffset + 24;
+            if (reader.ReadUInt16() != 0x020B)
+            {
+                error = "Installer application payload is not PE32+ / 64-bit.";
+                return false;
+            }
+
+            error = string.Empty;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or EndOfStreamException or ArgumentOutOfRangeException)
+        {
+            error = $"Installer application payload PE validation failed: {ex.Message}";
+            return false;
+        }
     }
 
     private static void Install()
