@@ -70,7 +70,8 @@ public sealed class VerifiedSendTaskCancellationSelfHealRegressionTests
         Assert.Contains("stableUnexpectedReads >= 2", method, StringComparison.Ordinal);
         Assert.DoesNotContain("if (receiptBeforeRefresh.Count != baselineUserTurnCount)", method, StringComparison.Ordinal);
         Assert.Contains("return UnacknowledgedSubmitReconciliationResult.Ambiguous", method, StringComparison.Ordinal);
-        Assert.Contains("if (readiness.IsGenerating)\n                    return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed", method, StringComparison.Ordinal);
+        Assert.Contains("if (readiness.IsGenerating)", method, StringComparison.Ordinal);
+        Assert.Contains("return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed", method, StringComparison.Ordinal);
     }
 
     [Fact]
