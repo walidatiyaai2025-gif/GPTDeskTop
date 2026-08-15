@@ -86,24 +86,24 @@ internal static class RuntimeInspectorService
 
     private static IReadOnlyList<object> CaptureMonitorRuntime(ChatGptMonitorService monitor)
     {
-        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        var runningField = typeof(ChatGptMonitorService).GetField("_running", flags);
-        if (runningField?.GetValue(monitor) is not System.Collections.IDictionary running) return Array.Empty<object>();
-        var result = new List<object>();
-        foreach (System.Collections.DictionaryEntry entry in running)
-        {
-            var runtime = entry.Value;
-            var worker = runtime?.GetType().GetProperty("Worker")?.GetValue(runtime) as Task;
-            result.Add(new
+        return MonitorRuntimeDiagnosticReader.Capture(monitor)
+            .Select(diagnostic => (object)new
             {
-                MonitorId = entry.Key,
-                WorkerStatus = worker?.Status.ToString() ?? "unknown",
-                IsCompleted = worker?.IsCompleted ?? false,
-                IsFaulted = worker?.IsFaulted ?? false,
+                diagnostic.MonitorId,
+                // Compatibility field: WorkerStatus used to expose Task.Status directly. It now
+                // carries the semantic monitor lifecycle so field tooling does not mistake a
+                // normal async WaitingForActivation state for a failed monitor start.
+                WorkerStatus = diagnostic.LifecycleStatus,
+                diagnostic.LifecycleStatus,
+                diagnostic.RawTaskStatus,
+                diagnostic.IsCompleted,
+                diagnostic.IsFaulted,
+                diagnostic.CancellationRequested,
+                diagnostic.ObservedSinceUtc,
+                diagnostic.ObservedForSeconds,
                 CapturedUtc = DateTimeOffset.UtcNow
-            });
-        }
-        return result;
+            })
+            .ToArray();
     }
 
     private static object? SafeProcess(Process process)
