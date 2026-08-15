@@ -1,9 +1,58 @@
+using System.Collections.Concurrent;
+
 namespace GPTDeskTop.Services;
 
 public sealed record SavedMonitorLiveState(
     string Status,
     string Reason,
     DateTimeOffset ObservedAtUtc);
+
+/// <summary>
+/// Thread-safe, monitor-keyed storage for the small privacy-safe live projection. Newer activity
+/// wins per monitor and no global last-value state is shared between monitors.
+/// </summary>
+public sealed class SavedMonitorLiveStateStore
+{
+    private readonly ConcurrentDictionary<long, SavedMonitorLiveState> _states = new();
+
+    public IReadOnlyList<long> MonitorIds => _states.Keys.OrderBy(id => id).ToArray();
+
+    public SavedMonitorLiveState? Get(long monitorId)
+        => _states.TryGetValue(monitorId, out var state) ? state : null;
+
+    public void Observe(long monitorId, SavedMonitorLiveState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        _states.AddOrUpdate(
+            monitorId,
+            state,
+            (_, current) => state.ObservedAtUtc >= current.ObservedAtUtc ? state : current);
+    }
+
+    public void Remove(long monitorId)
+        => _states.TryRemove(monitorId, out _);
+
+    public void RemoveExcept(IEnumerable<long> monitorIds)
+    {
+        var retained = monitorIds.ToHashSet();
+        foreach (var monitorId in _states.Keys)
+        {
+            if (!retained.Contains(monitorId))
+                _states.TryRemove(monitorId, out _);
+        }
+    }
+
+    public void Prune(DateTimeOffset nowUtc, TimeSpan freshness)
+    {
+        foreach (var entry in _states)
+        {
+            if (nowUtc - entry.Value.ObservedAtUtc > freshness)
+                _states.TryRemove(entry.Key, out _);
+        }
+    }
+
+    public void Clear() => _states.Clear();
+}
 
 /// <summary>
 /// Maps runtime-only monitor and delivery signals into operator-facing dashboard state.
