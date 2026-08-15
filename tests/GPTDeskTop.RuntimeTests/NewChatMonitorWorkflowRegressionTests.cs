@@ -128,6 +128,54 @@ public sealed class NewChatMonitorWorkflowRegressionTests
     }
 
     [Fact]
+    public void SuccessfulStableReconciliationFinalizesVerifiedSendDiagnosticsAndAddsMonitorScopedEvidence()
+    {
+        var workflow = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "Services", "NewChatMonitorWorkflowService.cs"));
+        var chrome = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
+
+        Assert.Contains("var initialSendStartedAtUtc = DateTimeOffset.UtcNow;", workflow, StringComparison.Ordinal);
+        Assert.Contains("var bootstrapSendDiagnostic = VerifiedSendDiagnostics.Last;", workflow, StringComparison.Ordinal);
+        Assert.Contains("bootstrapSendDiagnostic.ObservedAtUtc >= initialSendStartedAtUtc", workflow, StringComparison.Ordinal);
+        Assert.Contains("bootstrapSendDiagnostic.SubmitAttempts", workflow, StringComparison.Ordinal);
+        Assert.Contains("\"ReceiptConfirmed\"", workflow, StringComparison.Ordinal);
+        Assert.Contains("\"bootstrap-stable-response-reconciled\"", workflow, StringComparison.Ordinal);
+        Assert.Contains("bootstrapSubmitAttempts", workflow, StringComparison.Ordinal);
+
+        var registration = workflow.IndexOf("savedMonitor.Id = registration.MonitorId;", StringComparison.Ordinal);
+        var flightEvent = workflow.IndexOf("\"BootstrapReconciled\"", registration, StringComparison.Ordinal);
+        Assert.True(registration >= 0 && flightEvent > registration);
+        Assert.Contains("monitorId: savedMonitor.Id", workflow, StringComparison.Ordinal);
+        Assert.Contains("tabId: stableTab.Id", workflow, StringComparison.Ordinal);
+        Assert.Contains("conversationRef: stableTab.Url", workflow, StringComparison.Ordinal);
+        Assert.Contains("\"stable-conversation-response-activity\"", workflow, StringComparison.Ordinal);
+
+        // The field fix must not weaken the core sender's ambiguity rule or create another send path.
+        Assert.Contains(
+            "VerifiedSendDiagnostics.Record(\"FailedClosed\", \"unexpected-user-turn-change\", submitAttempts);",
+            chrome,
+            StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(workflow, "SendChatMessageVerifiedAsync("));
+    }
+
+    [Fact]
+    public void ReconciledBootstrapDiagnosticsDoNotRecordUserContentOrRawIdentity()
+    {
+        var workflow = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "Services", "NewChatMonitorWorkflowService.cs"));
+        var registration = workflow.IndexOf("savedMonitor.Id = registration.MonitorId;", StringComparison.Ordinal);
+        var log = workflow.IndexOf("await _database.AddLogAsync(", registration, StringComparison.Ordinal);
+        Assert.True(registration >= 0 && log > registration);
+        var evidenceSection = workflow[registration..log];
+
+        Assert.Contains("RuntimeFlightRecorder.Record", evidenceSection, StringComparison.Ordinal);
+        Assert.Contains("monitorId: savedMonitor.Id", evidenceSection, StringComparison.Ordinal);
+        Assert.Contains("tabId: stableTab.Id", evidenceSection, StringComparison.Ordinal);
+        Assert.Contains("conversationRef: stableTab.Url", evidenceSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("initialChatMessage", evidenceSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("monitorAutoReply", evidenceSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("stableTab.Title", evidenceSection, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TransientChromeFailuresAreRecoveryStateInsteadOfExceptionLogFlood()
     {
         var source = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "Services", "NewChatMonitorWorkflowService.cs"));
