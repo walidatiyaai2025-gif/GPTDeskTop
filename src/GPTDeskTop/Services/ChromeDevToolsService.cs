@@ -641,7 +641,7 @@ public sealed class ChromeDevToolsService
                     || !string.IsNullOrWhiteSpace(state.ErrorText))
                     return true;
             }
-            catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
             {
             }
 
@@ -704,6 +704,7 @@ public sealed class ChromeDevToolsService
         => ex is WebSocketException
            || ex is IOException
            || ex is TimeoutException
+           || ex is TaskCanceledException
            || ex is HttpRequestException
            || ex.Message.Contains("Chrome closed the DevTools connection", StringComparison.OrdinalIgnoreCase)
            || ex.Message.Contains("session was invalidated", StringComparison.OrdinalIgnoreCase)
@@ -808,7 +809,7 @@ public sealed class ChromeDevToolsService
                         && !readiness.HasRenderedError)
                         return true;
                 }
-                catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
                 {
                 }
 
@@ -821,7 +822,7 @@ public sealed class ChromeDevToolsService
         {
             throw;
         }
-        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
         {
             return false;
         }
@@ -958,7 +959,10 @@ public sealed class ChromeDevToolsService
         var stuckRefreshUsed = false;
         var submitAttempts = 0;
 
-        while (DateTimeOffset.UtcNow < deadline)
+        // Before a physical submit the normal deadline still applies. Once a submit has
+        // an unknown outcome, elapsed time alone is never permission to abandon reconciliation: keep
+        // observing/rebinding until receipt, stable absence, a genuine conflict/error, or cancellation.
+        while (DateTimeOffset.UtcNow < deadline || unacknowledgedSubmitSinceUtc is not null)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -1000,9 +1004,12 @@ public sealed class ChromeDevToolsService
 
                     if (pendingReadiness.IsGenerating)
                     {
-                        VerifiedSendDiagnostics.Record("AwaitingReceipt", "generation-after-submit", submitAttempts);
-                        await Task.Delay(500, cancellationToken);
-                        continue;
+                        // The composer was verified idle immediately before our physical submit. If the
+                        // same conversation is now generating after that submit, the server accepted a
+                        // user turn even when the user-message DOM receipt is late or temporarily absent.
+                        // Treat this as read-only acceptance evidence; never click Send again.
+                        VerifiedSendDiagnostics.Record("ReceiptConfirmed", "generation-after-submit", submitAttempts);
+                        return true;
                     }
                 }
                 catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
@@ -1037,6 +1044,17 @@ public sealed class ChromeDevToolsService
                     unacknowledgedSubmitSinceUtc = null;
                     sendBlockedSinceUtc = null;
                     VerifiedSendDiagnostics.Record("RetryAuthorized", "stable-absence-after-refresh", submitAttempts);
+                    continue;
+                }
+
+                if (reconciliation == UnacknowledgedSubmitReconciliationResult.TransientInterruption)
+                {
+                    // Target/session replacement and machine/browser contention are liveness events,
+                    // not proof that the submit failed. Keep the original operation in-flight and
+                    // rebind/read again. Crucially, do not clear unacknowledgedSubmitSinceUtc here.
+                    VerifiedSendDiagnostics.Record("Reconciling", "transient-transport-recovery", submitAttempts);
+                    await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(1500, cancellationToken);
                     continue;
                 }
 
@@ -1156,6 +1174,7 @@ public sealed class ChromeDevToolsService
     {
         ReceiptConfirmed,
         RetryAuthorized,
+        TransientInterruption,
         Ambiguous
     }
 
@@ -1171,7 +1190,7 @@ public sealed class ChromeDevToolsService
 
         var receiptBeforeRefresh = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
         if (!receiptBeforeRefresh.Success)
-            return UnacknowledgedSubmitReconciliationResult.Ambiguous;
+            return UnacknowledgedSubmitReconciliationResult.TransientInterruption;
         if (receiptBeforeRefresh.Count > baselineUserTurnCount
             && string.Equals(receiptBeforeRefresh.LastText, expected, StringComparison.Ordinal))
             return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed;
@@ -1179,7 +1198,7 @@ public sealed class ChromeDevToolsService
             return UnacknowledgedSubmitReconciliationResult.Ambiguous;
 
         if (!await RefreshStuckComposerAsync(tab, cancellationToken))
-            return UnacknowledgedSubmitReconciliationResult.Ambiguous;
+            return UnacknowledgedSubmitReconciliationResult.TransientInterruption;
         if (!ChatGptConversationIdentity.IsSame(originalUrl, tab.Url))
             return UnacknowledgedSubmitReconciliationResult.Ambiguous;
 
@@ -1240,7 +1259,9 @@ public sealed class ChromeDevToolsService
             try
             {
                 var readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
-                if (readiness.IsGenerating || readiness.HasRenderedError)
+                if (readiness.IsGenerating)
+                    return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed;
+                if (readiness.HasRenderedError)
                     return UnacknowledgedSubmitReconciliationResult.Ambiguous;
                 if (!readiness.EditorPresent || !readiness.EditorEnabled)
                 {
@@ -1264,7 +1285,11 @@ public sealed class ChromeDevToolsService
             await Task.Delay(400, cancellationToken);
         }
 
-        return UnacknowledgedSubmitReconciliationResult.Ambiguous;    }
+        // Exhausting hydration/transport observations without stable conflicting evidence
+        // is not a user-turn conflict. Keep the original submit under reconciliation.
+        return UnacknowledgedSubmitReconciliationResult.TransientInterruption;
+    }
+
     private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync(ChromeTab tab, CancellationToken cancellationToken)
     {
         try
