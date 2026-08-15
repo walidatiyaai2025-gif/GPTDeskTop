@@ -47,6 +47,7 @@ public sealed class VerifiedSendTaskCancellationSelfHealRegressionTests
         var method = Slice(ChromeSource(), "public async Task<bool> SendChatMessageVerifiedAsync", "private enum UnacknowledgedSubmitReconciliationResult");
 
         Assert.Contains("while (DateTimeOffset.UtcNow < deadline || unacknowledgedSubmitSinceUtc is not null)", method, StringComparison.Ordinal);
+        Assert.Contains("current.Count != before.Count && unacknowledgedSubmitSinceUtc is null", method, StringComparison.Ordinal);
         Assert.Contains("UnacknowledgedSubmitReconciliationResult.TransientInterruption", method, StringComparison.Ordinal);
         Assert.Contains("\"Reconciling\", \"transient-transport-recovery\"", method, StringComparison.Ordinal);
         Assert.Contains("await TryRefreshTabBindingAsync(tab, cancellationToken)", method, StringComparison.Ordinal);
@@ -67,6 +68,7 @@ public sealed class VerifiedSendTaskCancellationSelfHealRegressionTests
         Assert.Contains("return UnacknowledgedSubmitReconciliationResult.TransientInterruption", method, StringComparison.Ordinal);
         Assert.Contains("PostRefreshUserTurnObservation.Hydrating", method, StringComparison.Ordinal);
         Assert.Contains("stableUnexpectedReads >= 2", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (receiptBeforeRefresh.Count != baselineUserTurnCount)", method, StringComparison.Ordinal);
         Assert.Contains("return UnacknowledgedSubmitReconciliationResult.Ambiguous", method, StringComparison.Ordinal);
         Assert.Contains("if (readiness.IsGenerating)\n                    return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed", method, StringComparison.Ordinal);
     }

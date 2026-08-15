@@ -979,7 +979,10 @@ public sealed class ChromeDevToolsService
                 return true;
             }
 
-            if (current.Count != before.Count)
+            // Before any physical submit an unexpected user turn is a real conflict. After an
+            // unacknowledged submit, however, a reload/rebind can expose a partially hydrated turn
+            // list. Let reconciliation require stable evidence instead of failing on one DOM read.
+            if (current.Count != before.Count && unacknowledgedSubmitSinceUtc is null)
             {
                 VerifiedSendDiagnostics.Record("FailedClosed", "unexpected-user-turn-change", submitAttempts);
                 return false;
@@ -1194,8 +1197,9 @@ public sealed class ChromeDevToolsService
         if (receiptBeforeRefresh.Count > baselineUserTurnCount
             && string.Equals(receiptBeforeRefresh.LastText, expected, StringComparison.Ordinal))
             return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed;
-        if (receiptBeforeRefresh.Count != baselineUserTurnCount)
-            return UnacknowledgedSubmitReconciliationResult.Ambiguous;
+        // Do not classify a single pre-refresh count mismatch as a conflict. Target replacement
+        // can briefly expose a partial turn list; the post-refresh loop below requires two stable
+        // identical unexpected reads before returning Ambiguous.
 
         if (!await RefreshStuckComposerAsync(tab, cancellationToken))
             return UnacknowledgedSubmitReconciliationResult.TransientInterruption;
