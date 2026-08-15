@@ -1,149 +1,56 @@
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using GPTDeskTop.Data;
 using GPTDeskTop.Services;
 
 namespace GPTDeskTop.UI;
 
-/// <summary>
-/// Owns the single user-facing Projects entry and the lazy Projects Hub lifetime.
-/// Dashboard and GitHub controls are created only after the operator opens Projects.
-/// </summary>
 internal static class ProjectMonitorUiBootstrap
 {
-    private static readonly HashSet<nint> MainInjected = new();
+    private static readonly HashSet<nint> InstalledMainForms = new();
     private static ProjectMonitorDashboardForm? _dashboardForm;
 
-    [ModuleInitializer]
-    internal static void Initialize()
-        => Application.Idle += OnApplicationIdle;
-
-    private static void OnApplicationIdle(object? sender, EventArgs e)
+    /// <summary>
+    /// Explicit one-time installation owned by Program/MainForm startup. This intentionally avoids
+    /// ModuleInitializer/Application.Idle scanning and post-startup tree mutation loops.
+    /// </summary>
+    internal static void Install(MainForm main)
     {
-        if (TryInstallProjectsEntry())
-            Application.Idle -= OnApplicationIdle;
+        ArgumentNullException.ThrowIfNull(main);
+        if (main.IsDisposed || main.Disposing)
+            return;
+
+        if (main.IsHandleCreated && InstalledMainForms.Contains(main.Handle))
+            return;
+
+        ConfigureRuntimeContext(main);
+        if (!InjectProjectsButton(main))
+            throw new InvalidOperationException("The canonical Projects entry could not be installed in MainForm.");
+
+        if (main.IsHandleCreated)
+            InstalledMainForms.Add(main.Handle);
     }
 
-    private static bool TryInstallProjectsEntry()
+    private static bool InjectProjectsButton(MainForm main)
     {
-        var foundMain = false;
-        var allReady = true;
-        foreach (var main in Application.OpenForms.OfType<MainForm>().ToArray())
-        {
-            foundMain = true;
-            try
-            {
-                if (!main.IsHandleCreated || main.IsDisposed || main.Disposing)
-                    continue;
-                if (MainInjected.Contains(main.Handle))
-                    continue;
-
-                ConfigureRuntimeContext(main);
-                var projectsButton = EnsureProjectsButton(main);
-                if (projectsButton is null)
-                {
-                    allReady = false;
-                    continue;
-                }
-
-                ConsolidateCommandsMenu(main, projectsButton);
-                MainInjected.Add(main.Handle);
-            }
-            catch (Exception ex)
-            {
-                allReady = false;
-                _ = ExceptionLogService.LogAsync(ex, "ProjectMonitorUiBootstrap.InstallProjectsEntry");
-            }
-        }
-
-        return foundMain && allReady;
-    }
-
-    private static Button? EnsureProjectsButton(MainForm main)
-    {
-        var existing = FindDescendants(main)
-            .OfType<Button>()
-            .FirstOrDefault(b => string.Equals(b.Text, "Projects", StringComparison.OrdinalIgnoreCase));
-        if (existing is not null)
-            return existing;
-
         var settingsButton = FindDescendants(main)
             .OfType<Button>()
             .FirstOrDefault(b => string.Equals(b.Text, "Settings", StringComparison.OrdinalIgnoreCase));
-        if (settingsButton?.Parent is null)
-            return null;
+        if (settingsButton?.Parent is null) return false;
+        if (FindDescendants(main).OfType<Button>().Any(b => string.Equals(b.Text, "Projects", StringComparison.OrdinalIgnoreCase))) return true;
 
         var button = new Button
         {
             Text = "Projects",
             AutoSize = true,
             AccessibleName = "Open Projects Hub",
-            AccessibleDescription = "Open project monitors, project state, tasks and results in one place."
+            AccessibleDescription = "Open project monitoring, project state, tasks, results and New Project Monitor."
         };
         FluentTheme.StyleButton(button, primary: true);
         button.Click += (_, _) => ShowProjectsHub(main);
         settingsButton.Parent.Controls.Add(button);
         var settingsIndex = settingsButton.Parent.Controls.GetChildIndex(settingsButton);
         settingsButton.Parent.Controls.SetChildIndex(button, Math.Max(0, settingsIndex));
-        return button;
-    }
-
-    private static void ConsolidateCommandsMenu(MainForm main, Button projectsButton)
-    {
-        var root = FindDescendants(main)
-            .OfType<MenuStrip>()
-            .SelectMany(strip => strip.Items.OfType<ToolStripMenuItem>())
-            .FirstOrDefault(item => string.Equals(item.Text, "☰ Commands", StringComparison.Ordinal));
-        if (root is null)
-            return;
-
-        var obsoleteMonitorMenu = root.DropDownItems
-            .OfType<ToolStripMenuItem>()
-            .FirstOrDefault(item => string.Equals(item.Text, "Monitors", StringComparison.OrdinalIgnoreCase));
-        if (obsoleteMonitorMenu is not null)
-        {
-            root.DropDownItems.Remove(obsoleteMonitorMenu);
-            obsoleteMonitorMenu.Dispose();
-        }
-
-        if (root.DropDownItems.OfType<ToolStripMenuItem>()
-            .Any(item => string.Equals(item.Text, "Projects Hub", StringComparison.OrdinalIgnoreCase)))
-            return;
-
-        var projectsHub = new ToolStripMenuItem("Projects Hub")
-        {
-            Tag = projectsButton,
-            ToolTipText = "Open all project monitors, state, tasks and results."
-        };
-        projectsHub.Click += (_, _) => InvokeButton(projectsButton);
-        root.DropDownItems.Insert(0, projectsHub);
-    }
-
-    private static void InvokeButton(Button source)
-    {
-        if (source.IsDisposed || !source.Enabled)
-            return;
-
-        try
-        {
-            var onClick = source.GetType().GetMethod(
-                "OnClick",
-                BindingFlags.Instance | BindingFlags.NonPublic,
-                binder: null,
-                types: new[] { typeof(EventArgs) },
-                modifiers: null);
-            if (onClick is null)
-                throw new MissingMethodException(source.GetType().FullName, "OnClick");
-            onClick.Invoke(source, new object[] { EventArgs.Empty });
-        }
-        catch (TargetInvocationException ex) when (ex.InnerException is not null)
-        {
-            ExceptionLogService.Log(ex.InnerException, "ProjectMonitorUiBootstrap.OpenProjects");
-        }
-        catch (Exception ex)
-        {
-            ExceptionLogService.Log(ex, "ProjectMonitorUiBootstrap.OpenProjects");
-        }
+        return true;
     }
 
     private static void ConfigureRuntimeContext(MainForm main)
