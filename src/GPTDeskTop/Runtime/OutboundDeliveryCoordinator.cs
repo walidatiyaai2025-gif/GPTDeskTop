@@ -25,6 +25,7 @@ internal sealed record OutboundDeliverySnapshot(
 
 internal sealed class OutboundDeliveryCoordinator
 {
+    private static readonly TimeSpan DuplicateWindow = TimeSpan.FromMinutes(2);
     private readonly ConcurrentDictionary<long, SemaphoreSlim> _gates = new();
     private readonly ConcurrentDictionary<long, OutboundDeliverySnapshot> _snapshots = new();
 
@@ -39,20 +40,16 @@ internal sealed class OutboundDeliveryCoordinator
         using var flightScope = RuntimeFlightRecorder.BeginScope(monitorId, conversationKey);
         RuntimeFlightRecorder.Record("Delivery", "OperationRequested", reason: "logical-send");
 
+        var fingerprint = Fingerprint(message);
         var gate = _gates.GetOrAdd(monitorId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var fingerprint = Fingerprint(message);
-            var now = DateTimeOffset.UtcNow;
             if (_snapshots.TryGetValue(monitorId, out var previous)
-                && previous.ConversationKey == conversationKey
-                && previous.MessageFingerprint == fingerprint
-                && previous.Phase is OutboundDeliveryPhase.Sending or OutboundDeliveryPhase.ReconcileRequired
-                && now - previous.UpdatedUtc < TimeSpan.FromMinutes(2))
+                && IsDuplicateInFlight(previous, conversationKey, fingerprint))
             {
                 RuntimeFlightRecorder.Record("Delivery", "DuplicateSuppressed", "suppressed", "uncertain-or-in-flight");
-                activity?.Invoke("Exactly-once guard: identical delivery is already uncertain/in-flight; composer mutation suppressed while state is reconciled.");
+                activity?.Invoke("Exactly-once guard: identical delivery is already in-flight or awaiting reconciliation; duplicate composer mutation suppressed.");
                 return false;
             }
 
@@ -62,7 +59,7 @@ internal sealed class OutboundDeliveryCoordinator
                 fingerprint,
                 OutboundDeliveryPhase.Sending,
                 1,
-                now,
+                DateTimeOffset.UtcNow,
                 "persisted-before-physical-send");
             _snapshots[monitorId] = sending;
             RuntimeFlightRecorder.Record("Delivery", "PhysicalSubmitRequested", "started", "persisted-before-send");
@@ -109,12 +106,27 @@ internal sealed class OutboundDeliveryCoordinator
 
     public void MarkCompleted(long monitorId)
     {
-        if (_snapshots.TryGetValue(monitorId, out var state))
+        if (!_snapshots.TryGetValue(monitorId, out var state)
+            || state.Phase is not (OutboundDeliveryPhase.Accepted or OutboundDeliveryPhase.ReconcileRequired))
+            return;
+
+        var reason = state.Phase == OutboundDeliveryPhase.ReconcileRequired
+            ? "response-observed-after-uncertain-send"
+            : "response-observed";
+        _snapshots[monitorId] = state with
         {
-            _snapshots[monitorId] = state with { Phase = OutboundDeliveryPhase.Completed, UpdatedUtc = DateTimeOffset.UtcNow, Reason = "response-observed" };
-            RuntimeFlightRecorder.Record("Delivery", "OperationCompleted", "completed", "response-observed", monitorId);
-        }
+            Phase = OutboundDeliveryPhase.Completed,
+            UpdatedUtc = DateTimeOffset.UtcNow,
+            Reason = reason
+        };
+        RuntimeFlightRecorder.Record("Delivery", "OperationCompleted", "completed", reason, monitorId);
     }
+
+    private static bool IsDuplicateInFlight(OutboundDeliverySnapshot previous, string conversationKey, string fingerprint)
+        => previous.ConversationKey == conversationKey
+           && previous.MessageFingerprint == fingerprint
+           && previous.Phase is OutboundDeliveryPhase.Sending or OutboundDeliveryPhase.ReconcileRequired
+           && DateTimeOffset.UtcNow - previous.UpdatedUtc < DuplicateWindow;
 
     internal static string Fingerprint(string text)
     {
