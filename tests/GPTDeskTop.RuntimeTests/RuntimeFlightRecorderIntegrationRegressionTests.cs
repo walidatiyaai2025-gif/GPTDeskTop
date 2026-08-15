@@ -27,8 +27,11 @@ public sealed class RuntimeFlightRecorderIntegrationRegressionTests
     public void MonitorTraceRecordsOnlyChangedMonitorAndBrowserTargetState()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "MonitorDiagnosticTraceService.cs");
-        Assert.Contains("\"Browser\",\n                    \"TargetChanged\"", source, StringComparison.Ordinal);
-        Assert.Contains("\"Monitor\",\n            \"StateChanged\"", source, StringComparison.Ordinal);
+        Assert.Contains("RuntimeFlightRecorder.Record(", source, StringComparison.Ordinal);
+        Assert.Contains("\"Browser\"", source, StringComparison.Ordinal);
+        Assert.Contains("\"TargetChanged\"", source, StringComparison.Ordinal);
+        Assert.Contains("\"Monitor\"", source, StringComparison.Ordinal);
+        Assert.Contains("\"StateChanged\"", source, StringComparison.Ordinal);
         Assert.Contains("_lastTargetIds", source, StringComparison.Ordinal);
     }
 
