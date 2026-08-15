@@ -41,7 +41,7 @@ public sealed class FieldExactlyOnceRuntimeInspectorRegressionTests
     }
 
     [Fact]
-    public void InspectorCapturesActualExeMonitorsBrowserAndUiTree()
+    public void InspectorCapturesActualExeMonitorsBrowserUiTreeAndToolStripNavigation()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "RuntimeInspectorService.cs");
         Assert.Contains("Environment.ProcessPath", source, StringComparison.Ordinal);
@@ -51,6 +51,26 @@ public sealed class FieldExactlyOnceRuntimeInspectorRegressionTests
         Assert.Contains("control.Enabled", source, StringComparison.Ordinal);
         Assert.Contains("control.DeviceDpi", source, StringComparison.Ordinal);
         Assert.Contains("control.Bounds", source, StringComparison.Ordinal);
+        Assert.Contains("WalkToolStrips(owner, ui)", source, StringComparison.Ordinal);
+        Assert.Contains("DescendantsAndSelf(root).OfType<ToolStrip>()", source, StringComparison.Ordinal);
+        Assert.Contains("Kind = \"ToolStripItem\"", source, StringComparison.Ordinal);
+        Assert.Contains("item.Text", source, StringComparison.Ordinal);
+        Assert.Contains("item.Visible", source, StringComparison.Ordinal);
+        Assert.Contains("item.Available", source, StringComparison.Ordinal);
+        Assert.Contains("ToolStripDropDownItem", source, StringComparison.Ordinal);
+        Assert.Contains("dropDown.DropDownItems", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ShutdownProgressUsesResponsivePaddingAndCannotKeepNegativeInnerWidth()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "ShutdownLoadingOverlay.cs");
+
+        Assert.DoesNotContain("new Padding(120, 11, 120, 11)", source, StringComparison.Ordinal);
+        Assert.Contains("ApplyResponsiveProgressPadding(progressHost)", source, StringComparison.Ordinal);
+        Assert.Contains("Math.Clamp(width / 8, 16, 120)", source, StringComparison.Ordinal);
+        Assert.Contains("horizontalPadding * 2 >= width", source, StringComparison.Ordinal);
+        Assert.Contains("Math.Max(0, (width - 1) / 2)", source, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -42,6 +42,7 @@ internal static class RuntimeInspectorService
             .ToArray();
         var ui = new List<object>();
         Walk(owner, 0, ui);
+        WalkToolStrips(owner, ui);
         var workers = monitors.Select(m => (object)new { Kind = "MonitorWorker", Snapshot = m }).ToArray();
         return new FieldRuntimeSnapshot(DateTimeOffset.UtcNow, build, monitors, browsers, ui, workers);
     }
@@ -116,6 +117,7 @@ internal static class RuntimeInspectorService
     {
         output.Add(new
         {
+            Kind = "Control",
             control.Name,
             Type = control.GetType().FullName,
             control.Visible,
@@ -125,6 +127,49 @@ internal static class RuntimeInspectorService
             Depth = depth
         });
         foreach (Control child in control.Controls) Walk(child, depth + 1, output);
+    }
+
+    private static void WalkToolStrips(Control root, List<object> output)
+    {
+        foreach (var strip in DescendantsAndSelf(root).OfType<ToolStrip>())
+        {
+            foreach (ToolStripItem item in strip.Items)
+                WalkToolStripItem(item, depth: 0, output);
+        }
+    }
+
+    private static void WalkToolStripItem(ToolStripItem item, int depth, List<object> output)
+    {
+        var owner = item.Owner;
+        var bounds = item.Bounds;
+        output.Add(new
+        {
+            Kind = "ToolStripItem",
+            item.Name,
+            item.Text,
+            Type = item.GetType().FullName,
+            item.Visible,
+            item.Available,
+            item.Enabled,
+            Bounds = new { bounds.X, bounds.Y, bounds.Width, bounds.Height },
+            OwnerType = owner?.GetType().FullName,
+            Dpi = owner?.DeviceDpi ?? 96,
+            Depth = depth
+        });
+
+        if (item is not ToolStripDropDownItem dropDown) return;
+        foreach (ToolStripItem child in dropDown.DropDownItems)
+            WalkToolStripItem(child, depth + 1, output);
+    }
+
+    private static IEnumerable<Control> DescendantsAndSelf(Control root)
+    {
+        yield return root;
+        foreach (Control child in root.Controls)
+        {
+            foreach (var descendant in DescendantsAndSelf(child))
+                yield return descendant;
+        }
     }
 
     private static IEnumerable<string> Redact(IEnumerable<string> lines)
