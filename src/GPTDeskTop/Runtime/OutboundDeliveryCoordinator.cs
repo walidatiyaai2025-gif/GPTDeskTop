@@ -40,42 +40,17 @@ internal sealed class OutboundDeliveryCoordinator
         using var flightScope = RuntimeFlightRecorder.BeginScope(monitorId, conversationKey);
         RuntimeFlightRecorder.Record("Delivery", "OperationRequested", reason: "logical-send");
 
+        var fingerprint = Fingerprint(message);
         var gate = _gates.GetOrAdd(monitorId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var fingerprint = Fingerprint(message);
-            var now = DateTimeOffset.UtcNow;
             if (_snapshots.TryGetValue(monitorId, out var previous)
-                && IsSameRecentLogicalOperation(previous, conversationKey, fingerprint, now))
+                && IsDuplicateInFlight(previous, conversationKey, fingerprint))
             {
-                if (previous.Phase == OutboundDeliveryPhase.Sending)
-                {
-                    RuntimeFlightRecorder.Record("Delivery", "DuplicateSuppressed", "suppressed", "physical-send-in-flight");
-                    activity?.Invoke("Exactly-once guard: identical delivery is still physically in-flight; duplicate composer mutation suppressed.");
-                    return false;
-                }
-
-                if (previous.Phase == OutboundDeliveryPhase.ReconcileRequired)
-                {
-                    // ChatGptMonitorService advances lastHandledText before it requests an auto reply.
-                    // Consequently, a later same-monitor/same-conversation logical request can only be
-                    // reached after another stable assistant response has been observed. That response
-                    // is the read-only reconciliation evidence the previous uncertain physical submit
-                    // was accepted. Complete the old operation before starting the new continuation.
-                    _snapshots[monitorId] = previous with
-                    {
-                        Phase = OutboundDeliveryPhase.Completed,
-                        UpdatedUtc = now,
-                        Reason = "response-observed-before-next-logical-send"
-                    };
-                    RuntimeFlightRecorder.Record(
-                        "Delivery",
-                        "OperationCompleted",
-                        "completed",
-                        "response-observed-before-next-logical-send");
-                    activity?.Invoke("Exactly-once reconciliation: a new stable assistant response resolved the previous uncertain delivery; continuing with the next logical send.");
-                }
+                RuntimeFlightRecorder.Record("Delivery", "DuplicateSuppressed", "suppressed", "uncertain-or-in-flight");
+                activity?.Invoke("Exactly-once guard: identical delivery is already in-flight or awaiting reconciliation; duplicate composer mutation suppressed.");
+                return false;
             }
 
             var sending = new OutboundDeliverySnapshot(
@@ -84,7 +59,7 @@ internal sealed class OutboundDeliveryCoordinator
                 fingerprint,
                 OutboundDeliveryPhase.Sending,
                 1,
-                now,
+                DateTimeOffset.UtcNow,
                 "persisted-before-physical-send");
             _snapshots[monitorId] = sending;
             RuntimeFlightRecorder.Record("Delivery", "PhysicalSubmitRequested", "started", "persisted-before-send");
@@ -138,16 +113,11 @@ internal sealed class OutboundDeliveryCoordinator
         }
     }
 
-    private static bool IsSameRecentLogicalOperation(
-        OutboundDeliverySnapshot previous,
-        string conversationKey,
-        string fingerprint,
-        DateTimeOffset now)
+    private static bool IsDuplicateInFlight(OutboundDeliverySnapshot previous, string conversationKey, string fingerprint)
         => previous.ConversationKey == conversationKey
            && previous.MessageFingerprint == fingerprint
            && previous.Phase is OutboundDeliveryPhase.Sending or OutboundDeliveryPhase.ReconcileRequired
-           && now - previous.UpdatedUtc >= TimeSpan.Zero
-           && now - previous.UpdatedUtc < DuplicateWindow;
+           && DateTimeOffset.UtcNow - previous.UpdatedUtc < DuplicateWindow;
 
     internal static string Fingerprint(string text)
     {
