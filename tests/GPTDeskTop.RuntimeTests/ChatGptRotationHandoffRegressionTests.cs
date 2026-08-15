@@ -61,7 +61,7 @@ public sealed class ChatGptRotationHandoffRegressionTests
     }
 
     [Fact]
-    public void NewChatDeliveryCanRecoverWithoutReloadingNormalAutoReplyTab()
+    public void NewChatAndNormalReplyDeliveryUseExactlyOnceWithoutBlindReloadRetry()
     {
         var source = MonitorSource();
 
@@ -77,10 +77,16 @@ public sealed class ChatGptRotationHandoffRegressionTests
             "SendWhenReadyAsync(monitor.Id, tab, monitor.AutoReply, allowRecoveryReload: false",
             source,
             StringComparison.Ordinal);
-        Assert.Contains(
-            "Composer still unavailable. Reloading only the newly-created chat once before retrying delivery.",
-            source,
-            StringComparison.Ordinal);
+
+        var sendStart = source.IndexOf("private async Task<bool> SendWhenReadyAsync", StringComparison.Ordinal);
+        var sendEnd = source.IndexOf("private async Task ApplyModelRouteAsync", sendStart, StringComparison.Ordinal);
+        Assert.True(sendStart >= 0 && sendEnd > sendStart);
+        var sendMethod = source[sendStart..sendEnd];
+
+        Assert.Contains("_outboundDelivery.SendOnceAsync", sendMethod, StringComparison.Ordinal);
+        Assert.Contains("Exactly-once guard suppressed blind resend", sendMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("Reloading only the newly-created chat once", sendMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("while (DateTimeOffset.UtcNow < deadline)", sendMethod, StringComparison.Ordinal);
     }
 
     [Fact]
