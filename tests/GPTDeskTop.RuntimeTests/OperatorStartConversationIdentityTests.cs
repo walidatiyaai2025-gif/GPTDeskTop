@@ -50,7 +50,7 @@ public sealed class OperatorStartConversationIdentityTests
         Assert.True(result.Found);
         Assert.NotNull(result.Tab);
         Assert.Equal("new-target-id", result.Tab!.Id);
-        Assert.Equal("ConversationUrl", result.MatchType);
+        Assert.Equal("PersistedConversationUrl", result.MatchType);
     }
 
     [Fact]
