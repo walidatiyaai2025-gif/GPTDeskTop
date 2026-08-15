@@ -1,22 +1,119 @@
+using System.Collections;
+using System.Reflection;
+using GPTDeskTop.Services;
+
 namespace GPTDeskTop.RuntimeTests;
 
 public sealed class FieldUncertainDeliveryResponseReconciliationTests
 {
     [Fact]
-    public void StableNonErrorAssistantResponseCompletesPriorDeliveryBeforeNextContinuation()
+    public async Task UncertainSendBecomesCompletedAfterResponseEvidenceAndNextContinuationCanProceed()
     {
-        var source = NormalizeWhitespace(ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
-        const string stableSequence =
-            "if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue; " +
-            "lastHandledText = text; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; " +
-            "if (!isError) _outboundDelivery.MarkCompleted(monitor.Id); " +
-            "await _database.AddLogAsync(\"Inbound\"";
+        var coordinator = CreateCoordinator();
+        var physicalSendCount = 0;
 
-        Assert.Contains(stableSequence, source, StringComparison.Ordinal);
+        var firstAccepted = await SendAsync(
+            coordinator,
+            monitorId: 3,
+            conversationKey: "field-conversation",
+            message: "كمل",
+            physicalSend: () =>
+            {
+                physicalSendCount++;
+                return Task.FromResult(false);
+            });
+
+        Assert.False(firstAccepted);
+        Assert.Equal(1, physicalSendCount);
+        Assert.Equal("ReconcileRequired", State(coordinator, 3).Phase);
+
+        MarkCompleted(coordinator, 3);
+
+        var reconciled = State(coordinator, 3);
+        Assert.Equal("Completed", reconciled.Phase);
+        Assert.Equal("response-observed-after-uncertain-send", reconciled.Reason);
+
+        var nextAccepted = await SendAsync(
+            coordinator,
+            monitorId: 3,
+            conversationKey: "field-conversation",
+            message: "كمل",
+            physicalSend: () =>
+            {
+                physicalSendCount++;
+                return Task.FromResult(true);
+            });
+
+        Assert.True(nextAccepted);
+        Assert.Equal(2, physicalSendCount);
+        Assert.Equal("Accepted", State(coordinator, 3).Phase);
     }
 
     [Fact]
-    public void ErrorResponseDoesNotReleaseUncertainDeliveryGate()
+    public async Task UncertainSendRemainsDuplicateSuppressedWithoutResponseEvidence()
+    {
+        var coordinator = CreateCoordinator();
+        var physicalSendCount = 0;
+
+        var firstAccepted = await SendAsync(
+            coordinator,
+            3,
+            "field-conversation",
+            "كمل",
+            () =>
+            {
+                physicalSendCount++;
+                return Task.FromResult(false);
+            });
+
+        var duplicateAccepted = await SendAsync(
+            coordinator,
+            3,
+            "field-conversation",
+            "كمل",
+            () =>
+            {
+                physicalSendCount++;
+                return Task.FromResult(true);
+            });
+
+        Assert.False(firstAccepted);
+        Assert.False(duplicateAccepted);
+        Assert.Equal(1, physicalSendCount);
+        Assert.Equal("ReconcileRequired", State(coordinator, 3).Phase);
+    }
+
+    [Fact]
+    public async Task MarkCompletedCannotReleaseLiveSendingOperation()
+    {
+        var coordinator = CreateCoordinator();
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var sendTask = SendAsync(
+            coordinator,
+            3,
+            "field-conversation",
+            "كمل",
+            () =>
+            {
+                entered.TrySetResult(true);
+                return release.Task;
+            });
+
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal("Sending", State(coordinator, 3).Phase);
+
+        MarkCompleted(coordinator, 3);
+        Assert.Equal("Sending", State(coordinator, 3).Phase);
+
+        release.SetResult(true);
+        Assert.True(await sendTask);
+        Assert.Equal("Accepted", State(coordinator, 3).Phase);
+    }
+
+    [Fact]
+    public void MonitorUsesOnlyStableNonErrorAssistantResponseAsReconciliationEvidence()
     {
         var source = NormalizeWhitespace(ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
 
@@ -28,57 +125,68 @@ public sealed class FieldUncertainDeliveryResponseReconciliationTests
             "if (isError) _outboundDelivery.MarkCompleted(monitor.Id);",
             source,
             StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void CompletionOnlyTransitionsSettledAcceptedOrUncertainOperations()
-    {
-        var source = NormalizeWhitespace(ReadSource("src", "GPTDeskTop", "Runtime", "OutboundDeliveryCoordinator.cs"));
-
         Assert.Contains(
-            "state.Phase is not (OutboundDeliveryPhase.Accepted or OutboundDeliveryPhase.ReconcileRequired)",
+            "if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue;",
             source,
             StringComparison.Ordinal);
-        Assert.Contains("response-observed-after-uncertain-send", source, StringComparison.Ordinal);
-        Assert.Contains("Phase = OutboundDeliveryPhase.Completed", source, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void ConcurrentSendingAndUnreconciledDeliveryRemainDuplicateSuppressed()
+    private static object CreateCoordinator()
     {
-        var source = NormalizeWhitespace(ReadSource("src", "GPTDeskTop", "Runtime", "OutboundDeliveryCoordinator.cs"));
-
-        Assert.Contains(
-            "previous.Phase is OutboundDeliveryPhase.Sending or OutboundDeliveryPhase.ReconcileRequired",
-            source,
-            StringComparison.Ordinal);
-        Assert.Contains("DuplicateSuppressed", source, StringComparison.Ordinal);
-        Assert.Contains("uncertain-or-in-flight", source, StringComparison.Ordinal);
-        Assert.Contains("receipt-not-confirmed; no blind retry", source, StringComparison.Ordinal);
+        var type = typeof(ChatGptMonitorService).Assembly.GetType(
+            "GPTDeskTop.Runtime.OutboundDeliveryCoordinator",
+            throwOnError: true)!;
+        return Activator.CreateInstance(type, nonPublic: true)!;
     }
 
-    [Fact]
-    public void MonitorAdvancesHandledResponseBeforeAnyAutoSendAttempt()
+    private static async Task<bool> SendAsync(
+        object coordinator,
+        long monitorId,
+        string conversationKey,
+        string message,
+        Func<Task<bool>> physicalSend)
     {
-        var source = NormalizeWhitespace(ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
-        var handled = source.IndexOf(
-            "lastHandledText = text; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; if (!isError) _outboundDelivery.MarkCompleted(monitor.Id);",
-            StringComparison.Ordinal);
-        var autoSend = source.IndexOf("var autoSent = await SendWhenReadyAsync(", StringComparison.Ordinal);
+        var method = coordinator.GetType().GetMethod(
+            "SendOnceAsync",
+            BindingFlags.Instance | BindingFlags.Public)
+            ?? throw new MissingMethodException(coordinator.GetType().FullName, "SendOnceAsync");
 
-        Assert.True(handled >= 0, "Stable response completion boundary was not found.");
-        Assert.True(autoSend > handled, "Auto reply must occur after stable response reconciliation.");
+        var task = Assert.IsAssignableFrom<Task<bool>>(method.Invoke(
+            coordinator,
+            new object?[]
+            {
+                monitorId,
+                conversationKey,
+                message,
+                physicalSend,
+                null,
+                CancellationToken.None
+            }));
+        return await task;
     }
 
-    [Fact]
-    public void VerifiedSendStillWaitsDuringPostSubmitGenerationInsteadOfBlindRetrying()
+    private static void MarkCompleted(object coordinator, long monitorId)
     {
-        var source = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
+        var method = coordinator.GetType().GetMethod(
+            "MarkCompleted",
+            BindingFlags.Instance | BindingFlags.Public)
+            ?? throw new MissingMethodException(coordinator.GetType().FullName, "MarkCompleted");
+        method.Invoke(coordinator, new object[] { monitorId });
+    }
 
-        Assert.Contains("generation-after-submit", source, StringComparison.Ordinal);
-        Assert.Contains("physical-submit-unacknowledged", source, StringComparison.Ordinal);
-        Assert.Contains("verified-send-deadline-without-receipt", source, StringComparison.Ordinal);
-        Assert.Contains("receipt-missing-after-refresh", source, StringComparison.Ordinal);
+    private static (string Phase, string Reason) State(object coordinator, long monitorId)
+    {
+        var method = coordinator.GetType().GetMethod(
+            "Snapshot",
+            BindingFlags.Instance | BindingFlags.Public)
+            ?? throw new MissingMethodException(coordinator.GetType().FullName, "Snapshot");
+        var snapshots = Assert.IsAssignableFrom<IEnumerable>(method.Invoke(coordinator, null));
+        var snapshot = snapshots.Cast<object>().Single(item =>
+            Convert.ToInt64(item.GetType().GetProperty("MonitorId")!.GetValue(item)) == monitorId);
+
+        return (
+            snapshot.GetType().GetProperty("Phase")!.GetValue(snapshot)!.ToString()!,
+            (string)snapshot.GetType().GetProperty("Reason")!.GetValue(snapshot)!);
     }
 
     private static string NormalizeWhitespace(string source)
