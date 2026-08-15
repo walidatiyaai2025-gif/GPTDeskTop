@@ -29,8 +29,30 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
         if (string.IsNullOrWhiteSpace(tab.WebSocketDebuggerUrl))
             throw new InvalidOperationException("The selected tab does not expose a DevTools WebSocket URL.");
 
+        RuntimeFlightRecorder.Record("CDP", "CommandRequested", "started", method, tabId: tab.Id, conversationRef: tab.Url);
         var session = GetOrCreateSession(tab);
-        return session.SendCommandAsync(method, parameters, cancellationToken, extractRuntimeValue);
+        return SendInstrumentedAsync(session, tab, method, parameters, cancellationToken, extractRuntimeValue);
+    }
+
+    private static async Task<JsonElement> SendInstrumentedAsync(
+        DevToolsSession session,
+        ChromeTab tab,
+        string method,
+        object parameters,
+        CancellationToken cancellationToken,
+        bool extractRuntimeValue)
+    {
+        try
+        {
+            var result = await session.SendCommandAsync(method, parameters, cancellationToken, extractRuntimeValue).ConfigureAwait(false);
+            RuntimeFlightRecorder.Record("CDP", "CommandCompleted", "success", method, tabId: tab.Id, conversationRef: tab.Url);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            RuntimeFlightRecorder.Record("CDP", "CommandCompleted", "failed", ex.GetType().Name, tabId: tab.Id, conversationRef: tab.Url);
+            throw;
+        }
     }
 
     public void Prune(IReadOnlyCollection<ChromeTab> liveTabs)
@@ -54,6 +76,8 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
         }
 
         DisposeSessions(stale);
+        if (stale is { Count: > 0 })
+            RuntimeFlightRecorder.Record("CDP", "SessionPruned", "retired", "target-no-longer-live");
     }
 
     public void Invalidate(string? targetId)
@@ -65,6 +89,8 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
             if (_sessions.Remove(targetId, out var session)) stale = session;
         }
         stale?.Dispose();
+        if (stale is not null)
+            RuntimeFlightRecorder.Record("CDP", "SessionInvalidated", "retired", "target-invalidated", tabId: targetId);
     }
 
     public void Clear()
@@ -76,6 +102,8 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
             _sessions.Clear();
         }
         DisposeSessions(sessions);
+        if (sessions.Count > 0)
+            RuntimeFlightRecorder.Record("CDP", "SessionPoolCleared", "retired", "explicit-clear");
     }
 
     public void Dispose()
@@ -112,6 +140,13 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
         }
 
         stale?.Dispose();
+        RuntimeFlightRecorder.Record(
+            "CDP",
+            stale is null ? "SessionCreated" : "SessionReplaced",
+            "ready",
+            stale is null ? "new-target-session" : "target-session-rebound",
+            tabId: tab.Id,
+            conversationRef: tab.Url);
         return session;
     }
 
