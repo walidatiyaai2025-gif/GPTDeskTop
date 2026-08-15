@@ -1184,22 +1184,58 @@ public sealed class ChromeDevToolsService
             return UnacknowledgedSubmitReconciliationResult.Ambiguous;
 
         var stableAbsenceReads = 0;
-        for (var attempt = 0; attempt < 6; attempt++)
+        var stableUnexpectedReads = 0;
+        var lastUnexpectedCount = -1;
+        var lastUnexpectedText = string.Empty;
+        for (var attempt = 0; attempt < 10; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var receiptAfterRefresh = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
-            if (!receiptAfterRefresh.Success)
+            var observation = MonitorDeliveryRecoveryPolicy.ClassifyPostRefreshUserTurn(
+                receiptAfterRefresh.Success,
+                baselineUserTurnCount,
+                receiptAfterRefresh.Count,
+                receiptAfterRefresh.LastText,
+                expected);
+
+            if (observation == PostRefreshUserTurnObservation.ReceiptConfirmed)
+                return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed;
+
+            if (observation == PostRefreshUserTurnObservation.Hydrating)
             {
                 stableAbsenceReads = 0;
+                stableUnexpectedReads = 0;
+                lastUnexpectedCount = -1;
+                lastUnexpectedText = string.Empty;
                 await Task.Delay(400, cancellationToken);
                 continue;
             }
 
-            if (receiptAfterRefresh.Count > baselineUserTurnCount
-                && string.Equals(receiptAfterRefresh.LastText, expected, StringComparison.Ordinal))
-                return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed;
-            if (receiptAfterRefresh.Count != baselineUserTurnCount)
-                return UnacknowledgedSubmitReconciliationResult.Ambiguous;
+            if (observation == PostRefreshUserTurnObservation.UnexpectedChange)
+            {
+                stableAbsenceReads = 0;
+                if (receiptAfterRefresh.Count == lastUnexpectedCount
+                    && string.Equals(receiptAfterRefresh.LastText, lastUnexpectedText, StringComparison.Ordinal))
+                {
+                    stableUnexpectedReads++;
+                }
+                else
+                {
+                    stableUnexpectedReads = 1;
+                    lastUnexpectedCount = receiptAfterRefresh.Count;
+                    lastUnexpectedText = receiptAfterRefresh.LastText;
+                }
+
+                if (stableUnexpectedReads >= 2)
+                    return UnacknowledgedSubmitReconciliationResult.Ambiguous;
+
+                await Task.Delay(400, cancellationToken);
+                continue;
+            }
+
+            stableUnexpectedReads = 0;
+            lastUnexpectedCount = -1;
+            lastUnexpectedText = string.Empty;
 
             try
             {
@@ -1228,8 +1264,7 @@ public sealed class ChromeDevToolsService
             await Task.Delay(400, cancellationToken);
         }
 
-        return UnacknowledgedSubmitReconciliationResult.Ambiguous;
-    }
+        return UnacknowledgedSubmitReconciliationResult.Ambiguous;    }
     private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync(ChromeTab tab, CancellationToken cancellationToken)
     {
         try

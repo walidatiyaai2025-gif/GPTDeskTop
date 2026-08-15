@@ -78,7 +78,7 @@ public sealed class VerifiedSendTransportRecoveryRegressionTests
     }
 
     [Fact]
-    public void ReconciliationNeedsStablePostRefreshAbsenceBeforeAuthorizingOneRetry()
+    public void ReconciliationNeedsHydratedStablePostRefreshEvidenceBeforeAuthorizingOneRetry()
     {
         var source = ServiceSource();
         var helperStart = source.IndexOf("private async Task<UnacknowledgedSubmitReconciliationResult> ReconcileUnacknowledgedSubmitAsync", StringComparison.Ordinal);
@@ -88,10 +88,13 @@ public sealed class VerifiedSendTransportRecoveryRegressionTests
 
         Assert.Contains("RefreshStuckComposerAsync(tab, cancellationToken)", helper, StringComparison.Ordinal);
         Assert.Contains("ChatGptConversationIdentity.IsSame(originalUrl, tab.Url)", helper, StringComparison.Ordinal);
+        Assert.Contains("MonitorDeliveryRecoveryPolicy.ClassifyPostRefreshUserTurn", helper, StringComparison.Ordinal);
+        Assert.Contains("PostRefreshUserTurnObservation.Hydrating", helper, StringComparison.Ordinal);
         Assert.Contains("var stableAbsenceReads = 0;", helper, StringComparison.Ordinal);
+        Assert.Contains("var stableUnexpectedReads = 0;", helper, StringComparison.Ordinal);
         Assert.Contains("stableAbsenceReads++;", helper, StringComparison.Ordinal);
         Assert.Contains("stableAbsenceReads >= 2", helper, StringComparison.Ordinal);
-        Assert.Contains("receiptAfterRefresh.Count != baselineUserTurnCount", helper, StringComparison.Ordinal);
+        Assert.Contains("stableUnexpectedReads >= 2", helper, StringComparison.Ordinal);
         Assert.Contains("UnacknowledgedSubmitReconciliationResult.RetryAuthorized", helper, StringComparison.Ordinal);
     }
 
