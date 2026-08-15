@@ -2,13 +2,15 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using GPTDeskTop.Models;
+using GPTDeskTop.Runtime;
 using GPTDeskTop.Services;
 
 namespace GPTDeskTop.UI;
 
 /// <summary>
-/// Turns Saved Monitors into an always-live operator health board. Healthy monitors are green;
-/// every non-healthy state is red and carries a human-readable reason in the grid.
+/// Turns Saved Monitors into an always-live operator health board. Verified runtime activity is
+/// overlaid per monitor so the row reflects what the worker is doing now instead of only the last
+/// periodic Chrome health probe.
 /// </summary>
 internal static class SavedMonitorHealthGridExperience
 {
@@ -38,13 +40,15 @@ internal static class SavedMonitorHealthGridExperience
         var monitorField = typeof(MainForm).GetField("_monitor", flags);
         var chromeField = typeof(MainForm).GetField("_chrome", flags);
         var gridField = typeof(MainForm).GetField("_monitorsGrid", flags);
+        var deliveryField = typeof(ChatGptMonitorService).GetField("_outboundDelivery", flags);
 
         if (monitorField?.GetValue(form) is not ChatGptMonitorService monitor ||
             chromeField?.GetValue(form) is not ChromeDevToolsService chrome ||
-            gridField?.GetValue(form) is not DataGridView grid)
+            gridField?.GetValue(form) is not DataGridView grid ||
+            deliveryField?.GetValue(monitor) is not OutboundDeliveryCoordinator delivery)
             return false;
 
-        var installation = new Installation(form, monitor, chrome, grid);
+        var installation = new Installation(form, monitor, chrome, delivery, grid);
         Installations.Add(form, installation);
         installation.Attach();
         return true;
@@ -55,10 +59,12 @@ internal static class SavedMonitorHealthGridExperience
         private readonly MainForm _form;
         private readonly ChatGptMonitorService _monitor;
         private readonly ChromeDevToolsService _chrome;
+        private readonly OutboundDeliveryCoordinator _delivery;
         private readonly DataGridView _grid;
         private readonly System.Windows.Forms.Timer _timer = new() { Interval = HealthScanIntervalMs };
         private readonly CancellationTokenSource _lifetime = new();
         private readonly ConcurrentDictionary<long, SavedMonitorRowHealth> _states = new();
+        private readonly ConcurrentDictionary<long, SavedMonitorLiveState> _liveStates = new();
         private readonly ConcurrentDictionary<long, FailureNote> _recentFailures = new();
         private int _scanInProgress;
         private bool _disposed;
@@ -67,11 +73,13 @@ internal static class SavedMonitorHealthGridExperience
             MainForm form,
             ChatGptMonitorService monitor,
             ChromeDevToolsService chrome,
+            OutboundDeliveryCoordinator delivery,
             DataGridView grid)
         {
             _form = form;
             _monitor = monitor;
             _chrome = chrome;
+            _delivery = delivery;
             _grid = grid;
         }
 
@@ -82,10 +90,14 @@ internal static class SavedMonitorHealthGridExperience
             _grid.DataBindingComplete += OnDataBindingComplete;
             _monitor.Activity += OnMonitorActivity;
             _monitor.RunningStateChanged += OnRunningStateChanged;
+            _delivery.StatusChanged += OnDeliveryStatusChanged;
             _timer.Tick += OnTimerTick;
             _form.Shown += OnFormShown;
             _form.FormClosing += OnFormClosing;
             _form.FormClosed += OnFormClosed;
+
+            foreach (var snapshot in _delivery.Snapshot())
+                ObserveDelivery(snapshot.MonitorId, snapshot.Phase, snapshot.PhysicalSendCount, snapshot.UpdatedUtc);
 
             if (_form.Visible)
             {
@@ -120,7 +132,7 @@ internal static class SavedMonitorHealthGridExperience
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
                 FillWeight = 45F,
                 MinimumWidth = 200,
-                ToolTipText = "Current reason why this monitor is healthy or not healthy."
+                ToolTipText = "Live per-monitor runtime phase, or the verified reason this monitor needs attention."
             });
         }
 
@@ -137,23 +149,96 @@ internal static class SavedMonitorHealthGridExperience
             => Dispose();
 
         private void OnTimerTick(object? sender, EventArgs e)
-            => QueueScan();
+        {
+            PruneStaleLiveStates();
+            QueueScan();
+        }
 
         private void OnDataBindingComplete(object? sender, DataGridViewBindingCompleteEventArgs e)
             => ApplyCurrentStates();
 
         private void OnRunningStateChanged()
-            => QueueScan();
+        {
+            foreach (var monitorId in _liveStates.Keys)
+            {
+                if (!_monitor.IsMonitorRunning(monitorId))
+                    _liveStates.TryRemove(monitorId, out _);
+            }
+            RequestGridRefresh();
+            QueueScan();
+        }
 
         private void OnMonitorActivity(long monitorId, string message)
         {
             if (LooksLikeFailure(message))
+            {
                 _recentFailures[monitorId] = new FailureNote(CleanActivityReason(message), DateTimeOffset.UtcNow);
+                _liveStates.TryRemove(monitorId, out _);
+            }
             else if (LooksLikeHealthyTransition(message))
+            {
                 _recentFailures.TryRemove(monitorId, out _);
+            }
+
+            var live = SavedMonitorLivePresentation.FromActivity(message, DateTimeOffset.UtcNow);
+            if (live is not null)
+            {
+                _liveStates.AddOrUpdate(
+                    monitorId,
+                    live,
+                    (_, current) => live.ObservedAtUtc >= current.ObservedAtUtc ? live : current);
+                RequestGridRefresh();
+            }
 
             if (LooksLikeFailure(message) || LooksLikeHealthyTransition(message))
                 QueueScan();
+        }
+
+        private void OnDeliveryStatusChanged(OutboundDeliveryStatus status)
+        {
+            ObserveDelivery(status.MonitorId, status.Phase, status.PhysicalSendCount, status.UpdatedUtc);
+            RequestGridRefresh();
+        }
+
+        private void ObserveDelivery(
+            long monitorId,
+            OutboundDeliveryPhase phase,
+            int physicalSendCount,
+            DateTimeOffset observedAtUtc)
+        {
+            var live = SavedMonitorLivePresentation.FromDelivery(
+                phase.ToString(),
+                physicalSendCount,
+                observedAtUtc);
+            _liveStates.AddOrUpdate(
+                monitorId,
+                live,
+                (_, current) => live.ObservedAtUtc >= current.ObservedAtUtc ? live : current);
+        }
+
+        private void PruneStaleLiveStates()
+        {
+            var now = DateTimeOffset.UtcNow;
+            foreach (var entry in _liveStates)
+            {
+                if (now - entry.Value.ObservedAtUtc > SavedMonitorLivePresentation.FreshnessWindow)
+                    _liveStates.TryRemove(entry.Key, out _);
+            }
+        }
+
+        private void RequestGridRefresh()
+        {
+            if (_disposed || _form.IsDisposed || _form.Disposing)
+                return;
+
+            if (_form.InvokeRequired)
+            {
+                try { _form.BeginInvoke(new Action(RequestGridRefresh)); }
+                catch (InvalidOperationException) { }
+                return;
+            }
+
+            ApplyCurrentStates();
         }
 
         private void QueueScan()
@@ -188,6 +273,7 @@ internal static class SavedMonitorHealthGridExperience
                 if (monitors.Count == 0)
                 {
                     _states.Clear();
+                    _liveStates.Clear();
                     return;
                 }
 
@@ -251,6 +337,8 @@ internal static class SavedMonitorHealthGridExperience
                     _states[state.Key] = state.Value;
                 foreach (var monitorId in _states.Keys.Except(nextStates.Keys).ToArray())
                     _states.TryRemove(monitorId, out _);
+                foreach (var monitorId in _liveStates.Keys.Except(nextStates.Keys).ToArray())
+                    _liveStates.TryRemove(monitorId, out _);
 
                 ApplyCurrentStates();
             }
@@ -299,6 +387,16 @@ internal static class SavedMonitorHealthGridExperience
             return note.Message;
         }
 
+        private SavedMonitorRowHealth GetEffectiveHealth(long monitorId, SavedMonitorRowHealth baseline)
+        {
+            _liveStates.TryGetValue(monitorId, out var live);
+            return SavedMonitorLivePresentation.Overlay(
+                baseline,
+                _monitor.IsMonitorRunning(monitorId),
+                live,
+                DateTimeOffset.UtcNow);
+        }
+
         private void ApplyCurrentStates()
         {
             if (_disposed || _grid.IsDisposed)
@@ -307,9 +405,10 @@ internal static class SavedMonitorHealthGridExperience
             foreach (DataGridViewRow row in _grid.Rows)
             {
                 if (row.DataBoundItem is not SavedMonitor monitor ||
-                    !_states.TryGetValue(monitor.Id, out var health))
+                    !_states.TryGetValue(monitor.Id, out var baseline))
                     continue;
 
+                var health = GetEffectiveHealth(monitor.Id, baseline);
                 var background = health.IsHealthy ? FluentTheme.SuccessSubtle : FluentTheme.DangerSubtle;
                 var foreground = health.IsHealthy ? FluentTheme.Success : FluentTheme.Danger;
                 row.DefaultCellStyle.BackColor = background;
@@ -326,9 +425,10 @@ internal static class SavedMonitorHealthGridExperience
             if (e.RowIndex < 0 || e.ColumnIndex < 0 || e.RowIndex >= _grid.Rows.Count)
                 return;
             if (_grid.Rows[e.RowIndex].DataBoundItem is not SavedMonitor monitor ||
-                !_states.TryGetValue(monitor.Id, out var health))
+                !_states.TryGetValue(monitor.Id, out var baseline))
                 return;
 
+            var health = GetEffectiveHealth(monitor.Id, baseline);
             var column = _grid.Columns[e.ColumnIndex];
             if (string.Equals(column.Name, ReasonColumnName, StringComparison.Ordinal))
             {
@@ -398,6 +498,7 @@ internal static class SavedMonitorHealthGridExperience
             _grid.DataBindingComplete -= OnDataBindingComplete;
             _monitor.Activity -= OnMonitorActivity;
             _monitor.RunningStateChanged -= OnRunningStateChanged;
+            _delivery.StatusChanged -= OnDeliveryStatusChanged;
             _form.Shown -= OnFormShown;
             _form.FormClosing -= OnFormClosing;
             _form.FormClosed -= OnFormClosed;
