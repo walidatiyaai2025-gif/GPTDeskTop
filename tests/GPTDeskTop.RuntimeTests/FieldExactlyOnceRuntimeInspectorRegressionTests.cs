@@ -44,8 +44,13 @@ public sealed class FieldExactlyOnceRuntimeInspectorRegressionTests
     public void InspectorCapturesActualExeMonitorsBrowserUiTreeAndToolStripNavigation()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "RuntimeInspectorService.cs");
+        var monitorDiagnostics = ReadSource("src", "GPTDeskTop", "Services", "MonitorRuntimeDiagnosticReader.cs");
+
         Assert.Contains("Environment.ProcessPath", source, StringComparison.Ordinal);
-        Assert.Contains("_running", source, StringComparison.Ordinal);
+        Assert.Contains("MonitorRuntimeDiagnosticReader.Capture(monitor)", source, StringComparison.Ordinal);
+        Assert.Contains("_running", monitorDiagnostics, StringComparison.Ordinal);
+        Assert.Contains("_sync", monitorDiagnostics, StringComparison.Ordinal);
+        Assert.Contains("lock (syncRoot)", monitorDiagnostics, StringComparison.Ordinal);
         Assert.Contains("chrome", source, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("control.Visible", source, StringComparison.Ordinal);
         Assert.Contains("control.Enabled", source, StringComparison.Ordinal);
