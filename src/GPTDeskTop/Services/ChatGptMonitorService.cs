@@ -356,6 +356,8 @@ public sealed class ChatGptMonitorService
                     }
                     if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue;
                     lastHandledText = text; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
+                    if (!isError)
+                        _outboundDelivery.MarkCompleted(monitor.Id);
                     await _database.AddLogAsync("Inbound", string.Empty, text, IsConversationContextLimit(text) ? "ConversationLimit" : isError ? "Error" : "Detected", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke(); ResponseReceived?.Invoke(monitor.Id, monitor.Title, text, isError);
 
                     if (messageCountThresholdReached && !rotationSlotAvailable)
