@@ -59,7 +59,7 @@ jobs:
           $activity = @($result.Activity | ForEach-Object { [string]$_ })
           $recoveryStartCount = @($activity | Where-Object { $_ -like '*ChatGPT error saved. Opening a fresh chat and continuing under the same Monitor ID*' }).Count
           $recoveryCompletedCount = @($activity | Where-Object { $_ -like '*ChatGPT error recovery complete. New conversation is monitored as Monitor #*' }).Count
-          $verifiedContinuationCount = @($activity | Where-Object { $_ -like '*Verified message accepted on attempt*' }).Count
+          $verifiedContinuationCount = @($activity | Where-Object { $_ -like '*Verified message accepted. Exactly-once guard closed the delivery operation*' -or $_ -like '*Verified message accepted on attempt*' }).Count
 
           $failed = $false
           if ($result.SlowText -ne 'slow-complete-load-1') { Write-Host "ASSERTION: Slow/generating tab was unexpectedly reloaded or did not complete, final text='$($result.SlowText)'."; $failed = $true }

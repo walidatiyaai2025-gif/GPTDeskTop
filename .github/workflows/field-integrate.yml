@@ -1,0 +1,36 @@
+name: FIELD Integrate
+
+on:
+  push:
+    branches:
+      - field/runtime-inspector-exactly-once
+    paths:
+      - 'scripts/apply-field-exactly-once.py'
+      - '.github/workflows/field-integrate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: field/runtime-inspector-exactly-once
+          fetch-depth: 0
+      - name: Apply exactly-once integration
+        run: python scripts/apply-field-exactly-once.py
+      - name: Commit integration
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'No integration changes required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/GPTDeskTop/Services/ChatGptMonitorService.cs
+          git commit -m 'FIELD wire exactly-once guard into production monitor send path'
+          git push origin HEAD:field/runtime-inspector-exactly-once
