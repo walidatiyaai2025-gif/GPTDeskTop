@@ -27,13 +27,17 @@ internal sealed record BrowserProcessDiagnostics(
 internal sealed record RuntimeInspectorComposerDiagnostics(
     string Decision,
     string Reason,
-    DateTimeOffset ObservedAtUtc);
+    DateTimeOffset ObservedAtUtc,
+    double AgeSeconds,
+    bool IsStale);
 
 internal sealed record RuntimeInspectorVerifiedSendDiagnostics(
     string Phase,
     string Reason,
     int SubmitAttempts,
-    DateTimeOffset ObservedAtUtc);
+    DateTimeOffset ObservedAtUtc,
+    double AgeSeconds,
+    bool IsStale);
 
 internal sealed record RuntimeInspectorUiOverflow(
     string FormScope,
@@ -68,9 +72,11 @@ internal static class RuntimeInspectorService
 {
     private const int MaxOverflowRows = 25;
     private const int OverflowToleranceLogicalPixels = 2;
+    private static readonly TimeSpan DiagnosticStaleAfter = TimeSpan.FromMinutes(5);
 
     public static FieldRuntimeSnapshot Capture(Form owner, ChatGptMonitorService monitor)
     {
+        var capturedUtc = DateTimeOffset.UtcNow;
         var assembly = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
         var exe = Environment.ProcessPath ?? assembly.Location;
         var build = new
@@ -102,16 +108,22 @@ internal static class RuntimeInspectorService
             Responding: browserRows.Count(row => row.Responding));
 
         var composerSnapshot = ChatComposerDecisionDiagnostics.Last;
+        var composerAgeSeconds = Math.Max(0, (capturedUtc - composerSnapshot.ObservedAtUtc).TotalSeconds);
         var composerDiagnostics = new RuntimeInspectorComposerDiagnostics(
             composerSnapshot.Decision.ToString(),
             composerSnapshot.Reason,
-            composerSnapshot.ObservedAtUtc);
+            composerSnapshot.ObservedAtUtc,
+            composerAgeSeconds,
+            composerAgeSeconds > DiagnosticStaleAfter.TotalSeconds);
         var verifiedSendSnapshot = VerifiedSendDiagnostics.Last;
+        var verifiedSendAgeSeconds = Math.Max(0, (capturedUtc - verifiedSendSnapshot.ObservedAtUtc).TotalSeconds);
         var verifiedSendDiagnostics = new RuntimeInspectorVerifiedSendDiagnostics(
             verifiedSendSnapshot.Phase,
             verifiedSendSnapshot.Reason,
             verifiedSendSnapshot.SubmitAttempts,
-            verifiedSendSnapshot.ObservedAtUtc);
+            verifiedSendSnapshot.ObservedAtUtc,
+            verifiedSendAgeSeconds,
+            verifiedSendAgeSeconds > DiagnosticStaleAfter.TotalSeconds);
 
         var ui = new List<object>();
         var overflows = new List<RuntimeInspectorUiOverflow>();
@@ -138,7 +150,7 @@ internal static class RuntimeInspectorService
 
         var workers = monitors.Select(m => (object)new { Kind = "MonitorWorker", Snapshot = m }).ToArray();
         return new FieldRuntimeSnapshot(
-            DateTimeOffset.UtcNow,
+            capturedUtc,
             build,
             monitors,
             browsers,
@@ -171,8 +183,8 @@ internal static class RuntimeInspectorService
                $"Monitors: {snapshot.Monitors.Count}\r\n" +
                $"System browser processes: {browser.Total} (Chrome: {browser.Chrome}, Edge/WebView: {browser.EdgeOrWebView}, titled windows: {browser.TitledWindows})\r\n" +
                $"Browser scope: {browser.Scope} — {browser.OwnershipNote}\r\n" +
-               $"Composer gate: {composer.Reason} ({composer.Decision}) @ {composer.ObservedAtUtc:O}\r\n" +
-               $"Verified send: {verifiedSend.Phase} | attempts: {verifiedSend.SubmitAttempts} | {verifiedSend.Reason} @ {verifiedSend.ObservedAtUtc:O}\r\n" +
+               $"Composer gate: {composer.Reason} ({composer.Decision}) @ {composer.ObservedAtUtc:O} | age: {composer.AgeSeconds:0}s | stale: {(composer.IsStale ? "yes" : "no")}\r\n" +
+               $"Verified send: {verifiedSend.Phase} | attempts: {verifiedSend.SubmitAttempts} | {verifiedSend.Reason} @ {verifiedSend.ObservedAtUtc:O} | age: {verifiedSend.AgeSeconds:0}s | stale: {(verifiedSend.IsStale ? "yes" : "no")}\r\n" +
                $"Flight recorder: {flight.EventCount}/{flight.Capacity} events | seq {flight.FirstSequence}-{flight.LastSequence} | monitors {flightMonitors}\r\n" +
                $"UI forms: {ui.FormsCaptured} | visible controls: {ui.VisibleControls} | visible overflows: {ui.VisibleOverflowCount}\r\n" +
                $"UI controls: {snapshot.Ui.Count}\r\n";

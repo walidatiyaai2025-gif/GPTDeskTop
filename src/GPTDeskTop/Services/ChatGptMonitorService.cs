@@ -286,10 +286,13 @@ public sealed class ChatGptMonitorService
         var messageCountRotationStartMessage = runtimeSettings.MessageCountRotationStartMessage;
         var nextRuntimeSettingsRefreshUtc = runtimeSettings.ExpiresUtc;
         var transientFailures = 0;
+        using var monitorFlightScope = RuntimeFlightRecorder.BeginScope(monitor.Id);
         Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Timer {timerSeconds}s | Delay {replyDelaySeconds}s | Passive long-response wait ON (elapsed time never reloads a healthy chat) | Rotation {(monitor.ConversationRotationEnabled ? "ON" : "OFF")} | Count rotation {(rotateAfterMessages > 0 ? $"{rotateAfterMessages} assistant messages" : "OFF")} | Model routing {(monitor.ModelRoutingEnabled ? "ON" : "OFF")} | Reply: {monitor.AutoReply}");
         try
         {
-            var initial = await GetChatStateWithRetryAsync(monitor.Id, tab, cancellationToken);
+            ChatPageState initial;
+            using (RuntimeFlightRecorder.BeginScope(monitor.Id, tab.Id, tab.Url))
+                initial = await GetChatStateWithRetryAsync(monitor.Id, tab, cancellationToken);
             var initialText = GetEffectiveResponse(initial);
             var initialCountRotationDue = monitor.ConversationRotationEnabled
                 && rotateAfterMessages > 0
@@ -312,6 +315,7 @@ public sealed class ChatGptMonitorService
                 try
                 {
                     var prefix = $"[{monitor.Title}]";
+                    using var pollFlightScope = RuntimeFlightRecorder.BeginScope(monitor.Id, tab.Id, tab.Url);
                     var state = await _chrome.GetChatStateAsync(tab, cancellationToken);
                     var text = GetEffectiveResponse(state);
                     transientFailures = 0;
@@ -332,14 +336,27 @@ public sealed class ChatGptMonitorService
                     var rotationSlotAvailable = monitor.MaxConversationRotations <= 0 || monitor.RotationCount < monitor.MaxConversationRotations;
                     var messageCountRotationDue = messageCountThresholdReached && rotationSlotAvailable;
 
-                    // A slow/unchanged/empty response is a passive wait state. Time elapsed by itself
-                    // must never mutate the page. Recovery is driven only by explicit current ChatGPT
-                    // error UI or explicit terminal conditions such as conversation/context limits.
-                    if (state.IsGenerating || string.IsNullOrWhiteSpace(text) || (string.Equals(text, lastHandledText, StringComparison.Ordinal) && !messageCountRotationDue)) { candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; continue; }
-                    if (!string.Equals(candidateText, text, StringComparison.Ordinal)) { candidateText = text; candidateSince = DateTimeOffset.UtcNow; Activity?.Invoke(monitor.Id, $"{prefix} New response detected..."); continue; }
+                    var isError = !string.IsNullOrWhiteSpace(state.ErrorText);
+                    // A slow/unchanged/empty response is a passive wait state only when ChatGPT has no
+                    // current structured error UI. A visible rendered error must be handled even when
+                    // the previous assistant text is unchanged or empty.
+                    if (!isError && (state.IsGenerating || string.IsNullOrWhiteSpace(text) || (string.Equals(text, lastHandledText, StringComparison.Ordinal) && !messageCountRotationDue))) { candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; continue; }
+                    if (!string.Equals(candidateText, text, StringComparison.Ordinal))
+                    {
+                        candidateText = text; candidateSince = DateTimeOffset.UtcNow;
+                        if (isError)
+                        {
+                            RuntimeFlightRecorder.Record("Monitor", "RenderedErrorObserved", "error", IsDeliveryTimeout(text) ? "message-delivery-timeout" : "structured-chatgpt-error");
+                            Activity?.Invoke(monitor.Id, IsDeliveryTimeout(text)
+                                ? $"{prefix} ChatGPT delivery timeout detected; bounded recovery is pending."
+                                : $"{prefix} ChatGPT rendered error detected; bounded recovery is pending.");
+                        }
+                        else Activity?.Invoke(monitor.Id, $"{prefix} New response detected...");
+                        continue;
+                    }
                     if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue;
                     lastHandledText = text; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
-                    var isError = !string.IsNullOrWhiteSpace(state.ErrorText); await _database.AddLogAsync("Inbound", string.Empty, text, IsConversationContextLimit(text) ? "ConversationLimit" : isError ? "Error" : "Detected", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke(); ResponseReceived?.Invoke(monitor.Id, monitor.Title, text, isError);
+                    await _database.AddLogAsync("Inbound", string.Empty, text, IsConversationContextLimit(text) ? "ConversationLimit" : isError ? "Error" : "Detected", monitor.Id, tab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke(); ResponseReceived?.Invoke(monitor.Id, monitor.Title, text, isError);
 
                     if (messageCountThresholdReached && !rotationSlotAvailable)
                     {
@@ -404,9 +421,11 @@ public sealed class ChatGptMonitorService
                     }
                     if (isError && IsDeliveryTimeout(text))
                     {
+                        RuntimeFlightRecorder.Record("Monitor", "DeliveryTimeoutRecovery", "started", "fresh-chat-handoff");
                         Activity?.Invoke(monitor.Id, $"{prefix} Message delivery timeout saved. Creating a new ChatGPT chat..."); var recoveryMessage = await _database.GetSettingAsync("TimeoutRecoveryMessage", cancellationToken) ?? "كمل"; var oldTab = tab; var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken); await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken); await ApplyModelRouteAsync(monitor, newTab, recovery: true, contextRotation: false, cancellationToken); await Task.Delay(Math.Max(500, _config.DelayAfterSendMilliseconds), cancellationToken); var sent = await SendWhenReadyAsync(monitor.Id, newTab, recoveryMessage, allowRecoveryReload: true, cancellationToken);
                         if (!sent)
                         {
+                            RuntimeFlightRecorder.Record("Monitor", "DeliveryTimeoutRecovery", "deferred", "continuation-delivery-unverified", tabId: newTab.Id, conversationRef: newTab.Url);
                             Activity?.Invoke(monitor.Id, $"{prefix} Recovery message is still not accepted. Closing the unused recovery tab and retrying later.");
                             await _database.AddLogAsync("System", recoveryMessage, text, "RecoverySendDeferred", monitor.Id, newTab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke();
                             try { await _chrome.CloseTabAsync(newTab, cancellationToken); } catch (Exception closeEx) when (IsTransientChromeException(closeEx)) { Activity?.Invoke(monitor.Id, $"Deferred recovery tab close failed transiently: {closeEx.Message}"); }
@@ -425,11 +444,14 @@ public sealed class ChatGptMonitorService
                             cancellationToken);
                         if (committedRecoveryTab is null)
                         {
+                            RuntimeFlightRecorder.Record("Monitor", "DeliveryTimeoutRecovery", "deferred", "handoff-commit-unverified", tabId: newTab.Id, conversationRef: newTab.Url);
                             lastHandledText = string.Empty; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
                             await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
                             continue;
                         }
-                        tab = committedRecoveryTab; lastHandledText = string.Empty; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Recovery chat is now monitored under the same Monitor ID #{monitor.Id}."); await _chrome.CloseTabAsync(oldTab, cancellationToken); continue;
+                        tab = committedRecoveryTab; lastHandledText = string.Empty; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue;
+                        RuntimeFlightRecorder.Record("Monitor", "DeliveryTimeoutRecovery", "completed", "fresh-chat-handoff-committed", tabId: committedRecoveryTab.Id, conversationRef: committedRecoveryTab.Url);
+                        Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Recovery chat is now monitored under the same Monitor ID #{monitor.Id}."); await _chrome.CloseTabAsync(oldTab, cancellationToken); continue;
                     }
                     if (isError)
                     {

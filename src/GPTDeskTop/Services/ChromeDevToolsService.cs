@@ -16,11 +16,11 @@ public sealed class ChromeDevToolsService
     private const int MonitorRecoveryEndpointGraceAttempts = 8;
     private const int MonitorRecoveryEndpointGraceDelayMs = 250;
     private const string BrowserSessionId = "__gptdesktop_monitor_browser__";
-    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 3 ? window.__gptDesktopChatStateCache.read() : null";
+    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 4 ? window.__gptDesktopChatStateCache.read() : null";
     private const string ChatStateInstallExpression = """
 (() => {
   const key = '__gptDesktopChatStateCache';
-  const version = 3;
+  const version = 4;
   const previous = window[key];
   if (previous?.version === version && typeof previous.read === 'function') return previous.read();
   try { previous?.observer?.disconnect?.(); } catch { }
@@ -58,6 +58,21 @@ public sealed class ChromeDevToolsService
         if (!visible(element)) continue;
         const text = (element.innerText || element.textContent || '').trim();
         if (text && errorPattern.test(text)) return text;
+      }
+    }
+
+    // ChatGPT sometimes renders the delivery-timeout card without an alert/testid on its
+    // outer container. Inspect only a small ancestor chain around a visible native Retry
+    // control; never scan document.body or conversation text globally.
+    for (const button of document.querySelectorAll('button,[role="button"]')) {
+      if (!visible(button)) continue;
+      const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''} ${button.innerText || button.textContent || ''}`.trim();
+      if (!/\bretry\b|try again|إعادة المحاولة|حاول مرة أخرى/i.test(label)) continue;
+      let container = button;
+      for (let depth = 0; container && depth < 5; depth++, container = container.parentElement) {
+        const text = (container.innerText || container.textContent || '').trim();
+        if (!text || text.length > 600) continue;
+        if (errorPattern.test(text)) return text;
       }
     }
     return '';

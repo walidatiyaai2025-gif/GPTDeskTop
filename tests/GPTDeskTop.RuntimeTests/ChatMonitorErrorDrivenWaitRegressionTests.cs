@@ -15,7 +15,7 @@ public sealed class ChatMonitorErrorDrivenWaitRegressionTests
             "src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
 
         Assert.Contains("Passive long-response wait ON", source, StringComparison.Ordinal);
-        Assert.Contains("if (state.IsGenerating || string.IsNullOrWhiteSpace(text)", source, StringComparison.Ordinal);
+        Assert.Contains("if (!isError && (state.IsGenerating || string.IsNullOrWhiteSpace(text)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("NoResponseRefreshSeconds", source, StringComparison.Ordinal);
         Assert.DoesNotContain("\"NoResponseRefresh\"", source, StringComparison.Ordinal);
         Assert.DoesNotContain("lastResponseActivity", source, StringComparison.Ordinal);
@@ -27,7 +27,10 @@ public sealed class ChatMonitorErrorDrivenWaitRegressionTests
         var source = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
 
-        Assert.Contains("var isError = !string.IsNullOrWhiteSpace(state.ErrorText)", source, StringComparison.Ordinal);
+        var structuredErrorIndex = source.IndexOf("var isError = !string.IsNullOrWhiteSpace(state.ErrorText)", StringComparison.Ordinal);
+        var passiveWaitIndex = source.IndexOf("if (!isError && (state.IsGenerating || string.IsNullOrWhiteSpace(text)", StringComparison.Ordinal);
+        Assert.True(structuredErrorIndex >= 0);
+        Assert.True(passiveWaitIndex > structuredErrorIndex);
         Assert.Contains("isError && IsDeliveryTimeout(text)", source, StringComparison.Ordinal);
         Assert.Contains("ChatGptErrorContinuationMessage", source, StringComparison.Ordinal);
         Assert.Contains("ChatGPT error saved. Opening a fresh chat and continuing under the same Monitor ID", source, StringComparison.Ordinal);
