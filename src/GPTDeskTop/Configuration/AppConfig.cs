@@ -27,6 +27,9 @@ public sealed class ChromeConfig
     public string DebuggingBaseUrl { get; set; } = "http://127.0.0.1:9222";
     public int DebuggingPort { get; set; } = 9222;
     public string StartUrl { get; set; } = "https://chatgpt.com/";
+    public bool SmartAutoFollowEnabled { get; set; } = true;
+    public int SmartAutoFollowThrottleMilliseconds { get; set; } = 400;
+    public int SmartAutoFollowNearBottomPixels { get; set; } = 180;
 }
 
 public sealed class MonitoringConfig

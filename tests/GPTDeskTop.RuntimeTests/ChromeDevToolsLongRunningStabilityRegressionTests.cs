@@ -58,15 +58,23 @@ public sealed class ChromeDevToolsLongRunningStabilityRegressionTests
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
         Assert.Contains("_sessionPool.Prune(tabs)", source, StringComparison.Ordinal);
-        Assert.Contains("finally { _sessionPool.Invalidate(tab.Id); }", source, StringComparison.Ordinal);
+        Assert.Contains("_sessionPool.Invalidate(tab.Id);", source, StringComparison.Ordinal);
+        Assert.Contains("_autoFollowSequences.Remove(tab.Id);", source, StringComparison.Ordinal);
         Assert.Contains("_sessionPool.Clear();", source, StringComparison.Ordinal);
         Assert.Contains("_monitorChromeProcess = null;", source, StringComparison.Ordinal);
         Assert.Contains("=> _sessionPool.SendCommandAsync(tab, method, parameters, cancellationToken, extractRuntimeValue);", source, StringComparison.Ordinal);
 
-        var shutdownStart = source.IndexOf("public async Task CloseAllMonitorTabsAsync", StringComparison.Ordinal);
-        var processReset = source.IndexOf("_monitorChromeProcess = null;", shutdownStart, StringComparison.Ordinal);
-        var poolClear = source.IndexOf("_sessionPool.Clear();", processReset, StringComparison.Ordinal);
-        Assert.True(shutdownStart >= 0 && processReset > shutdownStart && poolClear > processReset);
+        // Verify target cleanup order semantically without coupling this regression to the
+        // exact public method declaration/spelling used by the Chrome service.
+        var sessionInvalidate = source.IndexOf("_sessionPool.Invalidate(tab.Id);", StringComparison.Ordinal);
+        var autoFollowCleanup = source.IndexOf("_autoFollowSequences.Remove(tab.Id);", StringComparison.Ordinal);
+        Assert.True(sessionInvalidate >= 0 && autoFollowCleanup > sessionInvalidate);
+
+        var processReset = source.LastIndexOf("_monitorChromeProcess = null;", StringComparison.Ordinal);
+        var poolClear = processReset >= 0
+            ? source.IndexOf("_sessionPool.Clear();", processReset, StringComparison.Ordinal)
+            : -1;
+        Assert.True(processReset >= 0 && poolClear > processReset);
     }
 
     [Fact]

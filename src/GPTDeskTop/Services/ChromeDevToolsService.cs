@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net.WebSockets;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -16,11 +17,14 @@ public sealed class ChromeDevToolsService
     private const int MonitorRecoveryEndpointGraceAttempts = 8;
     private const int MonitorRecoveryEndpointGraceDelayMs = 250;
     private const string BrowserSessionId = "__gptdesktop_monitor_browser__";
-    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 4 ? window.__gptDesktopChatStateCache.read() : null";
-    private const string ChatStateInstallExpression = """
+    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 5 ? window.__gptDesktopChatStateCache.read() : null";
+    private const string ChatStateInstallExpressionTemplate = """
 (() => {
   const key = '__gptDesktopChatStateCache';
-  const version = 4;
+  const version = 5;
+  const smartFollowEnabled = __SMART_ENABLED__;
+  const smartFollowThrottleMs = __SMART_THROTTLE_MS__;
+  const smartFollowNearBottomPx = __SMART_NEAR_BOTTOM_PX__;
   const previous = window[key];
   if (previous?.version === version && typeof previous.read === 'function') return previous.read();
   try { previous?.observer?.disconnect?.(); } catch { }
@@ -78,13 +82,141 @@ public sealed class ChromeDevToolsService
     return '';
   };
 
+  const createSmartFollowController = () => {
+    const controller = {
+      enabled: smartFollowEnabled,
+      mode: smartFollowEnabled ? 'following' : 'disabled',
+      sequence: 0,
+      event: smartFollowEnabled ? 'installed' : 'disabled',
+      timer: 0,
+      lastRunAt: 0,
+      lastProgrammaticScrollAt: 0,
+      touchY: null,
+      container: null,
+      rearm: null,
+      onMutation: null,
+      snapshot: null,
+      markDirty: null
+    };
+
+    const emit = (mode, event) => {
+      if (controller.mode === mode && controller.event === event) return;
+      controller.mode = mode;
+      controller.event = event;
+      controller.sequence++;
+      controller.markDirty?.();
+    };
+    const isScrollable = element => {
+      if (!element || element === document.body) return false;
+      const style = getComputedStyle(element);
+      return /(auto|scroll)/i.test(style.overflowY || '') && element.scrollHeight > element.clientHeight + 8;
+    };
+    const resolveContainer = () => {
+      if (controller.container?.isConnected && isScrollable(controller.container)) return controller.container;
+      const messages = document.querySelectorAll('[data-message-author-role]');
+      let current = messages.length ? messages[messages.length - 1].parentElement : null;
+      for (let depth = 0; current && depth < 14; depth++, current = current.parentElement) {
+        if (isScrollable(current)) {
+          controller.container = current;
+          return current;
+        }
+      }
+      const scrolling = document.scrollingElement || document.documentElement;
+      controller.container = scrolling;
+      return scrolling;
+    };
+    const distanceFromBottom = container => Math.max(0, container.scrollHeight - container.scrollTop - container.clientHeight);
+    const nearBottom = container => !!container && distanceFromBottom(container) <= smartFollowNearBottomPx;
+    const pause = reason => {
+      if (!controller.enabled) return;
+      emit('paused-by-user', reason);
+    };
+    const resumeIfNearBottom = reason => {
+      const container = resolveContainer();
+      if (nearBottom(container)) emit('following', reason);
+    };
+    const run = force => {
+      controller.timer = 0;
+      if (!controller.enabled) return;
+      const container = resolveContainer();
+      if (!container) return;
+      if (controller.mode === 'paused-by-user' && !force) {
+        resumeIfNearBottom('near-bottom');
+        if (controller.mode === 'paused-by-user') return;
+      }
+      if (!force && !nearBottom(container)) {
+        pause('user-away-from-bottom');
+        return;
+      }
+      controller.lastRunAt = Date.now();
+      controller.lastProgrammaticScrollAt = controller.lastRunAt;
+      try {
+        if (typeof container.scrollTo === 'function') container.scrollTo({ top: container.scrollHeight, behavior: 'auto' });
+        else container.scrollTop = container.scrollHeight;
+        emit('following', force ? 'rearmed-and-followed' : 'followed-latest');
+      } catch {
+        emit('following', 'scroll-failed');
+      }
+    };
+    const schedule = force => {
+      if (!controller.enabled || controller.timer) return;
+      const elapsed = Date.now() - controller.lastRunAt;
+      const delay = Math.max(0, smartFollowThrottleMs - elapsed);
+      controller.timer = setTimeout(() => run(force), delay);
+    };
+
+    controller.rearm = reason => {
+      if (!controller.enabled) return;
+      emit('following', reason || 'rearmed');
+      schedule(true);
+    };
+    controller.onMutation = () => {
+      if (controller.mode === 'following') schedule(false);
+    };
+    controller.snapshot = () => ({
+      mode: controller.mode,
+      sequence: controller.sequence,
+      event: controller.event
+    });
+
+    if (controller.enabled) {
+      document.addEventListener('wheel', event => {
+        if (event.deltaY < 0) pause('wheel-up');
+        else setTimeout(() => resumeIfNearBottom('wheel-near-bottom'), 0);
+      }, { capture: true, passive: true });
+      document.addEventListener('keydown', event => {
+        if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) pause('keyboard-up');
+        else if (event.key === 'End') controller.rearm('keyboard-end');
+      }, true);
+      document.addEventListener('touchstart', event => {
+        controller.touchY = event.touches?.[0]?.clientY ?? null;
+      }, { capture: true, passive: true });
+      document.addEventListener('touchmove', event => {
+        const y = event.touches?.[0]?.clientY;
+        if (controller.touchY !== null && typeof y === 'number' && y > controller.touchY + 8) pause('touch-scroll-up');
+        controller.touchY = typeof y === 'number' ? y : controller.touchY;
+      }, { capture: true, passive: true });
+      document.addEventListener('scroll', event => {
+        if (Date.now() - controller.lastProgrammaticScrollAt < 180) return;
+        const container = resolveContainer();
+        if (event.target !== container && event.target !== document) return;
+        if (nearBottom(container)) emit('following', 'manual-near-bottom');
+        else pause('manual-scroll');
+      }, true);
+    }
+    return controller;
+  };
+
   const state = {
     version,
     dirty: true,
-    snapshot: { assistantCount: 0, lastAssistantText: '', isGenerating: false, errorText: '' },
+    snapshot: { assistantCount: 0, lastAssistantText: '', isGenerating: false, errorText: '', autoFollow: { mode: smartFollowEnabled ? 'following' : 'disabled', sequence: 0, event: smartFollowEnabled ? 'installed' : 'disabled' } },
     observer: null,
+    autoFollow: null,
     read: null
   };
+  state.autoFollow = createSmartFollowController();
+  state.autoFollow.markDirty = () => { state.dirty = true; };
   state.read = () => {
     if (!state.dirty) return state.snapshot;
     state.dirty = false;
@@ -95,10 +227,11 @@ public sealed class ChromeDevToolsService
     const isGenerating = !!stopButton || streamingSignal;
     const errorText = findErrorText();
     const last = !isGenerating && lastAssistant ? (lastAssistant.innerText || '').trim() : '';
-    state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText };
+    state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, autoFollow: state.autoFollow?.snapshot?.() || { mode: 'disabled', sequence: 0, event: 'disabled' } };
+    if (isGenerating) state.autoFollow?.onMutation?.();
     return state.snapshot;
   };
-  state.observer = new MutationObserver(() => { state.dirty = true; });
+  state.observer = new MutationObserver(() => { state.dirty = true; state.autoFollow?.onMutation?.(); });
   const root = document.documentElement || document.body;
   if (root) {
     state.observer.observe(root, {
@@ -119,6 +252,8 @@ public sealed class ChromeDevToolsService
     private readonly SemaphoreSlim _monitorBrowserRecoveryGate = new(1, 1);
     private readonly object _chatStateFailureSync = new();
     private readonly Dictionary<string, int> _chatStateTransportFailures = new(StringComparer.Ordinal);
+    private readonly object _autoFollowSync = new();
+    private readonly Dictionary<string, long> _autoFollowSequences = new(StringComparer.Ordinal);
     private Process? _monitorChromeProcess;
     private IntPtr _lastKnownWindowHandle = IntPtr.Zero;
     private bool _monitorChromeHidden;
@@ -140,7 +275,7 @@ public sealed class ChromeDevToolsService
     }
     public async Task<ChromeTab> CreateTabAsync(string url, CancellationToken cancellationToken = default) { var existing = await GetTabsAsync(cancellationToken); var controlTab = existing.FirstOrDefault() ?? throw new InvalidOperationException("Monitor Chrome has no controllable page."); var result = await SendCommandAsync(controlTab, "Target.createTarget", new { url }, cancellationToken); var targetId = result.TryGetProperty("targetId", out var id) ? id.GetString() : null; if (string.IsNullOrWhiteSpace(targetId)) throw new InvalidOperationException("Chrome did not return a target ID for the new tab."); for (var attempt = 0; attempt < 40; attempt++) { cancellationToken.ThrowIfCancellationRequested(); await Task.Delay(250, cancellationToken); var tabs = await GetTabsAsync(cancellationToken); var created = tabs.FirstOrDefault(t => string.Equals(t.Id, targetId, StringComparison.Ordinal)); if (created is not null) return created; } throw new TimeoutException("The new Chrome tab did not become ready in time."); }
     public Task<ChromeTab> CreateNewChatTabAsync(CancellationToken cancellationToken = default) => CreateTabAsync(_config.StartUrl, cancellationToken);
-    public async Task<bool> CloseTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) { try { using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/close/{Uri.EscapeDataString(tab.Id)}", cancellationToken); return response.IsSuccessStatusCode; } catch { return false; } finally { _sessionPool.Invalidate(tab.Id); } }
+    public async Task<bool> CloseTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) { try { using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/close/{Uri.EscapeDataString(tab.Id)}", cancellationToken); return response.IsSuccessStatusCode; } catch { return false; } finally { _sessionPool.Invalidate(tab.Id); lock (_autoFollowSync) _autoFollowSequences.Remove(tab.Id); } }
     public async Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken = default)
     {
         var trackedProcess = _monitorChromeProcess;
@@ -294,12 +429,41 @@ public sealed class ChromeDevToolsService
             return await ReadChatStateCoreAsync(tab, cancellationToken);
         }
     }
+    private string BuildChatStateInstallExpression()
+    {
+        return ChatStateInstallExpressionTemplate
+            .Replace("__SMART_ENABLED__", _config.SmartAutoFollowEnabled ? "true" : "false", StringComparison.Ordinal)
+            .Replace("__SMART_THROTTLE_MS__", Math.Clamp(_config.SmartAutoFollowThrottleMilliseconds, 150, 2000).ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("__SMART_NEAR_BOTTOM_PX__", Math.Clamp(_config.SmartAutoFollowNearBottomPixels, 64, 600).ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
+    }
+
+    private void RecordAutoFollowState(ChromeTab tab, JsonElement value)
+    {
+        if (!value.TryGetProperty("autoFollow", out var autoFollow) || autoFollow.ValueKind != JsonValueKind.Object)
+            return;
+        var sequence = autoFollow.TryGetProperty("sequence", out var sequenceElement) && sequenceElement.TryGetInt64(out var parsedSequence) ? parsedSequence : 0;
+        var mode = autoFollow.TryGetProperty("mode", out var modeElement) ? modeElement.GetString() ?? "unknown" : "unknown";
+        var eventName = autoFollow.TryGetProperty("event", out var eventElement) ? eventElement.GetString() ?? "state" : "state";
+        var shouldRecord = false;
+        lock (_autoFollowSync)
+        {
+            if (!_autoFollowSequences.TryGetValue(tab.Id, out var previousSequence) || previousSequence != sequence)
+            {
+                _autoFollowSequences[tab.Id] = sequence;
+                shouldRecord = true;
+            }
+        }
+        if (shouldRecord)
+            RuntimeFlightRecorder.Record("AutoFollow", "StateChanged", mode, eventName);
+    }
+
     private async Task<ChatPageState> ReadChatStateCoreAsync(ChromeTab tab, CancellationToken cancellationToken)
     {
         var value = await EvaluateAsync(tab, ChatStateReadExpression, cancellationToken, false);
         if (value.ValueKind == JsonValueKind.Null)
-            value = await EvaluateAsync(tab, ChatStateInstallExpression, cancellationToken, false);
+            value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false);
 
+        RecordAutoFollowState(tab, value);
         return new ChatPageState(
             value.TryGetProperty("assistantCount", out var count) ? count.GetInt32() : 0,
             value.TryGetProperty("lastAssistantText", out var text) ? text.GetString() ?? string.Empty : string.Empty,
@@ -739,6 +903,7 @@ public sealed class ChromeDevToolsService
             });
           if (!sendButton || sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true' || !visible(sendButton)) return false;
           sendButton.click();
+          try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch { }
           return true;
         })()
         """;
