@@ -29,6 +29,12 @@ internal sealed record RuntimeInspectorComposerDiagnostics(
     string Reason,
     DateTimeOffset ObservedAtUtc);
 
+internal sealed record RuntimeInspectorVerifiedSendDiagnostics(
+    string Phase,
+    string Reason,
+    int SubmitAttempts,
+    DateTimeOffset ObservedAtUtc);
+
 internal sealed record RuntimeInspectorUiOverflow(
     string FormScope,
     string ParentType,
@@ -52,6 +58,7 @@ internal sealed record FieldRuntimeSnapshot(
     IReadOnlyList<object> Browsers,
     BrowserProcessDiagnostics BrowserDiagnostics,
     RuntimeInspectorComposerDiagnostics ComposerDiagnostics,
+    RuntimeInspectorVerifiedSendDiagnostics VerifiedSendDiagnostics,
     RuntimeInspectorUiDiagnostics UiDiagnostics,
     IReadOnlyList<object> Ui,
     IReadOnlyList<object> Workers);
@@ -98,6 +105,12 @@ internal static class RuntimeInspectorService
             composerSnapshot.Decision.ToString(),
             composerSnapshot.Reason,
             composerSnapshot.ObservedAtUtc);
+        var verifiedSendSnapshot = VerifiedSendDiagnostics.Last;
+        var verifiedSendDiagnostics = new RuntimeInspectorVerifiedSendDiagnostics(
+            verifiedSendSnapshot.Phase,
+            verifiedSendSnapshot.Reason,
+            verifiedSendSnapshot.SubmitAttempts,
+            verifiedSendSnapshot.ObservedAtUtc);
 
         var ui = new List<object>();
         var overflows = new List<RuntimeInspectorUiOverflow>();
@@ -129,6 +142,7 @@ internal static class RuntimeInspectorService
             browsers,
             browserDiagnostics,
             composerDiagnostics,
+            verifiedSendDiagnostics,
             uiDiagnostics,
             ui,
             workers);
@@ -142,6 +156,7 @@ internal static class RuntimeInspectorService
         var build = JsonSerializer.Serialize(snapshot.Build);
         var browser = snapshot.BrowserDiagnostics;
         var composer = snapshot.ComposerDiagnostics;
+        var verifiedSend = snapshot.VerifiedSendDiagnostics;
         var ui = snapshot.UiDiagnostics;
         return $"GPTDeskTop Runtime Inspector\r\n" +
                $"Captured: {snapshot.CapturedUtc:O}\r\n" +
@@ -150,6 +165,7 @@ internal static class RuntimeInspectorService
                $"System browser processes: {browser.Total} (Chrome: {browser.Chrome}, Edge/WebView: {browser.EdgeOrWebView}, titled windows: {browser.TitledWindows})\r\n" +
                $"Browser scope: {browser.Scope} — {browser.OwnershipNote}\r\n" +
                $"Composer gate: {composer.Reason} ({composer.Decision}) @ {composer.ObservedAtUtc:O}\r\n" +
+               $"Verified send: {verifiedSend.Phase} | attempts: {verifiedSend.SubmitAttempts} | {verifiedSend.Reason} @ {verifiedSend.ObservedAtUtc:O}\r\n" +
                $"UI forms: {ui.FormsCaptured} | visible controls: {ui.VisibleControls} | visible overflows: {ui.VisibleOverflowCount}\r\n" +
                $"UI controls: {snapshot.Ui.Count}\r\n";
     }
