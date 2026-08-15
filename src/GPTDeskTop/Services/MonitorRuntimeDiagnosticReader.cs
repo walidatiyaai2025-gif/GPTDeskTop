@@ -27,36 +27,42 @@ internal static class MonitorRuntimeDiagnosticReader
     {
         ArgumentNullException.ThrowIfNull(monitor);
 
-        var runningField = typeof(ChatGptMonitorService).GetField("_running", RuntimeFlags);
-        if (runningField?.GetValue(monitor) is not System.Collections.IDictionary running)
+        var monitorType = typeof(ChatGptMonitorService);
+        var runningField = monitorType.GetField("_running", RuntimeFlags);
+        var syncField = monitorType.GetField("_sync", RuntimeFlags);
+        if (runningField?.GetValue(monitor) is not System.Collections.IDictionary running
+            || syncField?.GetValue(monitor) is not object syncRoot)
             return Array.Empty<MonitorRuntimeDiagnostic>();
 
         var now = DateTimeOffset.UtcNow;
-        var result = new List<MonitorRuntimeDiagnostic>(running.Count);
-        foreach (System.Collections.DictionaryEntry entry in running)
+        lock (syncRoot)
         {
-            var runtime = entry.Value;
-            if (runtime is null) continue;
+            var result = new List<MonitorRuntimeDiagnostic>(running.Count);
+            foreach (System.Collections.DictionaryEntry entry in running)
+            {
+                var runtime = entry.Value;
+                if (runtime is null) continue;
 
-            var runtimeType = runtime.GetType();
-            var worker = runtimeType.GetProperty("Worker")?.GetValue(runtime) as Task;
-            var cancellation = runtimeType.GetProperty("Cancellation")?.GetValue(runtime) as CancellationTokenSource;
-            var stopOwnsCleanup = runtimeType.GetProperty("StopOwnsCleanup")?.GetValue(runtime) is true;
-            var firstObserved = FirstObservations.GetValue(runtime, _ => new FirstObservation(now)).Utc;
+                var runtimeType = runtime.GetType();
+                var worker = runtimeType.GetProperty("Worker")?.GetValue(runtime) as Task;
+                var cancellation = runtimeType.GetProperty("Cancellation")?.GetValue(runtime) as CancellationTokenSource;
+                var stopOwnsCleanup = runtimeType.GetProperty("StopOwnsCleanup")?.GetValue(runtime) is true;
+                var firstObserved = FirstObservations.GetValue(runtime, _ => new FirstObservation(now)).Utc;
 
-            var lifecycle = Classify(worker, cancellation?.IsCancellationRequested == true, stopOwnsCleanup);
-            result.Add(new MonitorRuntimeDiagnostic(
-                Convert.ToInt64(entry.Key, System.Globalization.CultureInfo.InvariantCulture),
-                lifecycle,
-                worker?.Status.ToString() ?? "Unknown",
-                worker?.IsCompleted ?? false,
-                worker?.IsFaulted ?? false,
-                cancellation?.IsCancellationRequested ?? false,
-                firstObserved,
-                Math.Max(0, (now - firstObserved).TotalSeconds)));
+                var lifecycle = Classify(worker, cancellation?.IsCancellationRequested == true, stopOwnsCleanup);
+                result.Add(new MonitorRuntimeDiagnostic(
+                    Convert.ToInt64(entry.Key, System.Globalization.CultureInfo.InvariantCulture),
+                    lifecycle,
+                    worker?.Status.ToString() ?? "Unknown",
+                    worker?.IsCompleted ?? false,
+                    worker?.IsFaulted ?? false,
+                    cancellation?.IsCancellationRequested ?? false,
+                    firstObserved,
+                    Math.Max(0, (now - firstObserved).TotalSeconds)));
+            }
+
+            return result;
         }
-
-        return result;
     }
 
     internal static string Classify(Task? worker, bool cancellationRequested, bool stopOwnsCleanup)
