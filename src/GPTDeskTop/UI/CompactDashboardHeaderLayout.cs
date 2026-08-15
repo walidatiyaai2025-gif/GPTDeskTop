@@ -169,8 +169,20 @@ internal static class CompactDashboardHeaderLayout
             Scale(parts.Header, HeaderVerticalPadding));
         parts.Header.Margin = new Padding(0, 0, 0, Scale(parts.Header, HeaderBottomMargin));
 
+        // These controls are descendants of older dashboard chrome that used 100px-tall rows.
+        // Clear those inherited physical constraints before fitting them into the compact row;
+        // otherwise WinForms preserves the stale child bounds and silently clips the visible UI.
+        parts.HeaderLayout.Dock = DockStyle.Fill;
+        parts.HeaderLayout.AutoSize = false;
+        parts.HeaderLayout.MinimumSize = Size.Empty;
+        parts.HeaderLayout.MaximumSize = Size.Empty;
         parts.HeaderLayout.Margin = Padding.Empty;
         parts.HeaderLayout.Padding = Padding.Empty;
+
+        parts.TitleBlock.Dock = DockStyle.Fill;
+        parts.TitleBlock.AutoSize = false;
+        parts.TitleBlock.MinimumSize = Size.Empty;
+        parts.TitleBlock.MaximumSize = Size.Empty;
         parts.TitleBlock.Margin = Padding.Empty;
         parts.TitleBlock.Padding = Padding.Empty;
         parts.TitleBlock.RowStyles[0].SizeType = SizeType.Percent;
@@ -183,6 +195,10 @@ internal static class CompactDashboardHeaderLayout
         parts.Title.TextAlign = ContentAlignment.MiddleLeft;
         parts.Title.Dock = DockStyle.Fill;
 
+        parts.Metrics.Dock = DockStyle.Fill;
+        parts.Metrics.AutoSize = false;
+        parts.Metrics.MinimumSize = Size.Empty;
+        parts.Metrics.MaximumSize = Size.Empty;
         parts.Metrics.Padding = Padding.Empty;
         parts.Metrics.Margin = Padding.Empty;
         parts.Metrics.WrapContents = false;
@@ -206,6 +222,10 @@ internal static class CompactDashboardHeaderLayout
         metric.Layout.SuspendLayout();
         try
         {
+            metric.Layout.Dock = DockStyle.Fill;
+            metric.Layout.AutoSize = false;
+            metric.Layout.MinimumSize = Size.Empty;
+            metric.Layout.MaximumSize = Size.Empty;
             metric.Layout.Margin = Padding.Empty;
             metric.Layout.Padding = Padding.Empty;
 

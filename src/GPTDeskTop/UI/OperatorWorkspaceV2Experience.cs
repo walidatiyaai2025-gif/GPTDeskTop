@@ -4,8 +4,8 @@ namespace GPTDeskTop.UI;
 
 /// <summary>
 /// GPTDeskTop 2.0 operator workspace: the main surface is reserved for open ChatGPT tabs and
-/// monitor state. Live activity, history, runtime health and development details remain available
-/// on demand.
+/// monitor state. The canonical MainForm live-activity/stored-history surface, runtime health and
+/// lazily-created support diagnostics remain available on demand without adding cold-start work.
 /// </summary>
 internal static class OperatorWorkspaceV2Experience
 {
@@ -37,14 +37,15 @@ internal static class OperatorWorkspaceV2Experience
 
         var development = Descendants(form).OfType<DevelopmentTaskDashboardControl>().FirstOrDefault();
         var runtimeHealth = Descendants(form).OfType<RuntimeHealthControl>().FirstOrDefault();
-        var supportDiagnostics = Descendants(form).OfType<SupportDiagnosticsControl>().FirstOrDefault();
-        var history = Descendants(form).OfType<HistoryWorkspaceControl>().FirstOrDefault();
         var root = form.Controls
             .OfType<TableLayoutPanel>()
             .FirstOrDefault(candidate => candidate.Dock == DockStyle.Fill && candidate.RowCount == 5 && candidate.ColumnCount == 1);
-        if (development is null || runtimeHealth is null || supportDiagnostics is null || history is null || root is null || root.RowStyles.Count < 5)
+        if (development is null || runtimeHealth is null || root is null || root.RowStyles.Count < 5)
             return false;
 
+        // MainForm already owns the canonical diagnostics split: Live Activity on one side and
+        // Stored History on the other. Reuse that exact control instead of requiring the removed
+        // eager HistoryWorkspaceControl and creating a second history data/grid pipeline.
         var diagnostics = root.Controls
             .Cast<Control>()
             .FirstOrDefault(control => root.GetRow(control) == 3);
@@ -64,14 +65,9 @@ internal static class OperatorWorkspaceV2Experience
             root.RowStyles[3].SizeType = SizeType.Absolute;
             root.RowStyles[3].Height = 0F;
 
-            PrepareHistoryForOnDemand(history);
-            PrepareRuntimeHealthForOnDemand(runtimeHealth, supportDiagnostics);
-            var liveWindow = BuildLiveMonitorWindow(
-                form,
-                diagnostics,
-                history,
-                runtimeHealth,
-                supportDiagnostics);
+            PrepareDiagnosticsForOnDemand(diagnostics);
+            PrepareRuntimeHealthForOnDemand(runtimeHealth);
+            var liveWindow = BuildLiveMonitorWindow(form, diagnostics, runtimeHealth);
             var footerStatus = BuildFooter(root, versionLabel, development);
 
             // Keep the control alive because its existing buttons remain the single command source
@@ -84,8 +80,9 @@ internal static class OperatorWorkspaceV2Experience
             refreshTimer.Tick += (_, _) => footerStatus.Text = BuildDevelopmentFooterText(development);
             refreshTimer.Start();
 
-            var installation = new Installation(form, liveWindow, footerStatus, refreshTimer);
+            var installation = new Installation(form, liveWindow, runtimeHealth, footerStatus, refreshTimer);
             Installations.Add(form, installation);
+            installation.TryAttachSupportDiagnostics();
             form.FormClosing += (_, _) => installation.OwnerClosing = true;
             form.FormClosed += (_, _) => installation.Dispose();
         }
@@ -113,68 +110,31 @@ internal static class OperatorWorkspaceV2Experience
         installation.LiveWindow.Activate();
     }
 
-    private static void PrepareHistoryForOnDemand(HistoryWorkspaceControl history)
+    private static void PrepareDiagnosticsForOnDemand(Control diagnostics)
     {
-        // Stored History used to own a permanent 56/330px strip on MainForm. In v2 it is a
-        // full-height on-demand surface, so the tab host owns its dimensions instead.
-        ExpandableWorkspaceLayout.UseHostManagedHeight(history);
-        history.Parent?.Controls.Remove(history);
-        history.Dock = DockStyle.Fill;
-        history.Margin = Padding.Empty;
-        history.MinimumSize = Size.Empty;
-        history.MaximumSize = Size.Empty;
-
-        // Show the existing history body without mutating IsExpanded. That property is persisted
-        // by Program.cs; opening/re-hosting the on-demand window must not rewrite user settings.
-        var bodyLayout = Descendants(history)
-            .OfType<TableLayoutPanel>()
-            .FirstOrDefault(layout =>
-                layout.RowCount == 2 &&
-                layout.RowStyles.Count >= 2 &&
-                layout.RowStyles[0].SizeType == SizeType.Absolute &&
-                Math.Abs(layout.RowStyles[0].Height - 46F) < 0.1F);
-        if (bodyLayout?.Parent is { } historyBody)
-            historyBody.Visible = true;
-
-        var toggle = Descendants(history)
-            .OfType<Button>()
-            .FirstOrDefault(button => string.Equals(
-                button.AccessibleName,
-                "Expand or collapse stored history explorer",
-                StringComparison.Ordinal));
-        if (toggle is not null)
-        {
-            toggle.Visible = false;
-            toggle.TabStop = false;
-        }
+        diagnostics.Dock = DockStyle.Fill;
+        diagnostics.Margin = Padding.Empty;
+        diagnostics.MinimumSize = Size.Empty;
+        diagnostics.MaximumSize = Size.Empty;
     }
 
-    private static void PrepareRuntimeHealthForOnDemand(
-        RuntimeHealthControl runtimeHealth,
-        SupportDiagnosticsControl supportDiagnostics)
+    private static void PrepareRuntimeHealthForOnDemand(RuntimeHealthControl runtimeHealth)
     {
         // Runtime Health used to be a permanent top-docked strip on MainForm. Keep the same
         // control instance alive for Commands-menu proxies, but let the on-demand tab own where
         // it is displayed. Do not change IsExpanded here: Program.cs persists that user choice.
         ExpandableWorkspaceLayout.UseHostManagedHeight(runtimeHealth);
         runtimeHealth.Parent?.Controls.Remove(runtimeHealth);
-        supportDiagnostics.Parent?.Controls.Remove(supportDiagnostics);
-
         runtimeHealth.Dock = DockStyle.Top;
         runtimeHealth.Margin = Padding.Empty;
         runtimeHealth.MinimumSize = Size.Empty;
         runtimeHealth.MaximumSize = Size.Empty;
-
-        supportDiagnostics.Dock = DockStyle.Top;
-        supportDiagnostics.Margin = Padding.Empty;
     }
 
-    private static Form BuildLiveMonitorWindow(
+    private static LiveWindowParts BuildLiveMonitorWindow(
         MainForm owner,
         Control diagnostics,
-        HistoryWorkspaceControl history,
-        RuntimeHealthControl runtimeHealth,
-        SupportDiagnosticsControl supportDiagnostics)
+        RuntimeHealthControl runtimeHealth)
     {
         var window = new Form
         {
@@ -192,17 +152,13 @@ internal static class OperatorWorkspaceV2Experience
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
             Padding = new Point(18, 6),
-            AccessibleName = "Live monitor, stored history, and runtime health tabs"
+            AccessibleName = "Live monitor, stored history, runtime health, and support diagnostics tabs"
         };
-        var livePage = new TabPage("Live Activity")
+        var livePage = new TabPage("Live Monitor & History")
         {
             BackColor = FluentTheme.Background,
-            Padding = new Padding(8)
-        };
-        var historyPage = new TabPage("Stored History")
-        {
-            BackColor = FluentTheme.Background,
-            Padding = new Padding(8)
+            Padding = new Padding(8),
+            AccessibleDescription = "Canonical MainForm diagnostics surface containing Live Activity and Stored History."
         };
         var runtimePage = new TabPage("Runtime Health")
         {
@@ -216,26 +172,85 @@ internal static class OperatorWorkspaceV2Experience
             AutoScroll = true,
             Margin = Padding.Empty
         };
+        var supportPlaceholder = BuildSupportPlaceholder(runtimeHealth);
 
         diagnostics.Dock = DockStyle.Fill;
         diagnostics.Margin = Padding.Empty;
-        history.Dock = DockStyle.Fill;
-
         livePage.Controls.Add(diagnostics);
-        historyPage.Controls.Add(history);
-        runtimeHost.Controls.Add(supportDiagnostics);
+
+        runtimeHost.Controls.Add(supportPlaceholder);
         runtimeHost.Controls.Add(runtimeHealth);
         runtimeHost.Controls.SetChildIndex(runtimeHealth, 0);
-        runtimeHost.Controls.SetChildIndex(supportDiagnostics, 1);
+        runtimeHost.Controls.SetChildIndex(supportPlaceholder, 1);
         runtimePage.Controls.Add(runtimeHost);
 
         tabs.TabPages.Add(livePage);
-        tabs.TabPages.Add(historyPage);
         tabs.TabPages.Add(runtimePage);
         window.Controls.Add(tabs);
 
         FluentTheme.Apply(window);
-        return window;
+        return new LiveWindowParts(window, tabs, runtimePage, runtimeHost, supportPlaceholder);
+    }
+
+    private static Control BuildSupportPlaceholder(RuntimeHealthControl runtimeHealth)
+    {
+        var placeholder = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 58,
+            MinimumSize = new Size(0, 58),
+            BackColor = FluentTheme.Background,
+            Padding = new Padding(12, 3, 12, 5),
+            AccessibleName = "Lazy support diagnostics placeholder"
+        };
+        var frame = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = FluentTheme.Surface,
+            BorderStyle = BorderStyle.FixedSingle,
+            Padding = new Padding(12, 6, 12, 6)
+        };
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = FluentTheme.Surface
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+        var message = new Label
+        {
+            Text = "Support Diagnostics stays unloaded until requested, preserving fast startup.",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true,
+            ForeColor = FluentTheme.Muted
+        };
+        var load = new Button
+        {
+            Text = "Load Support Diagnostics",
+            AutoSize = true,
+            AccessibleName = "Load support diagnostics on demand"
+        };
+        FluentTheme.StyleButton(load, primary: true);
+        load.Click += (_, _) =>
+        {
+            // Program.cs owns creation and persistence. Expanding the existing Runtime Health
+            // control invokes its registered lazy factory; the owner ControlAdded hook below then
+            // rehosts that same SupportDiagnosticsControl instance into this on-demand window.
+            if (!runtimeHealth.IsExpanded)
+                runtimeHealth.IsExpanded = true;
+        };
+
+        layout.Controls.Add(message, 0, 0);
+        layout.Controls.Add(load, 1, 0);
+        frame.Controls.Add(layout);
+        placeholder.Controls.Add(frame);
+        return placeholder;
     }
 
     private static Label BuildFooter(
@@ -328,21 +343,94 @@ internal static class OperatorWorkspaceV2Experience
     private sealed class Installation : IDisposable
     {
         private readonly MainForm _owner;
+        private readonly RuntimeHealthControl _runtimeHealth;
         private readonly System.Windows.Forms.Timer _timer;
+        private readonly Panel _runtimeHost;
+        private Control? _supportPlaceholder;
+        private SupportDiagnosticsControl? _supportDiagnostics;
+        private bool _attachScheduled;
 
-        public Installation(MainForm owner, Form liveWindow, Label footerStatus, System.Windows.Forms.Timer timer)
+        public Installation(
+            MainForm owner,
+            LiveWindowParts liveWindow,
+            RuntimeHealthControl runtimeHealth,
+            Label footerStatus,
+            System.Windows.Forms.Timer timer)
         {
             _owner = owner;
-            LiveWindow = liveWindow;
+            _runtimeHealth = runtimeHealth;
+            LiveWindow = liveWindow.Window;
             FooterStatus = footerStatus;
             _timer = timer;
+            _runtimeHost = liveWindow.RuntimeHost;
+            _supportPlaceholder = liveWindow.SupportPlaceholder;
 
             LiveWindow.FormClosing += OnLiveWindowClosing;
+            _owner.ControlAdded += OnOwnerControlAdded;
+            _runtimeHealth.ExpandedChanged += OnRuntimeHealthExpandedChanged;
         }
 
         public Form LiveWindow { get; }
         public Label FooterStatus { get; }
         public bool OwnerClosing { get; set; }
+
+        private void OnOwnerControlAdded(object? sender, ControlEventArgs e)
+        {
+            if (e.Control is SupportDiagnosticsControl)
+                ScheduleSupportAttach();
+        }
+
+        private void OnRuntimeHealthExpandedChanged(object? sender, EventArgs e)
+            => ScheduleSupportAttach();
+
+        private void ScheduleSupportAttach()
+        {
+            if (_attachScheduled || _supportDiagnostics is not null || _owner.IsDisposed || _owner.Disposing)
+                return;
+
+            _attachScheduled = true;
+            try
+            {
+                _owner.BeginInvoke((Action)(() =>
+                {
+                    _attachScheduled = false;
+                    TryAttachSupportDiagnostics();
+                }));
+            }
+            catch (InvalidOperationException)
+            {
+                _attachScheduled = false;
+            }
+        }
+
+        internal void TryAttachSupportDiagnostics()
+        {
+            if (_supportDiagnostics is not null || _owner.IsDisposed || _owner.Disposing)
+                return;
+
+            // Program.cs adds the lazy SupportDiagnosticsControl directly to MainForm. Never create
+            // a second instance here: wait for that canonical factory and move the exact instance.
+            var support = _owner.Controls.OfType<SupportDiagnosticsControl>().FirstOrDefault();
+            if (support is null)
+                return;
+
+            support.Parent?.Controls.Remove(support);
+            support.Dock = DockStyle.Top;
+            support.Margin = Padding.Empty;
+            support.MaximumSize = Size.Empty;
+
+            if (_supportPlaceholder is not null)
+            {
+                _runtimeHost.Controls.Remove(_supportPlaceholder);
+                _supportPlaceholder.Dispose();
+                _supportPlaceholder = null;
+            }
+
+            _runtimeHost.Controls.Add(support);
+            _runtimeHost.Controls.SetChildIndex(_runtimeHealth, 0);
+            _runtimeHost.Controls.SetChildIndex(support, 1);
+            _supportDiagnostics = support;
+        }
 
         private void OnLiveWindowClosing(object? sender, FormClosingEventArgs e)
         {
@@ -355,10 +443,19 @@ internal static class OperatorWorkspaceV2Experience
 
         public void Dispose()
         {
+            _owner.ControlAdded -= OnOwnerControlAdded;
+            _runtimeHealth.ExpandedChanged -= OnRuntimeHealthExpandedChanged;
             _timer.Stop();
             _timer.Dispose();
             LiveWindow.FormClosing -= OnLiveWindowClosing;
             LiveWindow.Dispose();
         }
     }
+
+    private sealed record LiveWindowParts(
+        Form Window,
+        TabControl Tabs,
+        TabPage RuntimePage,
+        Panel RuntimeHost,
+        Control SupportPlaceholder);
 }

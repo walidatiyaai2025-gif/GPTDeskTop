@@ -25,6 +25,23 @@ public sealed class CompactDashboardHeaderUiRegressionTests
     }
 
     [Fact]
+    public void CompactHeaderClearsLegacyChildBoundsSoVisibleChildrenCannotOverflowTheRow()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "CompactDashboardHeaderLayout.cs");
+
+        Assert.Contains("parts.HeaderLayout.Dock = DockStyle.Fill;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.HeaderLayout.AutoSize = false;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.TitleBlock.Dock = DockStyle.Fill;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.TitleBlock.AutoSize = false;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.TitleBlock.MinimumSize = Size.Empty;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.TitleBlock.MaximumSize = Size.Empty;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Metrics.Dock = DockStyle.Fill;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Metrics.AutoSize = false;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Metrics.MinimumSize = Size.Empty;", source, StringComparison.Ordinal);
+        Assert.Contains("parts.Metrics.MaximumSize = Size.Empty;", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void SubtitleConsumesNoVisualRowButPurposeRemainsAccessible()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "CompactDashboardHeaderLayout.cs");
@@ -39,7 +56,7 @@ public sealed class CompactDashboardHeaderUiRegressionTests
     }
 
     [Fact]
-    public void FourMetricChipsUseSingleRowThirtyPixelPresentationWithoutReplacingBoundLabels()
+    public void FourMetricChipsAndTheirInnerLayoutsFitTheThirtyPixelPresentation()
     {
         var compact = ReadSource("src", "GPTDeskTop", "UI", "CompactDashboardHeaderLayout.cs");
         var main = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
@@ -47,6 +64,10 @@ public sealed class CompactDashboardHeaderUiRegressionTests
         Assert.Contains("private const int MetricLogicalWidth = 108;", compact, StringComparison.Ordinal);
         Assert.Contains("private const int MetricLogicalHeight = 30;", compact, StringComparison.Ordinal);
         Assert.Contains("if (chipPanels.Length != 4)", compact, StringComparison.Ordinal);
+        Assert.Contains("metric.Layout.Dock = DockStyle.Fill;", compact, StringComparison.Ordinal);
+        Assert.Contains("metric.Layout.AutoSize = false;", compact, StringComparison.Ordinal);
+        Assert.Contains("metric.Layout.MinimumSize = Size.Empty;", compact, StringComparison.Ordinal);
+        Assert.Contains("metric.Layout.MaximumSize = Size.Empty;", compact, StringComparison.Ordinal);
         Assert.Contains("metric.Layout.RowCount = 1;", compact, StringComparison.Ordinal);
         Assert.Contains("metric.Layout.ColumnCount = 2;", compact, StringComparison.Ordinal);
         Assert.Contains("metric.Layout.Controls.Add(metric.Caption, 0, 0);", compact, StringComparison.Ordinal);

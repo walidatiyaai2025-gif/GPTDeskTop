@@ -8,11 +8,28 @@ using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.Services;
 
+internal sealed record RuntimeInspectorBrowserProcess(
+    int ProcessId,
+    string Name,
+    string MainWindowTitle,
+    bool Responding,
+    bool HasMainWindow);
+
+internal sealed record BrowserProcessDiagnostics(
+    string Scope,
+    string OwnershipNote,
+    int Total,
+    int Chrome,
+    int EdgeOrWebView,
+    int TitledWindows,
+    int Responding);
+
 internal sealed record FieldRuntimeSnapshot(
     DateTimeOffset CapturedUtc,
     object Build,
     IReadOnlyList<object> Monitors,
     IReadOnlyList<object> Browsers,
+    BrowserProcessDiagnostics BrowserDiagnostics,
     IReadOnlyList<object> Ui,
     IReadOnlyList<object> Workers);
 
@@ -34,17 +51,27 @@ internal static class RuntimeInspectorService
         };
 
         var monitors = CaptureMonitorRuntime(monitor);
-        var browsers = Process.GetProcesses()
+        var browserRows = Process.GetProcesses()
             .Where(p => p.ProcessName.Contains("chrome", StringComparison.OrdinalIgnoreCase) || p.ProcessName.Contains("msedge", StringComparison.OrdinalIgnoreCase))
-            .Select(p => SafeProcess(p))
+            .Select(SafeProcess)
             .Where(x => x is not null)
-            .Cast<object>()
+            .Cast<RuntimeInspectorBrowserProcess>()
             .ToArray();
+        var browsers = browserRows.Cast<object>().ToArray();
+        var browserDiagnostics = new BrowserProcessDiagnostics(
+            Scope: "System-wide",
+            OwnershipNote: "Diagnostic inventory only; these processes are not asserted to be owned by GPTDeskTop.",
+            Total: browserRows.Length,
+            Chrome: browserRows.Count(row => row.Name.Contains("chrome", StringComparison.OrdinalIgnoreCase)),
+            EdgeOrWebView: browserRows.Count(row => row.Name.Contains("msedge", StringComparison.OrdinalIgnoreCase) || row.Name.Contains("webview", StringComparison.OrdinalIgnoreCase)),
+            TitledWindows: browserRows.Count(row => row.HasMainWindow || !string.IsNullOrWhiteSpace(row.MainWindowTitle)),
+            Responding: browserRows.Count(row => row.Responding));
+
         var ui = new List<object>();
         Walk(owner, 0, ui);
         WalkToolStrips(owner, ui);
         var workers = monitors.Select(m => (object)new { Kind = "MonitorWorker", Snapshot = m }).ToArray();
-        return new FieldRuntimeSnapshot(DateTimeOffset.UtcNow, build, monitors, browsers, ui, workers);
+        return new FieldRuntimeSnapshot(DateTimeOffset.UtcNow, build, monitors, browsers, browserDiagnostics, ui, workers);
     }
 
     public static string ToSanitizedJson(FieldRuntimeSnapshot snapshot) => JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
@@ -52,7 +79,14 @@ internal static class RuntimeInspectorService
     public static string Summary(FieldRuntimeSnapshot snapshot)
     {
         var build = JsonSerializer.Serialize(snapshot.Build);
-        return $"GPTDeskTop Runtime Inspector\r\nCaptured: {snapshot.CapturedUtc:O}\r\nBuild: {build}\r\nMonitors: {snapshot.Monitors.Count}\r\nBrowser processes: {snapshot.Browsers.Count}\r\nUI controls: {snapshot.Ui.Count}\r\n";
+        var browser = snapshot.BrowserDiagnostics;
+        return $"GPTDeskTop Runtime Inspector\r\n" +
+               $"Captured: {snapshot.CapturedUtc:O}\r\n" +
+               $"Build: {build}\r\n" +
+               $"Monitors: {snapshot.Monitors.Count}\r\n" +
+               $"System browser processes: {browser.Total} (Chrome: {browser.Chrome}, Edge/WebView: {browser.EdgeOrWebView}, titled windows: {browser.TitledWindows})\r\n" +
+               $"Browser scope: {browser.Scope} — {browser.OwnershipNote}\r\n" +
+               $"UI controls: {snapshot.Ui.Count}\r\n";
     }
 
     public static string ExportBundle(Form owner, ChatGptMonitorService monitor, string destinationZip)
@@ -106,11 +140,26 @@ internal static class RuntimeInspectorService
             .ToArray();
     }
 
-    private static object? SafeProcess(Process process)
+    private static RuntimeInspectorBrowserProcess? SafeProcess(Process process)
     {
-        try { return new { ProcessId = process.Id, Name = process.ProcessName, MainWindowTitle = process.MainWindowTitle, Responding = process.Responding }; }
-        catch { return null; }
-        finally { process.Dispose(); }
+        try
+        {
+            var title = process.MainWindowTitle;
+            return new RuntimeInspectorBrowserProcess(
+                process.Id,
+                process.ProcessName,
+                title,
+                process.Responding,
+                process.MainWindowHandle != IntPtr.Zero);
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            process.Dispose();
+        }
     }
 
     private static void Walk(Control control, int depth, List<object> output)
