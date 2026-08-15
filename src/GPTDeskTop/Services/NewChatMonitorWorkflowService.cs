@@ -41,7 +41,13 @@ public sealed class NewChatMonitorWorkflowService
         {
             var freshChat = await CreateFreshChatTabAsync(cancellationToken).ConfigureAwait(false);
             openedTab = freshChat.OpenedTab;
+            var initialSendStartedAtUtc = DateTimeOffset.UtcNow;
             var sent = await SendInitialMessageVerifiedAsync(openedTab, initialChatMessage, cancellationToken).ConfigureAwait(false);
+            var bootstrapSendDiagnostic = VerifiedSendDiagnostics.Last;
+            var bootstrapSubmitAttempts = bootstrapSendDiagnostic.ObservedAtUtc >= initialSendStartedAtUtc
+                ? bootstrapSendDiagnostic.SubmitAttempts
+                : 0;
+            var bootstrapReconciled = false;
 
             // The first send normally navigates ChatGPT from the new-chat shell to /c/{conversation-id}.
             // ChatGPT can also replace the CDP target during that transition. Resolve either the original
@@ -59,10 +65,18 @@ public sealed class NewChatMonitorWorkflowService
                 // its DOM receipt even though ChatGPT is already processing the user turn. Reconcile only
                 // from read-only response activity on the fresh stable target; never submit the bootstrap
                 // again from this recovery path.
-                sent = await ReconcileInitialMessageOnStableConversationAsync(
+                bootstrapReconciled = await ReconcileInitialMessageOnStableConversationAsync(
                     stableTab,
                     freshChat.PreexistingTargetIds,
                     cancellationToken).ConfigureAwait(false);
+                sent = bootstrapReconciled;
+                if (bootstrapReconciled)
+                {
+                    VerifiedSendDiagnostics.Record(
+                        "ReceiptConfirmed",
+                        "bootstrap-stable-response-reconciled",
+                        bootstrapSubmitAttempts);
+                }
             }
 
             if (!sent)
@@ -81,6 +95,18 @@ public sealed class NewChatMonitorWorkflowService
                 throw new InvalidOperationException($"The new conversation is already owned by saved monitor #{registration.MonitorId}. A second monitor was not created.");
 
             savedMonitor.Id = registration.MonitorId;
+            if (bootstrapReconciled)
+            {
+                RuntimeFlightRecorder.Record(
+                    "VerifiedSend",
+                    "BootstrapReconciled",
+                    "confirmed",
+                    "stable-conversation-response-activity",
+                    monitorId: savedMonitor.Id,
+                    tabId: stableTab.Id,
+                    conversationRef: stableTab.Url);
+            }
+
             await _database.AddLogAsync(
                 "Outbound",
                 initialChatMessage,
