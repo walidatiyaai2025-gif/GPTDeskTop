@@ -1,90 +1,91 @@
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
 using GPTDeskTop.Services;
+using GPTDeskTop.Services.DevelopmentTaskEngine;
 
 namespace GPTDeskTop.RuntimeTests;
 
 public sealed class OperatorStartConversationIdentityTests
 {
     [Fact]
-    public void ConversationIdentityNormalizesTrailingSlashButRejectsDifferentConversation()
+    public void ResolverRejectsStaleTabIdWhenItPointsToDifferentConversation()
     {
-        Assert.True(ChatGptConversationIdentity.IsSame(
-            "https://chatgpt.com/c/conversation-1/",
-            "https://chatgpt.com/c/conversation-1"));
-        Assert.False(ChatGptConversationIdentity.IsSame(
-            "https://chatgpt.com/c/conversation-1",
-            "https://chatgpt.com/c/conversation-2"));
-        Assert.False(ChatGptConversationIdentity.IsSame(
-            "https://chatgpt.com/",
-            "https://chatgpt.com/c/conversation-1"));
+        var monitor = new SavedMonitor
+        {
+            Id = 17,
+            TabId = "reused-target-id",
+            Title = "Saved conversation",
+            Url = "https://chatgpt.com/c/saved-conversation"
+        };
+        var tabs = new[]
+        {
+            Tab("reused-target-id", "Different conversation", "https://chatgpt.com/c/different-conversation")
+        };
+
+        var result = SavedMonitorTabResolver.Resolve(monitor, tabs);
+
+        Assert.False(result.Found);
+        Assert.Null(result.Tab);
+        Assert.Equal("None", result.MatchType);
+        Assert.Contains("not currently open", result.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task RuntimeTargetUpdateNeverChangesConversationUrlOrSettings()
+    public void ResolverRebindsExactConversationWhenTargetIdChanged()
+    {
+        var monitor = new SavedMonitor
+        {
+            Id = 18,
+            TabId = "old-target-id",
+            Title = "Saved conversation",
+            Url = "https://chatgpt.com/c/saved-conversation"
+        };
+        var tabs = new[]
+        {
+            Tab("new-target-id", "Saved conversation reloaded", "https://chatgpt.com/c/saved-conversation")
+        };
+
+        var result = SavedMonitorTabResolver.Resolve(monitor, tabs);
+
+        Assert.True(result.Found);
+        Assert.NotNull(result.Tab);
+        Assert.Equal("new-target-id", result.Tab!.Id);
+        Assert.Equal("PersistedConversationUrl", result.MatchType);
+    }
+
+    [Fact]
+    public async Task ConditionalRuntimeTargetUpdateCannotOverwriteConversationHandoff()
     {
         var root = CreateTempRoot();
         try
         {
-            var database = new LocalDatabase(Path.Combine(root, "test.db"));
+            var database = new LocalDatabase(Path.Combine(root, "operator-start.db"));
             await database.InitializeAsync();
             var monitor = new SavedMonitor
             {
-                TabId = "old-target",
-                Title = "Original title",
+                TabId = "original-target",
+                Title = "Original",
                 Url = "https://chatgpt.com/c/original",
-                AutoReply = "keep this",
-                ReplyDelaySeconds = 17,
-                TimerSeconds = 7,
-                Enabled = false,
-                ConversationRotationEnabled = true,
-                RotationCount = 4
+                AutoReply = "كمل",
+                Enabled = true
             };
             var monitorId = await database.SaveMonitorAsync(monitor);
 
-            var updated = await database.UpdateMonitorRuntimeTargetIfConversationMatchesAsync(
+            var handoff = await database.CommitMonitorConversationHandoffAsync(
                 monitorId,
                 "https://chatgpt.com/c/original",
-                "new-target",
-                "Updated title");
-
-            Assert.True(updated);
-            var saved = Assert.Single(await database.GetSavedMonitorsAsync(), item => item.Id == monitorId);
-            Assert.Equal("new-target", saved.TabId);
-            Assert.Equal("Updated title", saved.Title);
-            Assert.Equal("https://chatgpt.com/c/original", saved.Url);
-            Assert.Equal("keep this", saved.AutoReply);
-            Assert.Equal(17, saved.ReplyDelaySeconds);
-            Assert.Equal(7, saved.TimerSeconds);
-            Assert.False(saved.Enabled);
-            Assert.True(saved.ConversationRotationEnabled);
-            Assert.Equal(4, saved.RotationCount);
-        }
-        finally
-        {
-            DeleteTempRoot(root);
-        }
-    }
-
-    [Fact]
-    public async Task RuntimeTargetUpdateRejectsConcurrentConversationChangeWithoutOverwritingRepair()
-    {
-        var root = CreateTempRoot();
-        try
-        {
-            var database = new LocalDatabase(Path.Combine(root, "test.db"));
-            await database.InitializeAsync();
-            var monitor = new SavedMonitor
-            {
-                TabId = "old-target",
-                Title = "Original",
-                Url = "https://chatgpt.com/c/original"
-            };
-            var monitorId = await database.SaveMonitorAsync(monitor);
-            monitor.Url = "https://chatgpt.com/c/repaired";
-            monitor.TabId = "repair-target";
-            monitor.Title = "Repaired";
-            await database.SaveMonitorAsync(monitor);
+                "repair-target",
+                "Repaired",
+                "https://chatgpt.com/c/repaired",
+                incrementRotationCount: false,
+                recordRotation: false,
+                oldTabId: "original-target",
+                rotationTrigger: "Test",
+                startMessage: "كمل",
+                triggerResponse: "handoff",
+                successStatus: "TestHandoff",
+                outboundStatus: "TestOutbound");
+            Assert.Equal("https://chatgpt.com/c/repaired", handoff.NewUrl);
 
             var updated = await database.UpdateMonitorRuntimeTargetIfConversationMatchesAsync(
                 monitorId,
@@ -115,7 +116,7 @@ public sealed class OperatorStartConversationIdentityTests
         Assert.Contains("SavedMonitorTabResolver.Resolve(monitor, _tabs).Tab", source, StringComparison.Ordinal);
         Assert.DoesNotContain("UpdateMonitorRuntimeTargetIfConversationMatchesAsync", uiStart, StringComparison.Ordinal);
         Assert.DoesNotContain("monitor.Url = tab.Url", source, StringComparison.Ordinal);
-        Assert.Contains("ChatGptConversationIdentity.IsSame(monitor.Url, tab.Url)", serviceStart, StringComparison.Ordinal);
+        Assert.Contains("ChatGptConversationIdentity.IsSame(persistedMonitor.Url", serviceStart, StringComparison.Ordinal);
         Assert.Contains("await _chrome.GetTabsAsync()", serviceStart, StringComparison.Ordinal);
         Assert.Contains("UpdateMonitorRuntimeTargetIfConversationMatchesAsync", serviceStart, StringComparison.Ordinal);
         Assert.Contains("MonitorLoopAsync(persistedMonitor, liveTab, cts.Token)", serviceStart, StringComparison.Ordinal);
@@ -150,4 +151,13 @@ public sealed class OperatorStartConversationIdentityTests
         try { Directory.Delete(root, recursive: true); }
         catch { }
     }
+
+    private static ChromeTab Tab(string id, string title, string url) => new()
+    {
+        Id = id,
+        Title = title,
+        Url = url,
+        Type = "page",
+        WebSocketDebuggerUrl = $"ws://fake/{id}"
+    };
 }
