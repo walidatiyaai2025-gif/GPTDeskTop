@@ -1,0 +1,28 @@
+name: Fix Smart Auto Follow State Propagation
+
+on:
+  push:
+    branches:
+      - agent/smart-chat-auto-follow
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[autofollow-dirty-fixed]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python scripts/fix-smart-auto-follow-dirty.py
+      - shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/GPTDeskTop/Services/ChromeDevToolsService.cs tests/GPTDeskTop.RuntimeTests/SmartChatAutoFollowTests.cs
+          git rm .github/workflows/fix-smart-auto-follow-dirty.yml scripts/fix-smart-auto-follow-dirty.py
+          git commit -m "AUTOFOLLOW: propagate pause and resume state immediately [autofollow-dirty-fixed]"
+          git push origin HEAD:${GITHUB_REF_NAME}
