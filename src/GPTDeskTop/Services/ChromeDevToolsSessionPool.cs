@@ -29,9 +29,11 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
         if (string.IsNullOrWhiteSpace(tab.WebSocketDebuggerUrl))
             throw new InvalidOperationException("The selected tab does not expose a DevTools WebSocket URL.");
 
-        RuntimeFlightRecorder.Record("CDP", "CommandRequested", "started", method, tabId: tab.Id, conversationRef: tab.Url);
+        var recordCommandLifecycle = ShouldRecordCommandLifecycle(method);
+        if (recordCommandLifecycle)
+            RuntimeFlightRecorder.Record("CDP", "CommandRequested", "started", method, tabId: tab.Id, conversationRef: tab.Url);
         var session = GetOrCreateSession(tab);
-        return SendInstrumentedAsync(session, tab, method, parameters, cancellationToken, extractRuntimeValue);
+        return SendInstrumentedAsync(session, tab, method, parameters, cancellationToken, extractRuntimeValue, recordCommandLifecycle);
     }
 
     private static async Task<JsonElement> SendInstrumentedAsync(
@@ -40,12 +42,14 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
         string method,
         object parameters,
         CancellationToken cancellationToken,
-        bool extractRuntimeValue)
+        bool extractRuntimeValue,
+        bool recordCommandLifecycle)
     {
         try
         {
             var result = await session.SendCommandAsync(method, parameters, cancellationToken, extractRuntimeValue).ConfigureAwait(false);
-            RuntimeFlightRecorder.Record("CDP", "CommandCompleted", "success", method, tabId: tab.Id, conversationRef: tab.Url);
+            if (recordCommandLifecycle)
+                RuntimeFlightRecorder.Record("CDP", "CommandCompleted", "success", method, tabId: tab.Id, conversationRef: tab.Url);
             return result;
         }
         catch (Exception ex)
@@ -54,6 +58,9 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
             throw;
         }
     }
+
+    private static bool ShouldRecordCommandLifecycle(string method)
+        => !string.Equals(method, "Runtime.evaluate", StringComparison.Ordinal);
 
     public void Prune(IReadOnlyCollection<ChromeTab> liveTabs)
     {
