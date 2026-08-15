@@ -67,6 +67,21 @@ public sealed class FieldExactlyOnceRuntimeInspectorRegressionTests
     }
 
     [Fact]
+    public void BrowserInventoryIsExplicitlySystemWideAndNeverPresentedAsAppOwnership()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "RuntimeInspectorService.cs");
+
+        Assert.Contains("internal sealed record BrowserProcessDiagnostics", source, StringComparison.Ordinal);
+        Assert.Contains("Scope: \"System-wide\"", source, StringComparison.Ordinal);
+        Assert.Contains("not asserted to be owned by GPTDeskTop", source, StringComparison.Ordinal);
+        Assert.Contains("System browser processes:", source, StringComparison.Ordinal);
+        Assert.Contains("Browser scope:", source, StringComparison.Ordinal);
+        Assert.Contains("Chrome: browserRows.Count", source, StringComparison.Ordinal);
+        Assert.Contains("EdgeOrWebView: browserRows.Count", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("\r\nBrowser processes: {snapshot.Browsers.Count}", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ShutdownProgressUsesResponsivePaddingAndCannotKeepNegativeInnerWidth()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "ShutdownLoadingOverlay.cs");
