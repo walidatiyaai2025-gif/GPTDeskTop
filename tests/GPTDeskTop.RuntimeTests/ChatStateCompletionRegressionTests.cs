@@ -14,8 +14,8 @@ public sealed class ChatStateCompletionRegressionTests
         var source = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
-        Assert.Contains("__gptDesktopChatStateCache?.version === 3", source, StringComparison.Ordinal);
-        Assert.Contains("const version = 3;", source, StringComparison.Ordinal);
+        Assert.Contains("__gptDesktopChatStateCache?.version === 4", source, StringComparison.Ordinal);
+        Assert.Contains("const version = 4;", source, StringComparison.Ordinal);
     }
 
     [Fact]
