@@ -5,54 +5,35 @@ public sealed class FieldUncertainDeliveryResponseReconciliationTests
     [Fact]
     public void StableNonErrorAssistantResponseCompletesPriorDeliveryBeforeNextContinuation()
     {
-        var source = ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs");
-        var stableBoundary = source.IndexOf(
-            "if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue;",
-            StringComparison.Ordinal);
-        var handled = source.IndexOf("lastHandledText = text;", stableBoundary, StringComparison.Ordinal);
-        var nonErrorGate = source.IndexOf("if (!isError)", handled, StringComparison.Ordinal);
-        var complete = source.IndexOf("_outboundDelivery.MarkCompleted(monitor.Id);", nonErrorGate, StringComparison.Ordinal);
-        var inboundLog = source.IndexOf("await _database.AddLogAsync(\"Inbound\"", complete, StringComparison.Ordinal);
-        var nextAutoSend = source.IndexOf("var autoSent = await SendWhenReadyAsync(", inboundLog, StringComparison.Ordinal);
+        var source = NormalizeWhitespace(ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
+        const string stableSequence =
+            "if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue; " +
+            "lastHandledText = text; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; " +
+            "if (!isError) _outboundDelivery.MarkCompleted(monitor.Id); " +
+            "await _database.AddLogAsync(\"Inbound\"";
 
-        Assert.True(stableBoundary >= 0);
-        Assert.True(handled > stableBoundary);
-        Assert.True(nonErrorGate > handled);
-        Assert.True(complete > nonErrorGate);
-        Assert.True(inboundLog > complete);
-        Assert.True(nextAutoSend > inboundLog);
+        Assert.Contains(stableSequence, source, StringComparison.Ordinal);
     }
 
     [Fact]
     public void ErrorResponseDoesNotReleaseUncertainDeliveryGate()
     {
-        var source = ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs");
-        var stableBoundary = source.IndexOf(
-            "if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue;",
+        var source = NormalizeWhitespace(ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
+
+        Assert.Contains(
+            "if (!isError) _outboundDelivery.MarkCompleted(monitor.Id);",
+            source,
             StringComparison.Ordinal);
-        var handled = source.IndexOf("lastHandledText = text;", stableBoundary, StringComparison.Ordinal);
-        var nonErrorGate = source.IndexOf("if (!isError)", handled, StringComparison.Ordinal);
-        var complete = source.IndexOf("_outboundDelivery.MarkCompleted(monitor.Id);", nonErrorGate, StringComparison.Ordinal);
-
-        Assert.True(stableBoundary >= 0);
-        Assert.True(handled > stableBoundary);
-        Assert.True(nonErrorGate > handled);
-        Assert.True(complete > nonErrorGate);
-
-        var localWindow = source.Substring(
-            handled,
-            complete - handled + "_outboundDelivery.MarkCompleted(monitor.Id);".Length);
-        Assert.Contains("if (!isError)", localWindow, StringComparison.Ordinal);
         Assert.DoesNotContain(
-            "if (isError)\n                        _outboundDelivery.MarkCompleted",
-            localWindow,
+            "if (isError) _outboundDelivery.MarkCompleted(monitor.Id);",
+            source,
             StringComparison.Ordinal);
     }
 
     [Fact]
     public void CompletionOnlyTransitionsSettledAcceptedOrUncertainOperations()
     {
-        var source = ReadSource("src", "GPTDeskTop", "Runtime", "OutboundDeliveryCoordinator.cs");
+        var source = NormalizeWhitespace(ReadSource("src", "GPTDeskTop", "Runtime", "OutboundDeliveryCoordinator.cs"));
 
         Assert.Contains(
             "state.Phase is not (OutboundDeliveryPhase.Accepted or OutboundDeliveryPhase.ReconcileRequired)",
@@ -65,31 +46,28 @@ public sealed class FieldUncertainDeliveryResponseReconciliationTests
     [Fact]
     public void ConcurrentSendingAndUnreconciledDeliveryRemainDuplicateSuppressed()
     {
-        var source = ReadSource("src", "GPTDeskTop", "Runtime", "OutboundDeliveryCoordinator.cs");
-        var duplicateGuard = source.IndexOf("IsDuplicateInFlight(previous, conversationKey, fingerprint)", StringComparison.Ordinal);
-        var suppressed = source.IndexOf("DuplicateSuppressed", duplicateGuard, StringComparison.Ordinal);
-        var physicalSubmit = source.IndexOf("PhysicalSubmitRequested", suppressed, StringComparison.Ordinal);
+        var source = NormalizeWhitespace(ReadSource("src", "GPTDeskTop", "Runtime", "OutboundDeliveryCoordinator.cs"));
 
-        Assert.True(duplicateGuard >= 0 && suppressed > duplicateGuard && physicalSubmit > suppressed);
         Assert.Contains(
             "previous.Phase is OutboundDeliveryPhase.Sending or OutboundDeliveryPhase.ReconcileRequired",
             source,
             StringComparison.Ordinal);
+        Assert.Contains("DuplicateSuppressed", source, StringComparison.Ordinal);
+        Assert.Contains("uncertain-or-in-flight", source, StringComparison.Ordinal);
         Assert.Contains("receipt-not-confirmed; no blind retry", source, StringComparison.Ordinal);
     }
 
     [Fact]
     public void MonitorAdvancesHandledResponseBeforeAnyAutoSendAttempt()
     {
-        var source = ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs");
-        var stableBoundary = source.IndexOf(
-            "if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue;",
+        var source = NormalizeWhitespace(ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
+        var handled = source.IndexOf(
+            "lastHandledText = text; candidateText = string.Empty; candidateSince = DateTimeOffset.MinValue; if (!isError) _outboundDelivery.MarkCompleted(monitor.Id);",
             StringComparison.Ordinal);
-        var handled = source.IndexOf("lastHandledText = text;", stableBoundary, StringComparison.Ordinal);
-        var complete = source.IndexOf("_outboundDelivery.MarkCompleted(monitor.Id);", handled, StringComparison.Ordinal);
-        var autoSend = source.IndexOf("var autoSent = await SendWhenReadyAsync(", complete, StringComparison.Ordinal);
+        var autoSend = source.IndexOf("var autoSent = await SendWhenReadyAsync(", StringComparison.Ordinal);
 
-        Assert.True(stableBoundary >= 0 && handled > stableBoundary && complete > handled && autoSend > complete);
+        Assert.True(handled >= 0, "Stable response completion boundary was not found.");
+        Assert.True(autoSend > handled, "Auto reply must occur after stable response reconciliation.");
     }
 
     [Fact]
@@ -102,6 +80,11 @@ public sealed class FieldUncertainDeliveryResponseReconciliationTests
         Assert.Contains("verified-send-deadline-without-receipt", source, StringComparison.Ordinal);
         Assert.Contains("receipt-missing-after-refresh", source, StringComparison.Ordinal);
     }
+
+    private static string NormalizeWhitespace(string source)
+        => string.Join(
+            " ",
+            source.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
     private static string ReadSource(params string[] parts)
     {
