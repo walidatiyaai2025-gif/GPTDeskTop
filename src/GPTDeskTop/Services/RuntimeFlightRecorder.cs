@@ -57,21 +57,28 @@ internal static partial class RuntimeFlightRecorder
         string? conversationRef = null)
     {
         var context = CurrentContext.Value;
-        var sequence = Interlocked.Increment(ref _sequence);
-        var item = new RuntimeFlightEvent(
-            sequence,
-            DateTimeOffset.UtcNow,
-            SafeToken(category, "unknown"),
-            SafeToken(action, "unknown"),
-            SafeToken(outcome, "observed"),
-            SafeToken(reason, "none"),
-            monitorId ?? context?.MonitorId,
-            HashOpaque(tabId) ?? context?.TabKey,
-            HashConversation(conversationRef) ?? context?.ConversationKey);
+        var observedAtUtc = DateTimeOffset.UtcNow;
+        var safeCategory = SafeToken(category, "unknown");
+        var safeAction = SafeToken(action, "unknown");
+        var safeOutcome = SafeToken(outcome, "observed");
+        var safeReason = SafeToken(reason, "none");
+        var correlatedMonitorId = monitorId ?? context?.MonitorId;
+        var tabKey = HashOpaque(tabId) ?? context?.TabKey;
+        var conversationKey = HashConversation(conversationRef) ?? context?.ConversationKey;
 
         lock (Sync)
         {
-            Buffer[_nextIndex] = item;
+            var sequence = ++_sequence;
+            Buffer[_nextIndex] = new RuntimeFlightEvent(
+                sequence,
+                observedAtUtc,
+                safeCategory,
+                safeAction,
+                safeOutcome,
+                safeReason,
+                correlatedMonitorId,
+                tabKey,
+                conversationKey);
             _nextIndex = (_nextIndex + 1) % Capacity;
             if (_count < Capacity) _count++;
         }
@@ -154,7 +161,7 @@ internal static partial class RuntimeFlightRecorder
             Array.Clear(Buffer);
             _nextIndex = 0;
             _count = 0;
-            Interlocked.Exchange(ref _sequence, 0);
+            _sequence = 0;
         }
         CurrentContext.Value = null;
     }
