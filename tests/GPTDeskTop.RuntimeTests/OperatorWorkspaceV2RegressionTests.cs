@@ -39,7 +39,8 @@ public sealed class OperatorWorkspaceV2RegressionTests
         Assert.Contains("BuildDiagnostics()", main, StringComparison.Ordinal);
         Assert.Contains("CreateSection(\"Live Activity\"", main, StringComparison.Ordinal);
         Assert.Contains("CreateSection(\"Stored History\"", main, StringComparison.Ordinal);
-        Assert.Contains("HistoryWorkspaceControl is intentionally not constructed", program, StringComparison.Ordinal);
+        Assert.Contains("HistoryWorkspaceControl duplicated a second grid", program, StringComparison.Ordinal);
+        Assert.Contains("intentionally no longer constructed here", program, StringComparison.Ordinal);
     }
 
     [Fact]
