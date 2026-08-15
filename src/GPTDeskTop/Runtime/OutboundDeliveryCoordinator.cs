@@ -137,11 +137,31 @@ internal sealed class OutboundDeliveryCoordinator
     private void SetSnapshot(OutboundDeliverySnapshot snapshot)
     {
         _snapshots[snapshot.MonitorId] = snapshot;
-        StatusChanged?.Invoke(new OutboundDeliveryStatus(
+        PublishStatus(new OutboundDeliveryStatus(
             snapshot.MonitorId,
             snapshot.Phase,
             snapshot.PhysicalSendCount,
             snapshot.UpdatedUtc));
+    }
+
+    private void PublishStatus(OutboundDeliveryStatus status)
+    {
+        var handlers = StatusChanged;
+        if (handlers is null)
+            return;
+
+        foreach (var subscriber in handlers.GetInvocationList())
+        {
+            try
+            {
+                ((Action<OutboundDeliveryStatus>)subscriber)(status);
+            }
+            catch (Exception ex)
+            {
+                // Dashboard/diagnostic observers are never allowed to alter exactly-once delivery.
+                ExceptionLogService.Log(ex, "OutboundDeliveryCoordinator.StatusChanged");
+            }
+        }
     }
 
     private static bool IsDuplicateInFlight(OutboundDeliverySnapshot previous, string conversationKey, string fingerprint)
