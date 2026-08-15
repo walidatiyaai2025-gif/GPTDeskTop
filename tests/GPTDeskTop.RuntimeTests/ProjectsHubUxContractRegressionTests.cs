@@ -5,17 +5,17 @@ public sealed class ProjectsHubUxContractRegressionTests
     [Fact]
     public void OneProjectsHubReplacesUserFacingLegacyMonitorCrudNavigation()
     {
+        var program = ReadSource("src", "GPTDeskTop", "Program.cs");
         var hub = ReadSource("src", "GPTDeskTop", "UI", "ProjectMonitorUiBootstrap.cs");
         var dashboard = ReadSource("src", "GPTDeskTop", "UI", "ProjectMonitorDashboardControl.cs");
         var obsoleteConsolidation = RepositoryPath("src", "GPTDeskTop", "UI", "ProjectsHubNavigationConsolidation.cs");
 
         Assert.False(File.Exists(obsoleteConsolidation));
-        Assert.Contains("FirstOrDefault(item => string.Equals(item.Text, \"Monitors\"", hub, StringComparison.Ordinal);
-        Assert.Contains("root.DropDownItems.Remove(obsoleteMonitorMenu);", hub, StringComparison.Ordinal);
-        Assert.Contains("new ToolStripMenuItem(\"Projects Hub\")", hub, StringComparison.Ordinal);
-        Assert.Contains("Tag = projectsButton", hub, StringComparison.Ordinal);
-        Assert.Contains("InvokeButton(projectsButton)", hub, StringComparison.Ordinal);
-        Assert.Contains("EnsureProjectsButton", hub, StringComparison.Ordinal);
+        Assert.Contains("ProjectMonitorUiBootstrap.Install(mainForm);", program, StringComparison.Ordinal);
+        Assert.Contains("internal static void Install(MainForm main)", hub, StringComparison.Ordinal);
+        Assert.Contains("Text = \"Projects\"", hub, StringComparison.Ordinal);
+        Assert.DoesNotContain("[ModuleInitializer]", hub, StringComparison.Ordinal);
+        Assert.DoesNotContain("Application.Idle +=", hub, StringComparison.Ordinal);
         Assert.Contains("private static ProjectMonitorDashboardForm? _dashboardForm", hub, StringComparison.Ordinal);
         Assert.Contains("Text = \"New Project Monitor\"", dashboard, StringComparison.Ordinal);
     }
