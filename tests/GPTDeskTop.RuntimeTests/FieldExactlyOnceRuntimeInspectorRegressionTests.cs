@@ -56,14 +56,67 @@ public sealed class FieldExactlyOnceRuntimeInspectorRegressionTests
         Assert.Contains("control.Enabled", source, StringComparison.Ordinal);
         Assert.Contains("control.DeviceDpi", source, StringComparison.Ordinal);
         Assert.Contains("control.Bounds", source, StringComparison.Ordinal);
-        Assert.Contains("WalkToolStrips(owner, ui)", source, StringComparison.Ordinal);
+        Assert.Contains("var forms = ResolveForms(owner);", source, StringComparison.Ordinal);
+        Assert.Contains("WalkToolStrips(form, formScope, ui)", source, StringComparison.Ordinal);
         Assert.Contains("DescendantsAndSelf(root).OfType<ToolStrip>()", source, StringComparison.Ordinal);
         Assert.Contains("Kind = \"ToolStripItem\"", source, StringComparison.Ordinal);
+        Assert.Contains("FormScope = formScope", source, StringComparison.Ordinal);
         Assert.Contains("item.Text", source, StringComparison.Ordinal);
         Assert.Contains("item.Visible", source, StringComparison.Ordinal);
         Assert.Contains("item.Available", source, StringComparison.Ordinal);
         Assert.Contains("ToolStripDropDownItem", source, StringComparison.Ordinal);
         Assert.Contains("dropDown.DropDownItems", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void InspectorCapturesOwnedAuxiliaryFormsAndAttributesRowsToAFormScope()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "RuntimeInspectorService.cs");
+
+        Assert.Contains("foreach (var owned in owner.OwnedForms)", source, StringComparison.Ordinal);
+        Assert.Contains("Application.OpenForms.Cast<Form>().ToArray()", source, StringComparison.Ordinal);
+        Assert.Contains("ReferenceEquals(form.Owner, owner)", source, StringComparison.Ordinal);
+        Assert.Contains("AuxiliaryForm#{index}", source, StringComparison.Ordinal);
+        Assert.Contains("FormsCaptured: forms.Count", source, StringComparison.Ordinal);
+        Assert.Contains("UI forms:", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void InspectorReportsOnlyMaterialVisibleChildOverflowAndIgnoresNormalTopLevelChrome()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "RuntimeInspectorService.cs");
+
+        Assert.Contains("private const int OverflowToleranceLogicalPixels = 2;", source, StringComparison.Ordinal);
+        Assert.Contains("CaptureVisibleOverflow(control, child, formScope, overflows)", source, StringComparison.Ordinal);
+        Assert.Contains("var client = parent.ClientSize;", source, StringComparison.Ordinal);
+        Assert.Contains("bounds.Right - client.Width", source, StringComparison.Ordinal);
+        Assert.Contains("bounds.Bottom - client.Height", source, StringComparison.Ordinal);
+        Assert.Contains("parent is ScrollableControl scrollable && scrollable.AutoScroll", source, StringComparison.Ordinal);
+        Assert.Contains("VisibleOverflowCount: overflows.Count", source, StringComparison.Ordinal);
+        Assert.Contains("visible overflows:", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("form.Bounds.X < 0", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("owner.Bounds.X < 0", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ComposerDiagnosticsExposeOnlyDecisionReasonAndTimestamp()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "RuntimeInspectorService.cs");
+
+        Assert.Contains("ChatComposerDecisionDiagnostics.Last", source, StringComparison.Ordinal);
+        Assert.Contains("internal sealed record RuntimeInspectorComposerDiagnostics", source, StringComparison.Ordinal);
+        Assert.Contains("string Decision", source, StringComparison.Ordinal);
+        Assert.Contains("string Reason", source, StringComparison.Ordinal);
+        Assert.Contains("DateTimeOffset ObservedAtUtc", source, StringComparison.Ordinal);
+        Assert.Contains("Composer gate:", source, StringComparison.Ordinal);
+
+        var recordStart = source.IndexOf("internal sealed record RuntimeInspectorComposerDiagnostics", StringComparison.Ordinal);
+        var recordEnd = source.IndexOf("internal sealed record RuntimeInspectorUiOverflow", recordStart, StringComparison.Ordinal);
+        Assert.True(recordStart >= 0 && recordEnd > recordStart);
+        var record = source[recordStart..recordEnd];
+        Assert.DoesNotContain("Prompt", record, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Message", record, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Text", record, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
