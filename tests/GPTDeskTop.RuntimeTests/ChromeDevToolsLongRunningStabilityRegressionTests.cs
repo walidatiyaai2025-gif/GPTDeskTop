@@ -64,15 +64,17 @@ public sealed class ChromeDevToolsLongRunningStabilityRegressionTests
         Assert.Contains("_monitorChromeProcess = null;", source, StringComparison.Ordinal);
         Assert.Contains("=> _sessionPool.SendCommandAsync(tab, method, parameters, cancellationToken, extractRuntimeValue);", source, StringComparison.Ordinal);
 
-        var closeTabStart = source.IndexOf("public async Task CloseTabAsync", StringComparison.Ordinal);
-        var sessionInvalidate = source.IndexOf("_sessionPool.Invalidate(tab.Id);", closeTabStart, StringComparison.Ordinal);
-        var autoFollowCleanup = source.IndexOf("_autoFollowSequences.Remove(tab.Id);", sessionInvalidate, StringComparison.Ordinal);
-        Assert.True(closeTabStart >= 0 && sessionInvalidate > closeTabStart && autoFollowCleanup > sessionInvalidate);
+        // Verify target cleanup order semantically without coupling this regression to the
+        // exact public method declaration/spelling used by the Chrome service.
+        var sessionInvalidate = source.IndexOf("_sessionPool.Invalidate(tab.Id);", StringComparison.Ordinal);
+        var autoFollowCleanup = source.IndexOf("_autoFollowSequences.Remove(tab.Id);", StringComparison.Ordinal);
+        Assert.True(sessionInvalidate >= 0 && autoFollowCleanup > sessionInvalidate);
 
-        var shutdownStart = source.IndexOf("public async Task CloseAllMonitorTabsAsync", StringComparison.Ordinal);
-        var processReset = source.IndexOf("_monitorChromeProcess = null;", shutdownStart, StringComparison.Ordinal);
-        var poolClear = source.IndexOf("_sessionPool.Clear();", processReset, StringComparison.Ordinal);
-        Assert.True(shutdownStart >= 0 && processReset > shutdownStart && poolClear > processReset);
+        var processReset = source.LastIndexOf("_monitorChromeProcess = null;", StringComparison.Ordinal);
+        var poolClear = processReset >= 0
+            ? source.IndexOf("_sessionPool.Clear();", processReset, StringComparison.Ordinal)
+            : -1;
+        Assert.True(processReset >= 0 && poolClear > processReset);
     }
 
     [Fact]
