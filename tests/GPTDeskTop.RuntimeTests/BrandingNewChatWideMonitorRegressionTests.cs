@@ -23,8 +23,18 @@ public sealed class BrandingNewChatWideMonitorRegressionTests
     {
         var workflow = ReadSource("src", "GPTDeskTop", "Services", "NewChatMonitorWorkflowService.cs");
         var chrome = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
+
         Assert.Contains("if (!sent && stableTab is not null)", workflow, StringComparison.Ordinal);
-        Assert.Contains("requireNewTurn: false", workflow, StringComparison.Ordinal);
+        Assert.Contains("ReconcileInitialMessageOnStableConversationAsync", workflow, StringComparison.Ordinal);
+        Assert.Contains("NewChatBootstrapReconciliationPolicy.CanConfirmAcceptedBootstrap", workflow, StringComparison.Ordinal);
+        Assert.Contains("GetChatStateAsync(stableTab", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("requireNewTurn: false", workflow, StringComparison.Ordinal);
+
+        const string verifiedSend = "SendChatMessageVerifiedAsync(";
+        Assert.Equal(
+            workflow.IndexOf(verifiedSend, StringComparison.Ordinal),
+            workflow.LastIndexOf(verifiedSend, StringComparison.Ordinal));
+
         Assert.Contains("TryRefreshTabBindingAsync", chrome, StringComparison.Ordinal);
         Assert.Contains("RebindTab(tab, current)", chrome, StringComparison.Ordinal);
     }
