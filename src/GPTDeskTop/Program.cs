@@ -89,6 +89,7 @@ internal static class Program
             notifications.InitializeAsync().GetAwaiter().GetResult();
 
             var mainForm = new MainForm(chrome, monitor, database, notifications.ReloadSettingsAsync);
+            ProjectMonitorUiBootstrap.Install(mainForm);
             if (ApplicationBuildIdentity.StableBuildId is not null)
                 mainForm.Text = $"GPTDeskTop {ApplicationBuildIdentity.DisplayVersion}";
 
