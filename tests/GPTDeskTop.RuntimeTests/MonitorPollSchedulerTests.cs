@@ -45,17 +45,17 @@ public sealed class MonitorPollSchedulerTests
             "src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
         var source = File.ReadAllText(path);
 
-        var initialSnapshot = source.IndexOf("var initial = await GetChatStateWithRetryAsync", StringComparison.Ordinal);
+        // The initial state is intentionally declared separately so the flight-recorder scope can
+        // wrap the first CDP read. Assert behavior/order rather than the local declaration syntax.
+        var initialSnapshot = source.IndexOf("initial = await GetChatStateWithRetryAsync", StringComparison.Ordinal);
         Assert.True(initialSnapshot >= 0);
 
-        // Search inside the monitor-loop region rather than matching an unrelated scheduler
-        // reference elsewhere in the service. The behavioral contract is initial snapshot first,
-        // then initial stagger, then the repeating timer.
         var stagger = source.IndexOf("MonitorPollScheduler.GetInitialStagger", initialSnapshot, StringComparison.Ordinal);
-        var timer = source.IndexOf("new PeriodicTimer(pollPeriod)", initialSnapshot, StringComparison.Ordinal);
+        var delay = source.IndexOf("await Task.Delay(initialPollStagger, cancellationToken);", stagger, StringComparison.Ordinal);
+        var timer = source.IndexOf("new PeriodicTimer(pollPeriod)", delay, StringComparison.Ordinal);
 
         Assert.True(stagger > initialSnapshot);
-        Assert.True(timer > stagger);
-        Assert.Contains("await Task.Delay(initialPollStagger, cancellationToken);", source, StringComparison.Ordinal);
+        Assert.True(delay > stagger);
+        Assert.True(timer > delay);
     }
 }
