@@ -234,11 +234,11 @@ public sealed class MonitorDiagnosticTraceService : IDisposable
                 && RuntimeHealthPresentation.IsChatGptConversationUrl(saved.Url)
                 && ChatGptConversationIdentity.IsSame(candidate.Url, saved.Url));
 
-            var currentTargetId = tab?.Id;
-            if (!_lastTargetIds.TryGetValue(saved.Id, out var previousTargetId)
-                || !string.Equals(previousTargetId, currentTargetId, StringComparison.Ordinal))
+            var currentTargetFingerprint = tab is null ? null : $"{tab.Id}|{tab.Url}";
+            if (!_lastTargetIds.TryGetValue(saved.Id, out var previousTargetFingerprint)
+                || !string.Equals(previousTargetFingerprint, currentTargetFingerprint, StringComparison.Ordinal))
             {
-                _lastTargetIds[saved.Id] = currentTargetId;
+                _lastTargetIds[saved.Id] = currentTargetFingerprint;
                 RuntimeFlightRecorder.Record(
                     "Browser",
                     "TargetChanged",
