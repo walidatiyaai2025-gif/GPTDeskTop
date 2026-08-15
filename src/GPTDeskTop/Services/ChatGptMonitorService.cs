@@ -39,11 +39,11 @@ public sealed class ChatGptMonitorService
         if (monitor.Id <= 0) throw new InvalidOperationException("Save the monitor before starting it.");
         if (!RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url))
             throw new InvalidOperationException("The saved monitor URL is not a stable ChatGPT conversation identity.");
-        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
-            throw new InvalidOperationException("The selected Chrome tab is not a stable ChatGPT conversation identity.");
-        if (!ChatGptConversationIdentity.IsSame(monitor.Url, tab.Url))
-            throw new InvalidOperationException("The selected Chrome target no longer represents the saved ChatGPT conversation identity.");
 
+        // The caller's ChromeTab is only a mutable UI/runtime locator snapshot. A target can navigate
+        // between UI resolution and the lifecycle gate, so never turn that expected race into a UI
+        // exception. The persisted conversation URL remains the authority; resolve it again from a
+        // fresh Chrome target snapshot below before committing or starting a worker.
         using var lifecycleLease = await AcquireLifecycleGateAsync(monitor.Id);
         var savedMonitors = await _database.GetSavedMonitorsAsync();
         var persistedMonitor = savedMonitors.FirstOrDefault(candidate => candidate.Id == monitor.Id);
@@ -75,11 +75,16 @@ public sealed class ChatGptMonitorService
             return;
         }
 
+        ChromeTab? requestedLiveTab;
         ChromeTab? liveTab;
         try
         {
             var liveTabs = await _chrome.GetTabsAsync();
-            liveTab = liveTabs.FirstOrDefault(candidate => string.Equals(candidate.Id, tab.Id, StringComparison.Ordinal));
+            requestedLiveTab = liveTabs.FirstOrDefault(candidate => string.Equals(candidate.Id, tab.Id, StringComparison.Ordinal));
+            liveTab = requestedLiveTab is not null
+                && ChatGptConversationIdentity.IsSame(persistedMonitor.Url, requestedLiveTab.Url)
+                    ? requestedLiveTab
+                    : liveTabs.FirstOrDefault(candidate => ChatGptConversationIdentity.IsSame(persistedMonitor.Url, candidate.Url));
         }
         catch (Exception ex) when (ex is HttpRequestException || IsTransientChromeException(ex))
         {
@@ -89,7 +94,12 @@ public sealed class ChatGptMonitorService
 
         if (liveTab is null)
         {
-            Activity?.Invoke(persistedMonitor.Id, $"Monitor #{persistedMonitor.Id}: selected Chrome target disappeared before Start. Refresh the open conversations and retry.");
+            if (requestedLiveTab is null)
+                Activity?.Invoke(persistedMonitor.Id, $"Monitor #{persistedMonitor.Id}: selected Chrome target disappeared before Start. Refresh the open conversations and retry.");
+            else if (!RuntimeHealthPresentation.IsChatGptConversationUrl(requestedLiveTab.Url))
+                Activity?.Invoke(persistedMonitor.Id, $"Monitor #{persistedMonitor.Id}: selected Chrome target no longer exposes a stable ChatGPT conversation. Start was deferred without changing conversation ownership.");
+            else
+                Activity?.Invoke(persistedMonitor.Id, $"Monitor #{persistedMonitor.Id}: selected Chrome target navigated to a different conversation before Start. Refresh the open conversations and retry.");
             return;
         }
         if (!RuntimeHealthPresentation.IsChatGptConversationUrl(liveTab.Url))
