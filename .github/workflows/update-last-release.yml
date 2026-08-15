@@ -161,6 +161,28 @@ jobs:
             throw "Stable publish did not produce $exe"
           }
 
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path $exe
+
+          $probeRoot = Join-Path $env:RUNNER_TEMP "gptdesktop-last-release-launch-$env:GITHUB_RUN_ID"
+          $probeDb = Join-Path $probeRoot 'launch.db'
+          $probeResult = Join-Path $probeRoot 'launch.json'
+          New-Item -ItemType Directory -Path $probeRoot -Force | Out-Null
+          try {
+            $probe = Start-Process -FilePath $exe -WorkingDirectory $publishDir -ArgumentList @('--qa-crash-probe-verify', $probeDb, $probeResult) -PassThru -Wait
+            if ($probe.ExitCode -ne 0) {
+              $errorPath = "$probeResult.error.txt"
+              if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
+              throw "Stable GPTDeskTop.exe failed Windows process-load/managed-startup probe. ExitCode=$($probe.ExitCode)"
+            }
+            if (-not (Test-Path $probeResult)) { throw 'Stable GPTDeskTop.exe did not create a managed-startup probe receipt.' }
+            $receipt = Get-Content $probeResult -Raw | ConvertFrom-Json
+            if ([int]$receipt.ProcessId -le 0) { throw 'Stable GPTDeskTop.exe returned an invalid managed-startup probe receipt.' }
+            Write-Host "Verified stable executable Windows load + managed startup (PID $($receipt.ProcessId))."
+          }
+          finally {
+            Remove-Item $probeRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
           $embeddedProductVersion = (Get-Item $exe).VersionInfo.ProductVersion
           if ([string]::IsNullOrWhiteSpace($embeddedProductVersion) -or
               $embeddedProductVersion -notmatch [regex]::Escape("stable.$buildId")) {
@@ -178,6 +200,8 @@ jobs:
           New-Item -ItemType Directory -Path 'Last release' | Out-Null
           Copy-Item $exe 'Last release/GPTDeskTop.exe'
 
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path 'Last release/GPTDeskTop.exe'
+
           $hash = (Get-FileHash 'Last release/GPTDeskTop.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           $version = (Get-Item 'Last release/GPTDeskTop.exe').VersionInfo.FileVersion
           $generated = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
@@ -193,7 +217,7 @@ jobs:
             'Configuration: Release / self-contained / single-file / compressed',
             "Source commit: $source",
             "Generated UTC: $generated",
-            'Validation: 8/8 required GitHub Actions workflows passed for the same source commit',
+            'Validation: 8/8 required GitHub Actions workflows + PE32+/AMD64 + real Windows process-load/managed-startup probe passed',
             "SHA-256: $hash"
           ) | Set-Content 'Last release/RELEASE.txt' -Encoding utf8
 
@@ -201,6 +225,8 @@ jobs:
             '# Last release',
             '',
             '`GPTDeskTop.exe` is the latest verified Windows x64 Release application that passed all eight required stable CI workflows for the same `main` source commit.',
+            '',
+            'Publication also requires PE32+/AMD64 validation and a real Windows process-load + managed-startup probe of the exact executable.',
             '',
             'The stable build ID shown in the running window title matches the source identity recorded in `RELEASE.txt`.',
             '',
