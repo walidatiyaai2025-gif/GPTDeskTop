@@ -58,10 +58,16 @@ public sealed class ChromeDevToolsLongRunningStabilityRegressionTests
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
         Assert.Contains("_sessionPool.Prune(tabs)", source, StringComparison.Ordinal);
-        Assert.Contains("finally { _sessionPool.Invalidate(tab.Id); }", source, StringComparison.Ordinal);
+        Assert.Contains("_sessionPool.Invalidate(tab.Id);", source, StringComparison.Ordinal);
+        Assert.Contains("_autoFollowSequences.Remove(tab.Id);", source, StringComparison.Ordinal);
         Assert.Contains("_sessionPool.Clear();", source, StringComparison.Ordinal);
         Assert.Contains("_monitorChromeProcess = null;", source, StringComparison.Ordinal);
         Assert.Contains("=> _sessionPool.SendCommandAsync(tab, method, parameters, cancellationToken, extractRuntimeValue);", source, StringComparison.Ordinal);
+
+        var closeTabStart = source.IndexOf("public async Task CloseTabAsync", StringComparison.Ordinal);
+        var sessionInvalidate = source.IndexOf("_sessionPool.Invalidate(tab.Id);", closeTabStart, StringComparison.Ordinal);
+        var autoFollowCleanup = source.IndexOf("_autoFollowSequences.Remove(tab.Id);", sessionInvalidate, StringComparison.Ordinal);
+        Assert.True(closeTabStart >= 0 && sessionInvalidate > closeTabStart && autoFollowCleanup > sessionInvalidate);
 
         var shutdownStart = source.IndexOf("public async Task CloseAllMonitorTabsAsync", StringComparison.Ordinal);
         var processReset = source.IndexOf("_monitorChromeProcess = null;", shutdownStart, StringComparison.Ordinal);
