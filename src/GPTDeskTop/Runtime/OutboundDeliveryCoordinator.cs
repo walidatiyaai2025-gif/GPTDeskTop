@@ -106,11 +106,20 @@ internal sealed class OutboundDeliveryCoordinator
 
     public void MarkCompleted(long monitorId)
     {
-        if (_snapshots.TryGetValue(monitorId, out var state))
+        if (!_snapshots.TryGetValue(monitorId, out var state)
+            || state.Phase is not (OutboundDeliveryPhase.Accepted or OutboundDeliveryPhase.ReconcileRequired))
+            return;
+
+        var reason = state.Phase == OutboundDeliveryPhase.ReconcileRequired
+            ? "response-observed-after-uncertain-send"
+            : "response-observed";
+        _snapshots[monitorId] = state with
         {
-            _snapshots[monitorId] = state with { Phase = OutboundDeliveryPhase.Completed, UpdatedUtc = DateTimeOffset.UtcNow, Reason = "response-observed" };
-            RuntimeFlightRecorder.Record("Delivery", "OperationCompleted", "completed", "response-observed", monitorId);
-        }
+            Phase = OutboundDeliveryPhase.Completed,
+            UpdatedUtc = DateTimeOffset.UtcNow,
+            Reason = reason
+        };
+        RuntimeFlightRecorder.Record("Delivery", "OperationCompleted", "completed", reason, monitorId);
     }
 
     private static bool IsDuplicateInFlight(OutboundDeliverySnapshot previous, string conversationKey, string fingerprint)
