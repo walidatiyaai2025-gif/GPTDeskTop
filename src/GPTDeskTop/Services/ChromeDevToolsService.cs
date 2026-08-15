@@ -95,7 +95,8 @@ public sealed class ChromeDevToolsService
       container: null,
       rearm: null,
       onMutation: null,
-      snapshot: null
+      snapshot: null,
+      markDirty: null
     };
 
     const emit = (mode, event) => {
@@ -103,6 +104,7 @@ public sealed class ChromeDevToolsService
       controller.mode = mode;
       controller.event = event;
       controller.sequence++;
+      controller.markDirty?.();
     };
     const isScrollable = element => {
       if (!element || element === document.body) return false;
@@ -214,6 +216,7 @@ public sealed class ChromeDevToolsService
     read: null
   };
   state.autoFollow = createSmartFollowController();
+  state.autoFollow.markDirty = () => { state.dirty = true; };
   state.read = () => {
     if (!state.dirty) return state.snapshot;
     state.dirty = false;

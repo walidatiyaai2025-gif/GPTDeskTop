@@ -33,6 +33,8 @@ public sealed class SmartChatAutoFollowTests
         Assert.Contains("document.addEventListener('wheel'", source, StringComparison.Ordinal);
         Assert.Contains("document.addEventListener('touchmove'", source, StringComparison.Ordinal);
         Assert.Contains("document.addEventListener('keydown'", source, StringComparison.Ordinal);
+        Assert.Contains("controller.markDirty?.();", source, StringComparison.Ordinal);
+        Assert.Contains("state.autoFollow.markDirty = () => { state.dirty = true; };", source, StringComparison.Ordinal);
     }
 
     [Fact]
