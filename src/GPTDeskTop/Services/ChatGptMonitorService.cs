@@ -2,6 +2,7 @@ using System.Net.WebSockets;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
+using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.Services;
 
@@ -12,6 +13,7 @@ public sealed class ChatGptMonitorService
     private readonly LocalDatabase _database;
     private readonly MonitoringConfig _config;
     private readonly ModelRoutingService _modelRouting = new();
+    private readonly OutboundDeliveryCoordinator _outboundDelivery = new();
     private readonly object _sync = new();
     private readonly Dictionary<long, MonitorRuntime> _running = new();
     private readonly Dictionary<long, LifecycleGateEntry> _lifecycleGates = new();
@@ -674,33 +676,37 @@ public sealed class ChatGptMonitorService
 
     private async Task<bool> SendWhenReadyAsync(long monitorId, ChromeTab tab, string message, bool allowRecoveryReload, CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(95); var attempt = 0; var recoveryReloadUsed = false;
-        while (DateTimeOffset.UtcNow < deadline)
+        // Exactly-once field policy: a missing receipt is an uncertain delivery, not permission
+        // to click Send again. The previous implementation repeatedly invoked the physical
+        // composer send for up to 95 seconds, which could duplicate a message when ChatGPT
+        // accepted it but the receipt detector lagged. One logical outbound operation now
+        // performs at most one physical composer mutation.
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested(); attempt++;
-            try
-            {
-                if (await _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken)) { Activity?.Invoke(monitorId, $"Verified message accepted on attempt {attempt}."); return true; }
-                Activity?.Invoke(monitorId, $"Verified composer delivery attempt {attempt} did not produce a user-message receipt.");
-            }
-            catch (Exception ex) when (IsTransientChromeException(ex)) { Activity?.Invoke(monitorId, $"Verified composer send retry {attempt}: {ex.GetType().Name}."); }
+            var accepted = await _outboundDelivery.SendOnceAsync(
+                monitorId,
+                tab.Id,
+                message,
+                () => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken),
+                detail => Activity?.Invoke(monitorId, detail),
+                cancellationToken);
 
-            if (allowRecoveryReload && !recoveryReloadUsed && DateTimeOffset.UtcNow < deadline)
+            if (accepted)
             {
-                recoveryReloadUsed = true;
-                try
-                {
-                    Activity?.Invoke(monitorId, "Composer still unavailable. Reloading only the newly-created chat once before retrying delivery.");
-                    await _chrome.ReloadTabAsync(tab, cancellationToken);
-                    await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
-                    await WaitForChatReadyAsync(monitorId, tab, cancellationToken);
-                }
-                catch (Exception ex) when (IsTransientChromeException(ex)) { Activity?.Invoke(monitorId, $"New-chat reload retry encountered a transient Chrome error: {ex.GetType().Name}."); }
+                Activity?.Invoke(monitorId, "Verified message accepted. Exactly-once guard closed the delivery operation.");
+                return true;
             }
 
-            await Task.Delay(1000, cancellationToken);
+            Activity?.Invoke(monitorId,
+                "Composer delivery was not confirmed. Exactly-once guard suppressed blind resend; monitoring will reconcile from observed ChatGPT state.");
+            return false;
         }
-        return false;
+        catch (Exception ex) when (IsTransientChromeException(ex))
+        {
+            Activity?.Invoke(monitorId,
+                $"Physical composer send became uncertain ({ex.GetType().Name}). Exactly-once guard suppressed automatic resend.");
+            return false;
+        }
     }
 
     private async Task ApplyModelRouteAsync(SavedMonitor monitor, ChromeTab tab, bool recovery, bool contextRotation, CancellationToken cancellationToken)
