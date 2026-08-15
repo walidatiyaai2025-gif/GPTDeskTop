@@ -60,10 +60,10 @@ public sealed class VerifiedSendReloadHydrationPolicyTests
 
         Assert.Contains("MonitorDeliveryRecoveryPolicy.ClassifyPostRefreshUserTurn", method, StringComparison.Ordinal);
         Assert.Contains("PostRefreshUserTurnObservation.Hydrating", method, StringComparison.Ordinal);
-        Assert.Contains("PostRefreshUserTurnObservation.StableBaseline", method, StringComparison.Ordinal);
         Assert.Contains("PostRefreshUserTurnObservation.ReceiptConfirmed", method, StringComparison.Ordinal);
         Assert.Contains("PostRefreshUserTurnObservation.UnexpectedChange", method, StringComparison.Ordinal);
         Assert.Contains("stableUnexpectedReads >= 2", method, StringComparison.Ordinal);
+        Assert.Contains("stableAbsenceReads++;", method, StringComparison.Ordinal);
         Assert.Contains("stableAbsenceReads >= 2", method, StringComparison.Ordinal);
         Assert.DoesNotContain("if (receiptAfterRefresh.Count != baselineUserTurnCount)\n                return UnacknowledgedSubmitReconciliationResult.Ambiguous;", method, StringComparison.Ordinal);
     }
