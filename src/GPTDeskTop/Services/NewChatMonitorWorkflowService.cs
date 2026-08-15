@@ -51,13 +51,18 @@ public sealed class NewChatMonitorWorkflowService
                 openedTab,
                 freshChat.PreexistingTargetIds,
                 cancellationToken).ConfigureAwait(false);
+
             if (!sent && stableTab is not null)
             {
-                sent = await _chrome.SendChatMessageVerifiedAsync(
+                // A physical bootstrap submit can be accepted at the exact moment the new-chat shell
+                // navigates/rebinds to /c/{id}. In that case the original verified-send operation can lose
+                // its DOM receipt even though ChatGPT is already processing the user turn. Reconcile only
+                // from read-only response activity on the fresh stable target; never submit the bootstrap
+                // again from this recovery path.
+                sent = await ReconcileInitialMessageOnStableConversationAsync(
                     stableTab,
-                    initialChatMessage,
-                    cancellationToken,
-                    requireNewTurn: false).ConfigureAwait(false);
+                    freshChat.PreexistingTargetIds,
+                    cancellationToken).ConfigureAwait(false);
             }
 
             if (!sent)
@@ -164,44 +169,62 @@ public sealed class NewChatMonitorWorkflowService
         string message,
         CancellationToken cancellationToken)
     {
-        for (var attempt = 1; attempt <= 3; attempt++)
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            // Exactly one logical verified-send operation owns bootstrap delivery. If the target
+            // navigates while the receipt is being observed, ExecuteAsync resolves the fresh stable
+            // conversation and performs read-only reconciliation instead of starting another send.
+            return await _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException && ChromeTransportFailureClassifier.IsTransient(ex))
+        {
+            // The physical outcome may be uncertain during target navigation. Do not retry here.
+            // Stable-conversation reconciliation is the only permitted next step.
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ExceptionLogService.Log(ex, "NewChatMonitorWorkflow.InitialVerifiedSend");
+            return false;
+        }
+    }
+
+    private async Task<bool> ReconcileInitialMessageOnStableConversationAsync(
+        ChromeTab stableTab,
+        IReadOnlySet<string> preexistingTargetIds,
+        CancellationToken cancellationToken)
+    {
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(stableTab.Url))
+            return false;
+
+        var targetExistedBeforeWorkflow = preexistingTargetIds.Contains(stableTab.Id);
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(6);
+        while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                if (await _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken).ConfigureAwait(false))
+                var state = await _chrome.GetChatStateAsync(stableTab, cancellationToken).ConfigureAwait(false);
+                if (NewChatBootstrapReconciliationPolicy.CanConfirmAcceptedBootstrap(
+                        isStableConversation: RuntimeHealthPresentation.IsChatGptConversationUrl(stableTab.Url),
+                        targetExistedBeforeWorkflow,
+                        state.AssistantCount,
+                        state.IsGenerating,
+                        hasRenderedError: !string.IsNullOrWhiteSpace(state.ErrorText)))
                     return true;
             }
             catch (Exception ex) when (ex is not OperationCanceledException && ChromeTransportFailureClassifier.IsTransient(ex))
             {
-                // Verified send retires broken sessions and re-checks the DOM before a resend.
-                // Treat remaining transient transport failures as recovery state, not crash diagnostics.
+                // The stable target can still be rebinding while the first response is materializing.
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                ExceptionLogService.Log(ex, $"NewChatMonitorWorkflow.InitialSendAttempt{attempt}");
+                ExceptionLogService.Log(ex, "NewChatMonitorWorkflow.ReconcileInitialMessage");
+                return false;
             }
 
-            if (attempt == 1)
-            {
-                try
-                {
-                    await _chrome.ReloadTabAsync(tab, cancellationToken).ConfigureAwait(false);
-                    await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException && ChromeTransportFailureClassifier.IsTransient(ex))
-                {
-                    // Reload may race a navigation or a retired target session. The next verified-send attempt rebinds it.
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    ExceptionLogService.Log(ex, "NewChatMonitorWorkflow.InitialSendReload");
-                }
-            }
-            else if (attempt < 3)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
-            }
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
         }
 
         return false;
