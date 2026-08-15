@@ -29,7 +29,7 @@ public static class SavedMonitorHealthPresentation
             return Unhealthy("Disabled", "Disabled in monitor settings.");
 
         if (!RuntimeHealthPresentation.IsChatGptConversationUrl(monitor.Url))
-            return Unhealthy("Invalid", "Saved conversation URL is not a stable ChatGPT conversation.");
+            return Unhealthy("Invalid", "Saved conversation identity is invalid. Use Repair Monitor Conversation Ownership to rebind it safely.");
 
         if (duplicateOwnership)
             return Unhealthy("Blocked", "Another saved monitor owns the same ChatGPT conversation.");
