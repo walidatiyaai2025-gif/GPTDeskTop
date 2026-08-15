@@ -23,11 +23,23 @@ internal sealed record OutboundDeliverySnapshot(
     DateTimeOffset UpdatedUtc,
     string Reason);
 
+/// <summary>
+/// Privacy-safe delivery state for operator UI. Conversation keys, tab keys, message text and
+/// fingerprints are intentionally excluded.
+/// </summary>
+internal sealed record OutboundDeliveryStatus(
+    long MonitorId,
+    OutboundDeliveryPhase Phase,
+    int PhysicalSendCount,
+    DateTimeOffset UpdatedUtc);
+
 internal sealed class OutboundDeliveryCoordinator
 {
     private static readonly TimeSpan DuplicateWindow = TimeSpan.FromMinutes(2);
     private readonly ConcurrentDictionary<long, SemaphoreSlim> _gates = new();
     private readonly ConcurrentDictionary<long, OutboundDeliverySnapshot> _snapshots = new();
+
+    internal event Action<OutboundDeliveryStatus>? StatusChanged;
 
     public async Task<bool> SendOnceAsync(
         long monitorId,
@@ -61,7 +73,7 @@ internal sealed class OutboundDeliveryCoordinator
                 1,
                 DateTimeOffset.UtcNow,
                 "persisted-before-physical-send");
-            _snapshots[monitorId] = sending;
+            SetSnapshot(sending);
             RuntimeFlightRecorder.Record("Delivery", "PhysicalSubmitRequested", "started", "persisted-before-send");
 
             bool accepted;
@@ -71,24 +83,24 @@ internal sealed class OutboundDeliveryCoordinator
             }
             catch (Exception ex)
             {
-                _snapshots[monitorId] = sending with
+                SetSnapshot(sending with
                 {
                     Phase = OutboundDeliveryPhase.ReconcileRequired,
                     UpdatedUtc = DateTimeOffset.UtcNow,
                     Reason = "physical-send-threw; observe-before-any-future-send"
-                };
+                });
                 RuntimeFlightRecorder.Record("Delivery", "PhysicalSubmitCompleted", "uncertain", ex.GetType().Name);
                 throw;
             }
 
-            _snapshots[monitorId] = sending with
+            SetSnapshot(sending with
             {
                 Phase = accepted ? OutboundDeliveryPhase.Accepted : OutboundDeliveryPhase.ReconcileRequired,
                 UpdatedUtc = DateTimeOffset.UtcNow,
                 Reason = accepted
                     ? "verified-user-message-receipt"
                     : "receipt-not-confirmed; no blind retry"
-            };
+            });
             RuntimeFlightRecorder.Record(
                 "Delivery",
                 "PhysicalSubmitCompleted",
@@ -113,13 +125,23 @@ internal sealed class OutboundDeliveryCoordinator
         var reason = state.Phase == OutboundDeliveryPhase.ReconcileRequired
             ? "response-observed-after-uncertain-send"
             : "response-observed";
-        _snapshots[monitorId] = state with
+        SetSnapshot(state with
         {
             Phase = OutboundDeliveryPhase.Completed,
             UpdatedUtc = DateTimeOffset.UtcNow,
             Reason = reason
-        };
+        });
         RuntimeFlightRecorder.Record("Delivery", "OperationCompleted", "completed", reason, monitorId);
+    }
+
+    private void SetSnapshot(OutboundDeliverySnapshot snapshot)
+    {
+        _snapshots[snapshot.MonitorId] = snapshot;
+        StatusChanged?.Invoke(new OutboundDeliveryStatus(
+            snapshot.MonitorId,
+            snapshot.Phase,
+            snapshot.PhysicalSendCount,
+            snapshot.UpdatedUtc));
     }
 
     private static bool IsDuplicateInFlight(OutboundDeliverySnapshot previous, string conversationKey, string fingerprint)
