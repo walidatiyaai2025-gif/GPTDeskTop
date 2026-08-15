@@ -34,6 +34,7 @@ jobs:
           $setup = 'Output/Setup/GPTDeskTop-Setup.exe'
           if (-not (Test-Path $setup)) { throw 'GPTDeskTop-Setup.exe was not produced.' }
           if ((Get-Item $setup).Length -le 0) { throw 'GPTDeskTop-Setup.exe is empty.' }
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path $setup
 
       - name: Smoke-test embedded installer payload
         shell: pwsh
@@ -42,6 +43,34 @@ jobs:
           $process = Start-Process -FilePath $setup -ArgumentList '--verify-payload' -Wait -PassThru
           if ($process.ExitCode -ne 0) {
             throw "GPTDeskTop-Setup.exe failed embedded payload verification with exit code $($process.ExitCode)."
+          }
+
+      - name: Validate published application is Windows-loadable and starts managed code
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'Output/Publish/GPTDeskTop.exe').Path
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path $exe
+
+          $workingDirectory = Split-Path $exe -Parent
+          $root = Join-Path $env:RUNNER_TEMP "gptdesktop-release-launch-probe-$env:GITHUB_RUN_ID"
+          $db = Join-Path $root 'launch-probe.db'
+          $resultPath = Join-Path $root 'launch-probe.json'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          try {
+            $probe = Start-Process -FilePath $exe -WorkingDirectory $workingDirectory -ArgumentList @('--qa-crash-probe-verify', $db, $resultPath) -PassThru -Wait
+            if ($probe.ExitCode -ne 0) {
+              $errorPath = "$resultPath.error.txt"
+              if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
+              throw "Published GPTDeskTop.exe launch probe failed. ExitCode=$($probe.ExitCode)"
+            }
+            if (-not (Test-Path $resultPath)) { throw 'Published GPTDeskTop.exe did not create its managed-startup probe receipt.' }
+            $receipt = Get-Content $resultPath -Raw | ConvertFrom-Json
+            if ([int]$receipt.ProcessId -le 0) { throw 'Published GPTDeskTop.exe returned an invalid process probe receipt.' }
+            Write-Host "Verified Windows process load + managed startup for published GPTDeskTop.exe (PID $($receipt.ProcessId))."
+          }
+          finally {
+            Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
           }
 
       - name: Package release and generate SHA-256
@@ -90,7 +119,7 @@ jobs:
           Commit: ${{ github.sha }}
           Workflow run: ${{ github.run_id }}
 
-          The setup executable passed an embedded-payload smoke test before publication.
+          The setup payload passed resource verification, PE32+/AMD64 validation, and a real Windows process-load + managed-startup probe before publication.
           Required assets are attached below. Verify downloads with SHA256SUMS.txt.
           "@
 
