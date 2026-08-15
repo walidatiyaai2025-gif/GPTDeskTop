@@ -27,12 +27,26 @@ public sealed class FieldUncertainDeliveryResponseReconciliationTests
     public void ErrorResponseDoesNotReleaseUncertainDeliveryGate()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs");
-        var stableBoundary = source.IndexOf("lastHandledText = text;", StringComparison.Ordinal);
-        var complete = source.IndexOf("_outboundDelivery.MarkCompleted(monitor.Id);", stableBoundary, StringComparison.Ordinal);
-        var localWindow = source.Substring(stableBoundary, complete - stableBoundary + "_outboundDelivery.MarkCompleted(monitor.Id);".Length);
+        var stableBoundary = source.IndexOf(
+            "if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue;",
+            StringComparison.Ordinal);
+        var handled = source.IndexOf("lastHandledText = text;", stableBoundary, StringComparison.Ordinal);
+        var nonErrorGate = source.IndexOf("if (!isError)", handled, StringComparison.Ordinal);
+        var complete = source.IndexOf("_outboundDelivery.MarkCompleted(monitor.Id);", nonErrorGate, StringComparison.Ordinal);
 
+        Assert.True(stableBoundary >= 0);
+        Assert.True(handled > stableBoundary);
+        Assert.True(nonErrorGate > handled);
+        Assert.True(complete > nonErrorGate);
+
+        var localWindow = source.Substring(
+            handled,
+            complete - handled + "_outboundDelivery.MarkCompleted(monitor.Id);".Length);
         Assert.Contains("if (!isError)", localWindow, StringComparison.Ordinal);
-        Assert.DoesNotContain("if (isError)\n                        _outboundDelivery.MarkCompleted", localWindow, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "if (isError)\n                        _outboundDelivery.MarkCompleted",
+            localWindow,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -68,11 +82,14 @@ public sealed class FieldUncertainDeliveryResponseReconciliationTests
     public void MonitorAdvancesHandledResponseBeforeAnyAutoSendAttempt()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs");
-        var handled = source.IndexOf("lastHandledText = text;", StringComparison.Ordinal);
+        var stableBoundary = source.IndexOf(
+            "if ((DateTimeOffset.UtcNow - candidateSince).TotalMilliseconds < _config.StableResponseMilliseconds) continue;",
+            StringComparison.Ordinal);
+        var handled = source.IndexOf("lastHandledText = text;", stableBoundary, StringComparison.Ordinal);
         var complete = source.IndexOf("_outboundDelivery.MarkCompleted(monitor.Id);", handled, StringComparison.Ordinal);
         var autoSend = source.IndexOf("var autoSent = await SendWhenReadyAsync(", complete, StringComparison.Ordinal);
 
-        Assert.True(handled >= 0 && complete > handled && autoSend > complete);
+        Assert.True(stableBoundary >= 0 && handled > stableBoundary && complete > handled && autoSend > complete);
     }
 
     [Fact]
