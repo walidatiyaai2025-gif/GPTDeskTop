@@ -46,10 +46,14 @@ public sealed class MonitorPollSchedulerTests
         var source = File.ReadAllText(path);
 
         var initialSnapshot = source.IndexOf("var initial = await GetChatStateWithRetryAsync", StringComparison.Ordinal);
-        var stagger = source.IndexOf("MonitorPollScheduler.GetInitialStagger", StringComparison.Ordinal);
-        var timer = source.IndexOf("new PeriodicTimer(pollPeriod)", StringComparison.Ordinal);
-
         Assert.True(initialSnapshot >= 0);
+
+        // Search inside the monitor-loop region rather than matching an unrelated scheduler
+        // reference elsewhere in the service. The behavioral contract is initial snapshot first,
+        // then initial stagger, then the repeating timer.
+        var stagger = source.IndexOf("MonitorPollScheduler.GetInitialStagger", initialSnapshot, StringComparison.Ordinal);
+        var timer = source.IndexOf("new PeriodicTimer(pollPeriod)", initialSnapshot, StringComparison.Ordinal);
+
         Assert.True(stagger > initialSnapshot);
         Assert.True(timer > stagger);
         Assert.Contains("await Task.Delay(initialPollStagger, cancellationToken);", source, StringComparison.Ordinal);
