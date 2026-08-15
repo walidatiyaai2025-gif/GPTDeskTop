@@ -25,6 +25,7 @@ internal sealed record OutboundDeliverySnapshot(
 
 internal sealed class OutboundDeliveryCoordinator
 {
+    private static readonly TimeSpan DuplicateWindow = TimeSpan.FromMinutes(2);
     private readonly ConcurrentDictionary<long, SemaphoreSlim> _gates = new();
     private readonly ConcurrentDictionary<long, OutboundDeliverySnapshot> _snapshots = new();
 
@@ -46,14 +47,35 @@ internal sealed class OutboundDeliveryCoordinator
             var fingerprint = Fingerprint(message);
             var now = DateTimeOffset.UtcNow;
             if (_snapshots.TryGetValue(monitorId, out var previous)
-                && previous.ConversationKey == conversationKey
-                && previous.MessageFingerprint == fingerprint
-                && previous.Phase is OutboundDeliveryPhase.Sending or OutboundDeliveryPhase.ReconcileRequired
-                && now - previous.UpdatedUtc < TimeSpan.FromMinutes(2))
+                && IsSameRecentLogicalOperation(previous, conversationKey, fingerprint, now))
             {
-                RuntimeFlightRecorder.Record("Delivery", "DuplicateSuppressed", "suppressed", "uncertain-or-in-flight");
-                activity?.Invoke("Exactly-once guard: identical delivery is already uncertain/in-flight; composer mutation suppressed while state is reconciled.");
-                return false;
+                if (previous.Phase == OutboundDeliveryPhase.Sending)
+                {
+                    RuntimeFlightRecorder.Record("Delivery", "DuplicateSuppressed", "suppressed", "physical-send-in-flight");
+                    activity?.Invoke("Exactly-once guard: identical delivery is still physically in-flight; duplicate composer mutation suppressed.");
+                    return false;
+                }
+
+                if (previous.Phase == OutboundDeliveryPhase.ReconcileRequired)
+                {
+                    // ChatGptMonitorService advances lastHandledText before it requests an auto reply.
+                    // Consequently, a later same-monitor/same-conversation logical request can only be
+                    // reached after another stable assistant response has been observed. That response
+                    // is the read-only reconciliation evidence the previous uncertain physical submit
+                    // was accepted. Complete the old operation before starting the new continuation.
+                    _snapshots[monitorId] = previous with
+                    {
+                        Phase = OutboundDeliveryPhase.Completed,
+                        UpdatedUtc = now,
+                        Reason = "response-observed-before-next-logical-send"
+                    };
+                    RuntimeFlightRecorder.Record(
+                        "Delivery",
+                        "OperationCompleted",
+                        "completed",
+                        "response-observed-before-next-logical-send");
+                    activity?.Invoke("Exactly-once reconciliation: a new stable assistant response resolved the previous uncertain delivery; continuing with the next logical send.");
+                }
             }
 
             var sending = new OutboundDeliverySnapshot(
@@ -115,6 +137,17 @@ internal sealed class OutboundDeliveryCoordinator
             RuntimeFlightRecorder.Record("Delivery", "OperationCompleted", "completed", "response-observed", monitorId);
         }
     }
+
+    private static bool IsSameRecentLogicalOperation(
+        OutboundDeliverySnapshot previous,
+        string conversationKey,
+        string fingerprint,
+        DateTimeOffset now)
+        => previous.ConversationKey == conversationKey
+           && previous.MessageFingerprint == fingerprint
+           && previous.Phase is OutboundDeliveryPhase.Sending or OutboundDeliveryPhase.ReconcileRequired
+           && now - previous.UpdatedUtc >= TimeSpan.Zero
+           && now - previous.UpdatedUtc < DuplicateWindow;
 
     internal static string Fingerprint(string text)
     {
