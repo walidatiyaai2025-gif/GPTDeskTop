@@ -24,12 +24,19 @@ public static class VerifiedSendDiagnostics
 
     internal static void Record(string phase, string reason, int submitAttempts)
     {
+        var observedAtUtc = DateTimeOffset.UtcNow;
         lock (Sync)
             _last = new VerifiedSendDiagnosticSnapshot(
                 phase,
                 reason,
                 Math.Max(0, submitAttempts),
-                DateTimeOffset.UtcNow);
+                observedAtUtc);
+
+        RuntimeFlightRecorder.Record(
+            "VerifiedSend",
+            phase,
+            phase.Contains("Confirmed", StringComparison.OrdinalIgnoreCase) ? "confirmed" : "observed",
+            reason);
     }
 }
 
