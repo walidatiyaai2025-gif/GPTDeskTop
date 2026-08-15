@@ -131,10 +131,27 @@ public static class RuntimeHealthPresentation
         {
             if (!string.Equals(segments[index], "c", StringComparison.OrdinalIgnoreCase)) continue;
             var conversationId = Uri.UnescapeDataString(segments[index + 1]).Trim();
-            if (!string.IsNullOrWhiteSpace(conversationId)) return true;
+            return IsStableConversationIdentitySegment(conversationId);
         }
 
         return false;
+    }
+
+    private static bool IsStableConversationIdentitySegment(string conversationId)
+    {
+        if (string.IsNullOrWhiteSpace(conversationId)) return false;
+
+        // A stable ChatGPT /c/{conversation-id} path contains the durable conversation key.
+        // Runtime/browser locators such as WEB:<id>, tab:<hash> or conv:<hash> are not durable
+        // conversation identities and must never pass the ownership boundary. Reject ':' after
+        // URI unescaping so encoded locator forms (for example WEB%3A...) are rejected as well.
+        foreach (var character in conversationId)
+        {
+            if (character == ':' || character == '/' || character == '\\' || char.IsWhiteSpace(character))
+                return false;
+        }
+
+        return true;
     }
 
     private static string? NormalizeError(string? error)
