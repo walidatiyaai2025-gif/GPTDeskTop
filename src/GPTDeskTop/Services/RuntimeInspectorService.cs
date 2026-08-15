@@ -60,6 +60,7 @@ internal sealed record FieldRuntimeSnapshot(
     RuntimeInspectorComposerDiagnostics ComposerDiagnostics,
     RuntimeInspectorVerifiedSendDiagnostics VerifiedSendDiagnostics,
     RuntimeInspectorUiDiagnostics UiDiagnostics,
+    RuntimeFlightSnapshot FlightRecorder,
     IReadOnlyList<object> Ui,
     IReadOnlyList<object> Workers);
 
@@ -133,6 +134,7 @@ internal static class RuntimeInspectorService
             VisibleControls: visibleControls,
             VisibleOverflowCount: overflows.Count,
             VisibleOverflows: overflows.Take(MaxOverflowRows).ToArray());
+        var flightRecorder = RuntimeFlightRecorder.Snapshot();
 
         var workers = monitors.Select(m => (object)new { Kind = "MonitorWorker", Snapshot = m }).ToArray();
         return new FieldRuntimeSnapshot(
@@ -144,6 +146,7 @@ internal static class RuntimeInspectorService
             composerDiagnostics,
             verifiedSendDiagnostics,
             uiDiagnostics,
+            flightRecorder,
             ui,
             workers);
     }
@@ -158,6 +161,10 @@ internal static class RuntimeInspectorService
         var composer = snapshot.ComposerDiagnostics;
         var verifiedSend = snapshot.VerifiedSendDiagnostics;
         var ui = snapshot.UiDiagnostics;
+        var flight = snapshot.FlightRecorder;
+        var flightMonitors = flight.MonitorCounts.Count == 0
+            ? "none"
+            : string.Join(",", flight.MonitorCounts.OrderBy(pair => pair.Key).Select(pair => $"{pair.Key}:{pair.Value}"));
         return $"GPTDeskTop Runtime Inspector\r\n" +
                $"Captured: {snapshot.CapturedUtc:O}\r\n" +
                $"Build: {build}\r\n" +
@@ -166,6 +173,7 @@ internal static class RuntimeInspectorService
                $"Browser scope: {browser.Scope} — {browser.OwnershipNote}\r\n" +
                $"Composer gate: {composer.Reason} ({composer.Decision}) @ {composer.ObservedAtUtc:O}\r\n" +
                $"Verified send: {verifiedSend.Phase} | attempts: {verifiedSend.SubmitAttempts} | {verifiedSend.Reason} @ {verifiedSend.ObservedAtUtc:O}\r\n" +
+               $"Flight recorder: {flight.EventCount}/{flight.Capacity} events | seq {flight.FirstSequence}-{flight.LastSequence} | monitors {flightMonitors}\r\n" +
                $"UI forms: {ui.FormsCaptured} | visible controls: {ui.VisibleControls} | visible overflows: {ui.VisibleOverflowCount}\r\n" +
                $"UI controls: {snapshot.Ui.Count}\r\n";
     }
@@ -178,6 +186,7 @@ internal static class RuntimeInspectorService
         try
         {
             File.WriteAllText(Path.Combine(temp, "runtime-inspector.json"), ToSanitizedJson(snapshot), new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(temp, "runtime-flight-recorder.json"), JsonSerializer.Serialize(snapshot.FlightRecorder, new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
             File.WriteAllText(Path.Combine(temp, "summary.txt"), Summary(snapshot), new UTF8Encoding(false));
             var appDir = AppContext.BaseDirectory;
             var candidateLogs = Directory.EnumerateFiles(appDir, "*.log", SearchOption.TopDirectoryOnly)

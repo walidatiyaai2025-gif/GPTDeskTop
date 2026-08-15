@@ -89,6 +89,12 @@ public static class ChatComposerDecisionDiagnostics
 
         lock (Sync)
             _last = new ComposerDecisionSnapshot(decision, reason, DateTimeOffset.UtcNow);
+
+        RuntimeFlightRecorder.Record(
+            "Composer",
+            decision.ToString(),
+            decision is ComposerAutomationDecision.ReadyToPrepare or ComposerAutomationDecision.ReadyToSend ? "ready" : "deferred",
+            reason);
     }
 }
 

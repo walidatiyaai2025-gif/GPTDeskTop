@@ -26,6 +26,7 @@ public sealed class MonitorDiagnosticTraceService : IDisposable
     private readonly CancellationTokenSource _shutdown = new();
     private readonly SemaphoreSlim _wake = new(0, 1);
     private readonly Dictionary<long, string> _lastStateFingerprints = new();
+    private readonly Dictionary<long, string?> _lastTargetIds = new();
     private readonly Task _worker;
     private long _lastHistoryId;
     private DateTimeOffset _lastHeartbeatUtc = DateTimeOffset.MinValue;
@@ -233,6 +234,21 @@ public sealed class MonitorDiagnosticTraceService : IDisposable
                 && RuntimeHealthPresentation.IsChatGptConversationUrl(saved.Url)
                 && ChatGptConversationIdentity.IsSame(candidate.Url, saved.Url));
 
+            var currentTargetFingerprint = tab is null ? null : $"{tab.Id}|{tab.Url}";
+            if (!_lastTargetIds.TryGetValue(saved.Id, out var previousTargetFingerprint)
+                || !string.Equals(previousTargetFingerprint, currentTargetFingerprint, StringComparison.Ordinal))
+            {
+                _lastTargetIds[saved.Id] = currentTargetFingerprint;
+                RuntimeFlightRecorder.Record(
+                    "Browser",
+                    "TargetChanged",
+                    tab is null ? "missing" : "bound",
+                    "monitor-target",
+                    saved.Id,
+                    tab?.Id,
+                    tab?.Url);
+            }
+
             if (!running || tab is null)
             {
                 WriteStateIfChanged(CreateStateRecord(saved.Id, saved.Enabled, running, tab is not null, null));
@@ -251,7 +267,10 @@ public sealed class MonitorDiagnosticTraceService : IDisposable
         }
 
         foreach (var staleId in _lastStateFingerprints.Keys.Where(id => !activeIds.Contains(id)).ToArray())
+        {
             _lastStateFingerprints.Remove(staleId);
+            _lastTargetIds.Remove(staleId);
+        }
 
         var now = DateTimeOffset.UtcNow;
         if (now - _lastHeartbeatUtc >= HeartbeatInterval)
@@ -314,6 +333,16 @@ public sealed class MonitorDiagnosticTraceService : IDisposable
             return;
 
         _lastStateFingerprints[record.MonitorId] = fingerprint;
+        var flightReason = record.FailureType
+            ?? (record.IsGenerating == true ? "chatgpt-generating"
+                : record.TargetFound ? "target-found"
+                : "target-missing");
+        RuntimeFlightRecorder.Record(
+            "Monitor",
+            "StateChanged",
+            record.Running ? "running" : "stopped",
+            flightReason,
+            record.MonitorId);
         WriteRecord(record);
     }
 

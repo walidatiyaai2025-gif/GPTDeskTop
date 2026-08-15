@@ -1070,19 +1070,29 @@ public sealed class ChromeDevToolsService
     }
     private async Task TryRefreshTabBindingAsync(ChromeTab tab, CancellationToken cancellationToken)
     {
+        RuntimeFlightRecorder.Record("Browser", "BindingRefreshRequested", "started", "stable-target-search", tabId: tab.Id, conversationRef: tab.Url);
         try
         {
             var tabs = await GetTabsAsync(cancellationToken).ConfigureAwait(false);
             var current = MonitorDeliveryRecoveryPolicy.FindBestBinding(tabs, tab);
             if (current is not null)
+            {
                 RebindTab(tab, current);
+                RuntimeFlightRecorder.Record("Browser", "BindingRefreshed", "bound", "target-rebound", tabId: tab.Id, conversationRef: tab.Url);
+            }
+            else
+            {
+                RuntimeFlightRecorder.Record("Browser", "BindingRefreshed", "missing", "target-not-found", tabId: tab.Id, conversationRef: tab.Url);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            RuntimeFlightRecorder.Record("Browser", "BindingRefreshCompleted", "cancelled", "operator-or-shutdown", tabId: tab.Id, conversationRef: tab.Url);
             throw;
         }
         catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
         {
+            RuntimeFlightRecorder.Record("Browser", "BindingRefreshCompleted", "failed", ex.GetType().Name, tabId: tab.Id, conversationRef: tab.Url);
         }
     }
     private async Task<(int Count, string LastText)> GetUserMessageSnapshotAsync(ChromeTab tab, CancellationToken cancellationToken) { const string expression = """ (() => { const messages = [...document.querySelectorAll('[data-message-author-role="user"]')]; const last = messages.length ? (messages[messages.length - 1].innerText || messages[messages.length - 1].textContent || '').trim() : ''; return { count: messages.length, lastText: last }; })() """; var value = await EvaluateAsync(tab, expression, cancellationToken, false); var count = value.TryGetProperty("count", out var c) ? c.GetInt32() : 0; var last = value.TryGetProperty("lastText", out var t) ? t.GetString() ?? string.Empty : string.Empty; return (count, last); }
