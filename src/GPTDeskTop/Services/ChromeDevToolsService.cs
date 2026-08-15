@@ -542,25 +542,114 @@ public sealed class ChromeDevToolsService
                || ex.Message.Contains("connection was forcibly closed", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<ComposerAutomationDecision> ReadComposerDecisionAsync(
+    private async Task<ComposerReadinessSnapshot> ReadComposerReadinessAsync(
         ChromeTab tab,
-        bool requireSendReady,
         CancellationToken cancellationToken)
     {
         var readiness = await EvaluateAsync(tab, ChatComposerReadinessScript.Expression, cancellationToken, false);
         var chatState = await ReadChatStateCoreAsync(tab, cancellationToken);
 
-        var isGenerating = (readiness.TryGetProperty("isGenerating", out var generating) && generating.GetBoolean())
-                           || chatState.IsGenerating;
-        var editorPresent = readiness.TryGetProperty("editorPresent", out var editorPresentElement) && editorPresentElement.GetBoolean();
-        var editorEnabled = readiness.TryGetProperty("editorEnabled", out var editorEnabledElement) && editorEnabledElement.GetBoolean();
-        var sendButtonPresent = readiness.TryGetProperty("sendButtonPresent", out var sendPresentElement) && sendPresentElement.GetBoolean();
-        var sendButtonEnabled = readiness.TryGetProperty("sendButtonEnabled", out var sendEnabledElement) && sendEnabledElement.GetBoolean();
-        var hasRenderedError = !string.IsNullOrWhiteSpace(chatState.ErrorText);
+        return new ComposerReadinessSnapshot(
+            IsGenerating: (readiness.TryGetProperty("isGenerating", out var generating) && generating.GetBoolean()) || chatState.IsGenerating,
+            EditorPresent: readiness.TryGetProperty("editorPresent", out var editorPresentElement) && editorPresentElement.GetBoolean(),
+            EditorEnabled: readiness.TryGetProperty("editorEnabled", out var editorEnabledElement) && editorEnabledElement.GetBoolean(),
+            SendButtonPresent: readiness.TryGetProperty("sendButtonPresent", out var sendPresentElement) && sendPresentElement.GetBoolean(),
+            SendButtonEnabled: readiness.TryGetProperty("sendButtonEnabled", out var sendEnabledElement) && sendEnabledElement.GetBoolean(),
+            HasRenderedError: !string.IsNullOrWhiteSpace(chatState.ErrorText));
+    }
 
+    private async Task<ComposerAutomationDecision> ReadComposerDecisionAsync(
+        ChromeTab tab,
+        bool requireSendReady,
+        CancellationToken cancellationToken)
+    {
+        var readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
         return requireSendReady
-            ? ChatComposerInterlockPolicy.DecideBeforeSubmit(isGenerating, editorPresent, editorEnabled, sendButtonPresent, sendButtonEnabled, hasRenderedError)
-            : ChatComposerInterlockPolicy.DecideBeforeEditorMutation(isGenerating, editorPresent, editorEnabled, hasRenderedError);
+            ? ChatComposerInterlockPolicy.DecideBeforeSubmit(
+                readiness.IsGenerating,
+                readiness.EditorPresent,
+                readiness.EditorEnabled,
+                readiness.SendButtonPresent,
+                readiness.SendButtonEnabled,
+                readiness.HasRenderedError)
+            : ChatComposerInterlockPolicy.DecideBeforeEditorMutation(
+                readiness.IsGenerating,
+                readiness.EditorPresent,
+                readiness.EditorEnabled,
+                readiness.HasRenderedError);
+    }
+
+    private async Task<bool> ComposerEditorMatchesExpectedAsync(
+        ChromeTab tab,
+        string expected,
+        CancellationToken cancellationToken)
+    {
+        var expectedLiteral = JsonSerializer.Serialize(expected.Trim());
+        var expression = $$"""
+        (() => {
+          const expected = {{expectedLiteral}};
+          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
+          if (!editor) return false;
+          const text = editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
+            ? editor.value
+            : (editor.innerText || editor.textContent || '');
+          return (text || '').trim() === expected;
+        })()
+        """;
+        var value = await EvaluateAsync(tab, expression, cancellationToken, false);
+        return value.ValueKind == JsonValueKind.True;
+    }
+
+    private async Task<bool> RefreshStuckComposerAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
+            return false;
+
+        await _monitorBrowserRecoveryGate.WaitAsync(cancellationToken);
+        try
+        {
+            var replacement = await TryFindConversationTabAsync(tab.Url, cancellationToken);
+            if (replacement is null || !ChatGptConversationIdentity.IsSame(tab.Url, replacement.Url))
+                return false;
+
+            _sessionPool.Invalidate(replacement.Id);
+            await ReloadTabAsync(replacement, cancellationToken);
+            RebindTab(tab, replacement);
+
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    await TryRefreshTabBindingAsync(tab, cancellationToken);
+                    var readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+                    if (!readiness.IsGenerating
+                        && readiness.EditorPresent
+                        && readiness.EditorEnabled
+                        && !readiness.HasRenderedError)
+                        return true;
+                }
+                catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+                {
+                }
+
+                await Task.Delay(250, cancellationToken);
+            }
+
+            return false;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+        {
+            return false;
+        }
+        finally
+        {
+            _monitorBrowserRecoveryGate.Release();
+        }
     }
 
     public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default)
@@ -668,6 +757,10 @@ public sealed class ChromeDevToolsService
                 return true;
         }
 
+        DateTimeOffset? sendBlockedSinceUtc = null;
+        var stuckRefreshUsed = false;
+        var physicalSendAccepted = false;
+
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -682,20 +775,66 @@ public sealed class ChromeDevToolsService
             if (current.Count > before.Count && string.Equals(current.LastText, expected, StringComparison.Ordinal))
                 return true;
 
+            if (physicalSendAccepted)
+            {
+                await Task.Delay(250, cancellationToken);
+                continue;
+            }
+
             try
             {
                 var preparationDecision = await ReadComposerDecisionAsync(tab, requireSendReady: false, cancellationToken);
                 if (preparationDecision != ComposerAutomationDecision.ReadyToPrepare)
                 {
+                    sendBlockedSinceUtc = null;
                     await Task.Delay(500, cancellationToken);
                     continue;
                 }
 
                 if (!await SendChatMessageAsync(tab, message, cancellationToken))
                 {
+                    var readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+                    if (readiness.IsPostGenerationSendBlocked)
+                    {
+                        var now = DateTimeOffset.UtcNow;
+                        sendBlockedSinceUtc ??= now;
+                        var editorMatchesExpected = await ComposerEditorMatchesExpectedAsync(tab, expected, cancellationToken);
+                        var blockedFor = now - sendBlockedSinceUtc.Value;
+
+                        if (StuckComposerRecoveryPolicy.ShouldRefresh(
+                                readiness,
+                                editorMatchesExpected,
+                                blockedFor,
+                                stuckRefreshUsed))
+                        {
+                            var receiptBeforeRefresh = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+                            if (receiptBeforeRefresh.Success
+                                && receiptBeforeRefresh.Count > before.Count
+                                && string.Equals(receiptBeforeRefresh.LastText, expected, StringComparison.Ordinal))
+                                return true;
+
+                            stuckRefreshUsed = true;
+                            sendBlockedSinceUtc = null;
+                            if (await RefreshStuckComposerAsync(tab, cancellationToken))
+                            {
+                                var receiptAfterRefresh = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+                                if (receiptAfterRefresh.Success
+                                    && receiptAfterRefresh.Count > before.Count
+                                    && string.Equals(receiptAfterRefresh.LastText, expected, StringComparison.Ordinal))
+                                    return true;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        sendBlockedSinceUtc = null;
+                    }
+
                     await Task.Delay(500, cancellationToken);
                     continue;
                 }
+
+                physicalSendAccepted = true;
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
             {
