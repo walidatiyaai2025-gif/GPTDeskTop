@@ -50,13 +50,14 @@ public sealed class HistoryWorkspaceUiRegressionTests
     }
 
     [Fact]
-    public void ProgramPersistsHistoryWorkspaceExpansionWithoutChangingRuntimeShutdownContract()
+    public void ProgramAvoidsDuplicateHistoryStartupWhilePreservingShutdownContract()
     {
-        var source = ReadSource("src", "GPTDeskTop", "Program.cs");
+        var program = ReadSource("src", "GPTDeskTop", "Program.cs");
+        var main = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
 
-        Assert.Contains("new HistoryWorkspaceControl(database)", source, StringComparison.Ordinal);
-        Assert.Contains("Ui.HistoryWorkspace.Expanded", source, StringComparison.Ordinal);
-        Assert.Contains("Program.PersistHistoryWorkspaceState", source, StringComparison.Ordinal);
-        Assert.Contains("Task.Run(() => FinalizeGracefulShutdownAsync(database, developmentRuntime))", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new HistoryWorkspaceControl(database)", program, StringComparison.Ordinal);
+        Assert.Contains("Stored History", main, StringComparison.Ordinal);
+        Assert.Contains("RefreshHistoryAsync", main, StringComparison.Ordinal);
+        Assert.Contains("Task.Run(() => FinalizeGracefulShutdownAsync(database, developmentRuntime))", program, StringComparison.Ordinal);
     }
 }
