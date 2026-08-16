@@ -155,21 +155,29 @@ public static class LastWorkingStateService
                     continue;
                 }
 
-                var recovery = await MonitorTabRecoveryService.EnsureMonitorTabAsync(
+                var pendingHandoffTab = await ConversationHandoffCheckpointStore.TryCompleteAcceptedAsync(
                     chrome,
                     database,
                     savedMonitor,
-                    sendFollowUpWhenRecreated: true,
                     cancellationToken).ConfigureAwait(false);
+                var pendingHandoffCompleted = pendingHandoffTab is not null;
+                var recovery = pendingHandoffCompleted
+                    ? new MonitorTabRecoveryResult(pendingHandoffTab!, Recreated: false, BrowserRestarted: false, FollowUpSent: false)
+                    : await MonitorTabRecoveryService.EnsureMonitorTabAsync(
+                        chrome,
+                        database,
+                        savedMonitor,
+                        sendFollowUpWhenRecreated: true,
+                        cancellationToken).ConfigureAwait(false);
 
                 // A recovered tab already receives one follow-up inside MonitorTabRecoveryService.
                 // The historical gap was the exact opposite path: when the saved conversation was
                 // already open, recovery returned it immediately and startup never issued the first
                 // continuation. Send exactly one verified NEW turn before starting the worker so a
                 // repeated tail such as "كمل" cannot be mistaken for a fresh receipt.
-                var startupFollowUpAttempted = recovery.Recreated || !string.IsNullOrWhiteSpace(savedMonitor.AutoReply);
+                var startupFollowUpAttempted = !pendingHandoffCompleted && (recovery.Recreated || !string.IsNullOrWhiteSpace(savedMonitor.AutoReply));
                 var startupFollowUpSent = recovery.FollowUpSent;
-                if (!recovery.Recreated && !string.IsNullOrWhiteSpace(savedMonitor.AutoReply))
+                if (!pendingHandoffCompleted && !recovery.Recreated && !string.IsNullOrWhiteSpace(savedMonitor.AutoReply))
                 {
                     startupFollowUpSent = await SendExistingTabStartupFollowUpAsync(
                         chrome,
@@ -185,7 +193,9 @@ public static class LastWorkingStateService
                 await monitorService.StartMonitorAsync(savedMonitor, recovery.Tab).ConfigureAwait(false);
                 if (monitorService.IsMonitorRunning(savedMonitor.Id))
                 {
-                    var reason = recovery.Recreated
+                    var reason = pendingHandoffCompleted
+                        ? "PendingHandoffRecoveredWithoutDuplicateFollowUp"
+                        : recovery.Recreated
                         ? startupFollowUpSent
                             ? "RecreatedTabAndFollowUpSent"
                             : "RecreatedTabFollowUpFailed"

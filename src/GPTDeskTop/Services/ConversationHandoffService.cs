@@ -5,9 +5,9 @@ using GPTDeskTop.Models;
 namespace GPTDeskTop.Services;
 
 /// <summary>
-/// Builds a bounded, deterministic continuation message when a monitor must move
-/// from a context-limited ChatGPT conversation to a fresh chat. It does not call
-/// external AI APIs and does not attempt to bypass usage, rate, or context limits.
+/// Builds a bounded, deterministic continuation message whenever a monitor must move
+/// to a fresh ChatGPT conversation. The packet carries the latest confirmed work state,
+/// not only the error/limit that triggered the handoff.
 /// </summary>
 public sealed class ConversationHandoffService
 {
@@ -25,33 +25,53 @@ public sealed class ConversationHandoffService
             return string.Empty;
 
         var maxChars = await _database.GetIntSettingAsync("HandoffMaxChars", 7000, 1500, 20000, cancellationToken);
-        var logs = await _database.GetRecentLogsForMonitorAsync(monitor.Id, 12, cancellationToken);
-        var builder = new StringBuilder(maxChars + 256);
+        var logs = await _database.GetRecentLogsForMonitorAsync(monitor.Id, 16, cancellationToken);
+        var lastConfirmedInbound = logs.LastOrDefault(log =>
+            string.Equals(log.Direction, "Inbound", StringComparison.OrdinalIgnoreCase)
+            && !log.Status.Contains("Error", StringComparison.OrdinalIgnoreCase)
+            && !log.Status.Contains("Deferred", StringComparison.OrdinalIgnoreCase));
+        var lastConfirmedOutbound = logs.LastOrDefault(log =>
+            string.Equals(log.Direction, "Outbound", StringComparison.OrdinalIgnoreCase)
+            && !log.Status.Contains("Failed", StringComparison.OrdinalIgnoreCase)
+            && !log.Status.Contains("Deferred", StringComparison.OrdinalIgnoreCase));
 
-        builder.AppendLine("نحن نكمل محادثة قديمة في ChatGPT بعد أن وصلت المحادثة السابقة إلى حد السياق/طول المحادثة. لا تعتبر هذه محادثة جديدة من حيث المهمة؛ اعتبر المعلومات التالية سياقًا منقولًا من المحادثة السابقة.");
-        builder.AppendLine("تابع من حيث توقفنا، ولا تبدأ من الصفر. لا تدّعي أنك تملك رسائل غير موجودة في السياق أدناه. إذا كان هناك نقص حقيقي في المعلومات، اطلب فقط الجزء الضروري.");
-        builder.AppendLine($"Monitor: #{monitor.Id} | Previous chat: {previousTab.Title} | Continuation: {monitor.RotationCount + 1}");
+        var builder = new StringBuilder(maxChars + 512);
+        builder.AppendLine("هذه رسالة استمرارية من محادثة ChatGPT سابقة. اعتبر المهمة نفسها مستمرة ولا تبدأ من الصفر.");
+        builder.AppendLine("تابع من آخر نقطة مؤكدة أدناه، ولا تكرر ما تم إنجازه. لا تدّعي امتلاك سياق غير موجود في هذه الرسالة.");
+        builder.AppendLine($"Monitor: #{monitor.Id} | Previous chat: {previousTab.Title} | Source conversation: {monitor.Url} | Continuation: {monitor.RotationCount + 1}");
         builder.AppendLine();
-        builder.AppendLine("آخر رد أدى إلى الانتقال:");
-        builder.AppendLine(Trim(triggerResponse, Math.Min(1800, maxChars / 3)));
+        builder.AppendLine("نقطة الاستكمال المؤكدة:");
+        builder.AppendLine(lastConfirmedInbound is null
+            ? "[لا يوجد رد Inbound مؤكد في السجل القريب؛ استخدم السجل المنقول أدناه لتحديد آخر نقطة مؤكدة.]"
+            : Trim(lastConfirmedInbound.Response, Math.Min(2200, maxChars / 3)));
+        builder.AppendLine();
+        builder.AppendLine("آخر طلب/تعليمات Outbound مؤكدة قبل الانتقال:");
+        builder.AppendLine(lastConfirmedOutbound is null
+            ? "[غير متاح]"
+            : Trim(lastConfirmedOutbound.Prompt, Math.Min(1400, maxChars / 4)));
+        builder.AppendLine();
+        builder.AppendLine("سبب الانتقال / آخر حالة ظهرت:");
+        builder.AppendLine(Trim(triggerResponse, Math.Min(1200, maxChars / 5)));
         builder.AppendLine();
         builder.AppendLine("السجل القريب للمحادثة:");
 
         foreach (var log in logs)
         {
-            if (log.Direction == "System" && log.Status.Contains("Refresh", StringComparison.OrdinalIgnoreCase))
+            if (log.Direction == "System" &&
+                (log.Status.Contains("Refresh", StringComparison.OrdinalIgnoreCase)
+                 || log.Status.Contains("HandoffCheckpoint", StringComparison.OrdinalIgnoreCase)))
                 continue;
 
             var content = !string.IsNullOrWhiteSpace(log.Response) ? log.Response : log.Prompt;
             if (string.IsNullOrWhiteSpace(content))
                 continue;
 
-            builder.Append('[').Append(log.Direction).Append("] ");
-            builder.AppendLine(Trim(content, 900));
+            builder.Append('[').Append(log.Direction).Append('/').Append(log.Status).Append("] ");
+            builder.AppendLine(Trim(content, 800));
         }
 
         builder.AppendLine();
-        builder.AppendLine("تعليمات الاستمرارية: حافظ على الهدف والقرارات السابقة، واستمر في تنفيذ الخطوة التالية. إذا كان الرد السابق متعلقًا بالبرمجة، لا تعيد تصميم ما اكتمل ولا تكرر العمل المنجز.");
+        builder.AppendLine("تعليمات الاستمرارية: حافظ على الهدف والقرارات السابقة، واستمر في تنفيذ الخطوة التالية من نقطة الاستكمال المؤكدة. إذا كان العمل برمجيًا، لا تعيد تصميم أو تنفيذ ما ثبت أنه اكتمل.");
         builder.AppendLine("تعليمات السلامة: لا تحاول تجاوز حدود الاستخدام أو التحايل على قيود الخدمة. إذا ظهر خطأ أو حد جديد، تعامل معه وفق الرسالة الفعلية وبشكل محافظ.");
 
         var result = builder.ToString();
