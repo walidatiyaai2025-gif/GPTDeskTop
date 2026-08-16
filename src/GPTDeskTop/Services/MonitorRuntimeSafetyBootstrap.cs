@@ -22,8 +22,9 @@ internal static class MonitorRuntimeSafetyBootstrap
     private const string InstallSendGuardExpression = """
 (() => {
   const key = '__gptDesktopSendStormGuard';
-  const version = 3;
+  const version = 4;
   const unacceptedArmTimeoutMs = 12000;
+  const acceptedHandoffTimeoutMs = 8000;
   const existing = window[key];
   if (existing?.version === version) {
     try { existing.refreshLifecycle?.(); } catch { }
@@ -31,6 +32,7 @@ internal static class MonitorRuntimeSafetyBootstrap
       installed: true,
       blockedCount: existing.blockedCount || 0,
       recoveredCount: existing.recoveredCount || 0,
+      acceptedHandoffCount: existing.acceptedHandoffCount || 0,
       armed: !!existing.armed,
       accepted: !!existing.accepted
     };
@@ -43,15 +45,37 @@ internal static class MonitorRuntimeSafetyBootstrap
     const style = getComputedStyle(element);
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
-  const userCount = () => document.querySelectorAll('[data-message-author-role="user"]').length;
-  const assistantCount = () => document.querySelectorAll('[data-message-author-role="assistant"]').length;
-  // Keep the send-storm guard aligned with the main chat-state detector and composer-readiness probe.
-  // Streaming DOM markers can survive hydration after a reply is visibly complete; treating them as
-  // authoritative here leaves the guard permanently armed and suppresses every later Outbound turn.
-  const isGenerating = () => {
-    const stop = document.querySelector('button[data-testid="stop-button"]');
-    return visible(stop);
+  const messageSnapshot = role => {
+    const messages = document.querySelectorAll(`[data-message-author-role="${role}"]`);
+    const last = messages.length ? messages[messages.length - 1] : null;
+    const text = last ? (last.innerText || last.textContent || '').trim() : '';
+    return {
+      count: messages.length,
+      node: last,
+      id: last?.getAttribute?.('data-message-id') || '',
+      textLength: text.length,
+      textTail: text.slice(-512)
+    };
   };
+  const snapshotChanged = (current, baseline) => {
+    if (!baseline) return !!current.node;
+    return current.count !== baseline.count
+      || current.node !== baseline.node
+      || current.id !== baseline.id
+      || current.textLength !== baseline.textLength
+      || current.textTail !== baseline.textTail;
+  };
+  const findStopButton = () => {
+    const testStopButton = document.querySelector('button[data-testid="stop-button"]');
+    if (visible(testStopButton)) return testStopButton;
+    for (const button of document.querySelectorAll('button')) {
+      if (!visible(button)) continue;
+      const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`;
+      if (/stop generating|stop responding|إيقاف الإنشاء|إيقاف الرد/i.test(label)) return button;
+    }
+    return null;
+  };
+  const isGenerating = () => !!findStopButton();
   const isSendButton = button => {
     if (!button) return false;
     if (button.getAttribute('data-testid') === 'send-button') return true;
@@ -64,11 +88,13 @@ internal static class MonitorRuntimeSafetyBootstrap
     version,
     blockedCount: 0,
     recoveredCount: 0,
+    acceptedHandoffCount: 0,
     armed: false,
     accepted: false,
     armedAt: 0,
-    userCountAtSend: -1,
-    assistantCountAtSend: -1,
+    acceptedAt: 0,
+    userSnapshotAtSend: null,
+    assistantSnapshotAtSend: null,
     refreshLifecycle: null,
     clickHandler: null,
     keyHandler: null,
@@ -79,49 +105,77 @@ internal static class MonitorRuntimeSafetyBootstrap
     state.armed = false;
     state.accepted = false;
     state.armedAt = 0;
-    state.userCountAtSend = -1;
-    state.assistantCountAtSend = -1;
+    state.acceptedAt = 0;
+    state.userSnapshotAtSend = null;
+    state.assistantSnapshotAtSend = null;
   };
+
+  const userTurnAdvanced = () => snapshotChanged(messageSnapshot('user'), state.userSnapshotAtSend);
+  const assistantTurnAdvanced = () => snapshotChanged(messageSnapshot('assistant'), state.assistantSnapshotAtSend);
 
   const observeAcceptedTurn = () => {
     if (!state.armed || state.accepted) return;
-    if (userCount() > state.userCountAtSend || assistantCount() > state.assistantCountAtSend)
+    if (userTurnAdvanced() || assistantTurnAdvanced()) {
       state.accepted = true;
+      state.acceptedAt = Date.now();
+    }
   };
-
-  const newAssistantTurnCompleted = () =>
-    state.armed && state.accepted && assistantCount() > state.assistantCountAtSend && !isGenerating();
 
   const unacceptedAttemptExpired = () =>
     state.armed && !state.accepted && state.armedAt > 0 && Date.now() - state.armedAt >= unacceptedArmTimeoutMs;
 
+  const acceptedHandoffExpired = () =>
+    state.armed && state.accepted && state.acceptedAt > 0 && Date.now() - state.acceptedAt >= acceptedHandoffTimeoutMs;
+
   state.refreshLifecycle = () => {
     if (!state.armed) return;
     observeAcceptedTurn();
-    if (newAssistantTurnCompleted()) {
-      disarm();
-      return;
+
+    if (state.accepted) {
+      // The guard only owns the pre-commit duplicate-click window. Once ChatGPT has accepted the
+      // user turn, generation/composer readiness is authoritative. Do not keep the guard coupled
+      // to assistant DOM cardinality: ChatGPT can virtualize or reuse the same assistant node.
+      if (isGenerating() || (assistantTurnAdvanced() && !isGenerating())) {
+        disarm();
+        return;
+      }
+      // If the user turn is committed but no Stop control is observed (very fast response, DOM
+      // replacement, throttled renderer), hand control back after a bounded grace period. This is
+      // not a resend; the normal receipt/generation pipeline decides whether another send is valid.
+      if (acceptedHandoffExpired()) {
+        state.acceptedHandoffCount++;
+        disarm();
+        return;
+      }
     }
+
     // A capture-phase click can arm the guard even when ChatGPT never commits the user turn
     // (DOM replacement, navigation, or a transport/recovery race). Never let that pre-commit
-    // state suppress Outbound forever. Accepted sends remain protected until their assistant turn ends.
+    // state suppress Outbound forever.
     if (unacceptedAttemptExpired()) {
       state.recoveredCount++;
       disarm();
     }
   };
 
+  const block = event => {
+    state.blockedCount++;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return false;
+  };
+
   const allowOrBlock = event => {
     state.refreshLifecycle();
-    if (state.armed) {
-      state.blockedCount++;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      return false;
-    }
-    state.userCountAtSend = userCount();
-    state.assistantCountAtSend = assistantCount();
+    // Even after an accepted-turn handoff, never allow a physical send while the authoritative
+    // generation signal is active.
+    if (isGenerating()) return block(event);
+    if (state.armed) return block(event);
+
+    state.userSnapshotAtSend = messageSnapshot('user');
+    state.assistantSnapshotAtSend = messageSnapshot('assistant');
     state.armedAt = Date.now();
+    state.acceptedAt = 0;
     state.accepted = false;
     state.armed = true;
     return true;
@@ -145,7 +199,7 @@ internal static class MonitorRuntimeSafetyBootstrap
   window.addEventListener('click', state.clickHandler, true);
   window.addEventListener('keydown', state.keyHandler, true);
   window[key] = state;
-  return { installed: true, blockedCount: 0, recoveredCount: 0, armed: false, accepted: false };
+  return { installed: true, blockedCount: 0, recoveredCount: 0, acceptedHandoffCount: 0, armed: false, accepted: false };
 })()
 """;
 
@@ -174,6 +228,7 @@ internal static class MonitorRuntimeSafetyBootstrap
             using var sessions = new ChromeDevToolsSessionPool();
             var previousBlockedCounts = new Dictionary<string, int>(StringComparer.Ordinal);
             var previousRecoveredCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            var previousAcceptedHandoffCounts = new Dictionary<string, int>(StringComparer.Ordinal);
             var consecutiveEndpointFailures = 0;
             var nextRecoveryAllowedUtc = DateTimeOffset.MinValue;
 
@@ -188,7 +243,12 @@ internal static class MonitorRuntimeSafetyBootstrap
                     sessions.Prune(tabs);
 
                     foreach (var tab in tabs.Where(IsChatGptPage))
-                        await InstallSendGuardAsync(sessions, tab, previousBlockedCounts, previousRecoveredCounts).ConfigureAwait(false);
+                        await InstallSendGuardAsync(
+                            sessions,
+                            tab,
+                            previousBlockedCounts,
+                            previousRecoveredCounts,
+                            previousAcceptedHandoffCounts).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
                 {
@@ -235,7 +295,8 @@ internal static class MonitorRuntimeSafetyBootstrap
         ChromeDevToolsSessionPool sessions,
         ChromeTab tab,
         Dictionary<string, int> previousBlockedCounts,
-        Dictionary<string, int> previousRecoveredCounts)
+        Dictionary<string, int> previousRecoveredCounts,
+        Dictionary<string, int> previousAcceptedHandoffCounts)
     {
         using var commandCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         try
@@ -264,6 +325,15 @@ internal static class MonitorRuntimeSafetyBootstrap
             if (recoveredCount > previousRecovered)
                 WriteEvent("send-guard-auto-released", "UnacceptedTimeout", recoveredCount - previousRecovered);
             previousRecoveredCounts[tab.Id] = recoveredCount;
+
+            var acceptedHandoffCount = result.TryGetProperty("acceptedHandoffCount", out var handoffElement)
+                && handoffElement.ValueKind == JsonValueKind.Number
+                    ? handoffElement.GetInt32()
+                    : 0;
+            var previousAcceptedHandoff = previousAcceptedHandoffCounts.TryGetValue(tab.Id, out var priorHandoff) ? priorHandoff : 0;
+            if (acceptedHandoffCount > previousAcceptedHandoff)
+                WriteEvent("send-guard-accepted-handoff", "AcceptedTurnTimeout", acceptedHandoffCount - previousAcceptedHandoff);
+            previousAcceptedHandoffCounts[tab.Id] = acceptedHandoffCount;
         }
         catch (OperationCanceledException)
         {
