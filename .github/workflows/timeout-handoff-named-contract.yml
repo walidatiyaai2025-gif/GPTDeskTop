@@ -1,0 +1,52 @@
+name: Timeout handoff named contract
+
+on:
+  push:
+    branches:
+      - agent/handoff-continuity-checkpoint
+    paths:
+      - 'scripts/apply-timeout-handoff-named-contract.py'
+      - '.github/workflows/timeout-handoff-named-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/handoff-continuity-checkpoint
+          fetch-depth: 0
+
+      - name: Apply named timeout handoff patch
+        run: python scripts/apply-timeout-handoff-named-contract.py
+
+      - name: Restore
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Validate runtime regression suite
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore
+
+      - name: Remove one-shot integration files
+        if: success()
+        shell: bash
+        run: |
+          rm -f scripts/apply-timeout-handoff-named-contract.py
+          rm -f .github/workflows/timeout-handoff-named-contract.yml
+
+      - name: Commit integrated fix
+        if: success()
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'No integration changes required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: preserve delivery-timeout source regression contract'
+          git push origin HEAD:agent/handoff-continuity-checkpoint
