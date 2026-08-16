@@ -52,7 +52,8 @@ public sealed class ChatMonitorErrorDrivenWaitRegressionTests
         Assert.Contains("[aria-live=\"assertive\"]", source, StringComparison.Ordinal);
         Assert.Contains("[data-testid*=\"error\"]", source, StringComparison.Ordinal);
         Assert.Contains("if (!visible(element)) continue;", source, StringComparison.Ordinal);
-        Assert.Contains("streamingSignal", source, StringComparison.Ordinal);
+        Assert.Contains("const isGenerating = !!stopButton;", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("const isGenerating = !!stopButton || streamingSignal;", source, StringComparison.Ordinal);
         Assert.DoesNotContain("[class*=\"error\"]", source, StringComparison.Ordinal);
         Assert.DoesNotContain("document.body?.innerText", source, StringComparison.Ordinal);
         Assert.DoesNotContain("visibleText.match", source, StringComparison.Ordinal);
