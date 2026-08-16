@@ -15,7 +15,7 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
         var generationCheck = source.IndexOf(
-            "const isGenerating = !!stopButton || streamingSignal;",
+            "const isGenerating = !!stopButton;",
             StringComparison.Ordinal);
         var responseRead = source.IndexOf(
             "const last = !isGenerating && lastAssistant",
@@ -31,7 +31,7 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             "state.autoFollow?.snapshot?.()",
             source,
             StringComparison.Ordinal);
-        Assert.Contains(
+        Assert.DoesNotContain(
             "const streamingSignal = hasStreamingSignal(lastAssistant);",
             source,
             StringComparison.Ordinal);
@@ -48,7 +48,7 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
         Assert.Contains(
-            "private const string ChatStateReadExpression = \"window.__gptDesktopChatStateCache?.version === 5 ? window.__gptDesktopChatStateCache.read() : null\";",
+            "private const string ChatStateReadExpression = \"window.__gptDesktopChatStateCache?.version === 6 ? window.__gptDesktopChatStateCache.read() : null\";",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
