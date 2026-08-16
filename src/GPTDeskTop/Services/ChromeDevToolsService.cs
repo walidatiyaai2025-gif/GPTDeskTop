@@ -17,11 +17,11 @@ public sealed class ChromeDevToolsService
     private const int MonitorRecoveryEndpointGraceAttempts = 8;
     private const int MonitorRecoveryEndpointGraceDelayMs = 250;
     private const string BrowserSessionId = "__gptdesktop_monitor_browser__";
-    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 5 ? window.__gptDesktopChatStateCache.read() : null";
+    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 6 ? window.__gptDesktopChatStateCache.read() : null";
     private const string ChatStateInstallExpressionTemplate = """
 (() => {
   const key = '__gptDesktopChatStateCache';
-  const version = 5;
+  const version = 6;
   const smartFollowEnabled = __SMART_ENABLED__;
   const smartFollowThrottleMs = __SMART_THROTTLE_MS__;
   const smartFollowNearBottomPx = __SMART_NEAR_BOTTOM_PX__;
@@ -223,8 +223,9 @@ public sealed class ChromeDevToolsService
     const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
     const lastAssistant = messages.length ? messages[messages.length - 1] : null;
     const stopButton = findStopButton();
-    const streamingSignal = hasStreamingSignal(lastAssistant);
-    const isGenerating = !!stopButton || streamingSignal;
+    // A visible Stop control is the authoritative generation signal. Streaming CSS/data
+    // markers can survive hydration/reconciliation after the response has actually completed.
+    const isGenerating = !!stopButton;
     const errorText = findErrorText();
     const last = !isGenerating && lastAssistant ? (lastAssistant.innerText || '').trim() : '';
     state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, autoFollow: state.autoFollow?.snapshot?.() || { mode: 'disabled', sequence: 0, event: 'disabled' } };
