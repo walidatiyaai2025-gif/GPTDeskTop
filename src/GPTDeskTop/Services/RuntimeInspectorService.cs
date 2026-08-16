@@ -72,6 +72,9 @@ internal static class RuntimeInspectorService
 {
     private const int MaxOverflowRows = 25;
     private const int OverflowToleranceLogicalPixels = 2;
+    private const uint WmNull = 0x0000;
+    private const uint SmtoAbortIfHung = 0x0002;
+    private const uint BrowserWindowProbeTimeoutMs = 100;
     private static readonly TimeSpan DiagnosticStaleAfter = TimeSpan.FromMinutes(5);
 
     public static FieldRuntimeSnapshot Capture(Form owner, ChatGptMonitorService monitor)
@@ -270,13 +273,15 @@ internal static class RuntimeInspectorService
     {
         try
         {
-            var title = process.MainWindowTitle;
+            var handle = process.MainWindowHandle;
+            var hasMainWindow = handle != IntPtr.Zero;
+            var title = hasMainWindow ? process.MainWindowTitle : string.Empty;
             return new RuntimeInspectorBrowserProcess(
                 process.Id,
                 process.ProcessName,
                 title,
-                process.Responding,
-                process.MainWindowHandle != IntPtr.Zero);
+                !hasMainWindow || IsWindowResponding(handle),
+                hasMainWindow);
         }
         catch
         {
@@ -287,6 +292,29 @@ internal static class RuntimeInspectorService
             process.Dispose();
         }
     }
+
+    private static bool IsWindowResponding(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero || !OperatingSystem.IsWindows()) return true;
+        return SendMessageTimeout(
+            handle,
+            WmNull,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            SmtoAbortIfHung,
+            BrowserWindowProbeTimeoutMs,
+            out _) != IntPtr.Zero;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd,
+        uint msg,
+        IntPtr wParam,
+        IntPtr lParam,
+        uint flags,
+        uint timeout,
+        out IntPtr result);
 
     private static void Walk(
         Control control,
