@@ -211,7 +211,16 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
             CancellationToken cancellationToken,
             bool extractRuntimeValue)
         {
-            await _commandGate.WaitAsync(cancellationToken);
+            if (!await _commandGate.WaitAsync(CommandTimeout, cancellationToken).ConfigureAwait(false))
+            {
+                // A command can become wedged while holding the session gate even when the
+                // underlying transport never surfaces an exception. Bound the queue wait too,
+                // retire this session, and let the pool create a clean session on the next poll.
+                MarkBroken();
+                throw new TimeoutException(
+                    $"Chrome DevTools command '{method}' timed out waiting for the session gate after {CommandTimeout.TotalSeconds:0} seconds.");
+            }
+
             try
             {
                 if (Volatile.Read(ref _retired) != 0 || Volatile.Read(ref _broken) != 0)

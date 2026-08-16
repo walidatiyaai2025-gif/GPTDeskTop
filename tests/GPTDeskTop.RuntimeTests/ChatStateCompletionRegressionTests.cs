@@ -14,21 +14,21 @@ public sealed class ChatStateCompletionRegressionTests
         var source = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
-        Assert.Contains("__gptDesktopChatStateCache?.version === 5", source, StringComparison.Ordinal);
-        Assert.Contains("const version = 5;", source, StringComparison.Ordinal);
+        Assert.Contains("__gptDesktopChatStateCache?.version === 6", source, StringComparison.Ordinal);
+        Assert.Contains("const version = 6;", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("__gptDesktopChatStateCache?.version === 5", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void GenericComposerBusyStateCannotKeepACompletedReplyGenerating()
+    public void StaleStreamingMarkersCannotKeepACompletedReplyGenerating()
     {
         var source = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
-        Assert.Contains("const hasStreamingSignal = lastAssistant =>", source, StringComparison.Ordinal);
-        Assert.Contains("const explicitStreamingSelector = '[data-is-streaming=\"true\"],[data-streaming=\"true\"],.result-streaming';", source, StringComparison.Ordinal);
-        Assert.Contains("const streamingSignal = hasStreamingSignal(lastAssistant);", source, StringComparison.Ordinal);
+        Assert.Contains("const isGenerating = !!stopButton;", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("const streamingSignal = hasStreamingSignal(lastAssistant);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("const isGenerating = !!stopButton || streamingSignal;", source, StringComparison.Ordinal);
         Assert.DoesNotContain("element.closest('form')", source, StringComparison.Ordinal);
-        Assert.DoesNotContain(".result-streaming,[aria-busy=\"true\"]", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -39,7 +39,7 @@ public sealed class ChatStateCompletionRegressionTests
 
         Assert.Contains("'class', 'style', 'hidden', 'aria-hidden'", source, StringComparison.Ordinal);
         Assert.Contains("const lastAssistant = messages.length ? messages[messages.length - 1] : null;", source, StringComparison.Ordinal);
-        Assert.Contains("const isGenerating = !!stopButton || streamingSignal;", source, StringComparison.Ordinal);
+        Assert.Contains("const isGenerating = !!stopButton;", source, StringComparison.Ordinal);
     }
 
     [Fact]

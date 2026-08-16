@@ -21,4 +21,16 @@ public sealed class MonitorRuntimeSafetyRegressionTests
         Assert.Contains("send-storm-suppressed", source, StringComparison.Ordinal);
         Assert.Contains("monitor-runtime-safety.jsonl", source, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void SendStormGuardCannotStayArmedOnStaleStreamingMarkers()
+    {
+        var source = ReadSource();
+
+        Assert.Contains("const version = 2;", source, StringComparison.Ordinal);
+        Assert.Contains("return visible(stop);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("[data-is-streaming=", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("[data-streaming=", source, StringComparison.Ordinal);
+        Assert.DoesNotContain(".result-streaming", source, StringComparison.Ordinal);
+    }
 }
