@@ -23,6 +23,8 @@ internal sealed class InstallerWizardForm : Form
     private bool _installing;
     private bool _installed;
 
+    internal bool InstallationFailed { get; private set; }
+
     internal InstallerWizardForm()
     {
         Text = "GPTDeskTop Setup";
@@ -173,13 +175,13 @@ internal sealed class InstallerWizardForm : Form
 
     private Task RunInstallationOnStaThreadAsync(bool createDesktopShortcut)
     {
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
             try
             {
                 Program.Install(createDesktopShortcut);
-                completion.SetResult();
+                completion.SetResult(true);
             }
             catch (Exception ex)
             {
@@ -194,6 +196,7 @@ internal sealed class InstallerWizardForm : Form
     private async Task RunInstallationAsync()
     {
         _installing = true;
+        InstallationFailed = false;
         RenderPage();
         try
         {
@@ -204,6 +207,7 @@ internal sealed class InstallerWizardForm : Form
         catch (Exception ex)
         {
             _installed = false;
+            InstallationFailed = true;
             _status.Text = ex.Message;
         }
         finally
