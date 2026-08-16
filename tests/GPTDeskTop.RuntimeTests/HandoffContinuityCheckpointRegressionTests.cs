@@ -156,7 +156,7 @@ public sealed class HandoffContinuityCheckpointRegressionTests
         var path = Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory,
             "..", "..", "..", "..", "..",
-            parts));
+            Path.Combine(parts)));
         return File.ReadAllText(path);
     }
 }
