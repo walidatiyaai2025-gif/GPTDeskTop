@@ -22,7 +22,7 @@ internal static class MonitorRuntimeSafetyBootstrap
     private const string InstallSendGuardExpression = """
 (() => {
   const key = '__gptDesktopSendStormGuard';
-  const version = 1;
+  const version = 2;
   const existing = window[key];
   if (existing?.version === version) {
     return { installed: true, blockedCount: existing.blockedCount || 0, armed: !!existing.armed };
@@ -36,15 +36,12 @@ internal static class MonitorRuntimeSafetyBootstrap
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
   const assistantCount = () => document.querySelectorAll('[data-message-author-role="assistant"]').length;
+  // Keep the send-storm guard aligned with the main chat-state detector and composer-readiness probe.
+  // Streaming DOM markers can survive hydration after a reply is visibly complete; treating them as
+  // authoritative here leaves the guard permanently armed and suppresses every later Outbound turn.
   const isGenerating = () => {
     const stop = document.querySelector('button[data-testid="stop-button"]');
-    if (visible(stop)) return true;
-    const assistants = document.querySelectorAll('[data-message-author-role="assistant"]');
-    const last = assistants.length ? assistants[assistants.length - 1] : null;
-    if (!last) return false;
-    const selector = '[data-is-streaming="true"],[data-streaming="true"],.result-streaming';
-    if (last.matches?.(selector) && visible(last)) return true;
-    return [...last.querySelectorAll(selector)].some(visible);
+    return visible(stop);
   };
   const isSendButton = button => {
     if (!button) return false;
