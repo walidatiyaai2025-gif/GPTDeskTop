@@ -48,6 +48,20 @@ public sealed class HandoffContinuityCheckpointRegressionTests
     }
 
     [Fact]
+    public void HandoffPacketPreservesConfiguredDirectiveAndCanonicalizesToOneLine()
+    {
+        var source = Source("src", "GPTDeskTop", "Services", "ConversationHandoffService.cs");
+        Assert.Contains("CheckpointMarker = \"[HANDOFF-CHECKPOINT]\"", source, StringComparison.Ordinal);
+        Assert.Contains("builder.Append(directive).Append(' ')", source, StringComparison.Ordinal);
+        Assert.Contains("char.IsWhiteSpace(ch)", source, StringComparison.Ordinal);
+
+        var monitor = Source("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs");
+        Assert.Contains("BuildAsync(monitor, text, oldTab, fallbackRecoveryMessage, cancellationToken)", monitor, StringComparison.Ordinal);
+        Assert.Contains("BuildAsync(monitor, triggerText, oldTab, fallbackStartMessage, cancellationToken)", monitor, StringComparison.Ordinal);
+        Assert.DoesNotContain("string.IsNullOrWhiteSpace(handoffMessage) ? fallbackRecoveryMessage : handoffMessage", monitor, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AcceptedPendingHandoffIsRecoveredBeforeStartupFollowUp()
     {
         var source = Source("src", "GPTDeskTop", "Services", "LastWorkingStateService.cs");

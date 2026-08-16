@@ -411,8 +411,8 @@ public sealed class ChatGptMonitorService
                         Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT reported a conversation/context limit. Rotating to a new chat..."); if (monitor.NewChatDelaySeconds > 0) await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(monitor.NewChatDelaySeconds, 0, 600)), cancellationToken);
                         var oldTab = tab;
                         var handoffService = new ConversationHandoffService(_database);
-                        var handoffMessage = await handoffService.BuildAsync(monitor, text, oldTab, cancellationToken);
-                        var startMessage = string.IsNullOrWhiteSpace(handoffMessage) ? (string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage) : handoffMessage;
+                        var startDirective = string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage.Trim();
+                        var startMessage = await handoffService.BuildAsync(monitor, text, oldTab, startDirective, cancellationToken);
                         await ConversationHandoffCheckpointStore.PrepareAsync(_database, monitor, oldTab, "ConversationContextLimit", startMessage, text, "RotatedToNewChat", "RotationStartSent", "RotationHandoffCommitDeferred", incrementRotationCount: true, recordRotation: true, cancellationToken);
                         await _database.AddLogAsync("System", startMessage, text, "HandoffCheckpointPrepared", monitor.Id, oldTab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke();
                         var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
@@ -466,8 +466,7 @@ public sealed class ChatGptMonitorService
                         var oldTab = tab;
                         var fallbackRecoveryMessage = await _database.GetSettingAsync("TimeoutRecoveryMessage", cancellationToken) ?? "كمل";
                         var handoffService = new ConversationHandoffService(_database);
-                        var handoffMessage = await handoffService.BuildAsync(monitor, text, oldTab, cancellationToken);
-                        var recoveryMessage = string.IsNullOrWhiteSpace(handoffMessage) ? fallbackRecoveryMessage : handoffMessage;
+                        var recoveryMessage = await handoffService.BuildAsync(monitor, text, oldTab, fallbackRecoveryMessage, cancellationToken);
                         await ConversationHandoffCheckpointStore.PrepareAsync(_database, monitor, oldTab, "DeliveryTimeout", recoveryMessage, text, "RecoveredToNewChat", "RecoverySent", "RecoveryHandoffCommitDeferred", incrementRotationCount: false, recordRotation: false, cancellationToken);
                         await _database.AddLogAsync("System", recoveryMessage, text, "HandoffCheckpointPrepared", monitor.Id, oldTab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke();
                         var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
@@ -518,8 +517,7 @@ public sealed class ChatGptMonitorService
                         Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT error saved. Opening a fresh chat and continuing under the same Monitor ID...");
                         var oldTab = tab;
                         var handoffService = new ConversationHandoffService(_database);
-                        var handoffMessage = await handoffService.BuildAsync(monitor, text, oldTab, cancellationToken);
-                        var recoveryMessage = string.IsNullOrWhiteSpace(handoffMessage) ? fallbackRecoveryMessage : handoffMessage;
+                        var recoveryMessage = await handoffService.BuildAsync(monitor, text, oldTab, fallbackRecoveryMessage, cancellationToken);
                         await ConversationHandoffCheckpointStore.PrepareAsync(_database, monitor, oldTab, "ChatGptError", recoveryMessage, text, "RecoveredFromChatGptError", "ChatGptErrorContinuationSent", "ChatGptErrorHandoffCommitDeferred", incrementRotationCount: false, recordRotation: false, cancellationToken);
                         await _database.AddLogAsync("System", recoveryMessage, text, "HandoffCheckpointPrepared", monitor.Id, oldTab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke();
                         var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
@@ -750,8 +748,7 @@ public sealed class ChatGptMonitorService
         var prefix = $"[{monitor.Title}]";
         var fallbackStartMessage = string.IsNullOrWhiteSpace(configuredStartMessage) ? "كمل" : configuredStartMessage.Trim();
         var handoffService = new ConversationHandoffService(_database);
-        var handoffMessage = await handoffService.BuildAsync(monitor, triggerText, oldTab, cancellationToken);
-        var startMessage = string.IsNullOrWhiteSpace(handoffMessage) ? fallbackStartMessage : handoffMessage;
+        var startMessage = await handoffService.BuildAsync(monitor, triggerText, oldTab, fallbackStartMessage, cancellationToken);
         Activity?.Invoke(monitor.Id, $"{prefix} Assistant count {assistantCount} reached threshold {threshold}. Opening a new ChatGPT conversation...");
         await ConversationHandoffCheckpointStore.PrepareAsync(_database, monitor, oldTab, "AssistantMessageCount", startMessage, triggerText, "RotatedByMessageCount", "MessageCountRotationStartSent", "MessageCountRotationCommitDeferred", incrementRotationCount: true, recordRotation: true, cancellationToken);
         await _database.AddLogAsync("System", startMessage, triggerText, "HandoffCheckpointPrepared", monitor.Id, oldTab.Id, monitor.Title, cancellationToken); HistoryChanged?.Invoke();
