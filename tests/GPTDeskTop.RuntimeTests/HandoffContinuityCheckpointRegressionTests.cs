@@ -1,16 +1,11 @@
+using GPTDeskTop.Data;
+using GPTDeskTop.Models;
+using GPTDeskTop.Services;
+
 namespace GPTDeskTop.RuntimeTests;
 
 public sealed class HandoffContinuityCheckpointRegressionTests
 {
-    private static string Source(params string[] parts)
-    {
-        var path = Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory,
-            "..", "..", "..", "..", "..",
-            parts));
-        return File.ReadAllText(path);
-    }
-
     [Fact]
     public void DeliveryTimeoutFreshChatCarriesConfirmedWorkCheckpointAndNewTargetScope()
     {
@@ -74,6 +69,94 @@ public sealed class HandoffContinuityCheckpointRegressionTests
 
         Assert.Contains("for (var attempt = 1; ; attempt++)", method, StringComparison.Ordinal);
         Assert.Contains("Monitor remains active and will keep self-healing", method, StringComparison.Ordinal);
-        Assert.DoesNotContain("attempt <= 3", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("for (var attempt = 1; attempt <= 3", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("throw last", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task HandoffCheckpointPersistsAcrossStoreInstancesUntilExplicitlyCleared()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "GPTDeskTop.RuntimeTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            var database = new LocalDatabase(Path.Combine(root, "handoff.db"));
+            await database.InitializeAsync();
+
+            var monitor = new SavedMonitor
+            {
+                Id = 41,
+                Url = "https://chatgpt.com/c/source-checkpoint",
+                Title = "Source"
+            };
+            var sourceTab = new ChromeTab
+            {
+                Id = "source-tab",
+                Title = "Source",
+                Url = monitor.Url
+            };
+            var targetTab = new ChromeTab
+            {
+                Id = "target-tab",
+                Title = "Target",
+                Url = "https://chatgpt.com/c/target-checkpoint"
+            };
+
+            await ConversationHandoffCheckpointStore.PrepareAsync(
+                database,
+                monitor,
+                sourceTab,
+                "DeliveryTimeout",
+                "continue from checkpoint",
+                "message delivery timed out",
+                "RecoveredToNewChat",
+                "RecoverySent",
+                "RecoveryCommitDeferred",
+                incrementRotationCount: false,
+                recordRotation: false);
+
+            var prepared = await ConversationHandoffCheckpointStore.LoadAsync(database, monitor.Id);
+            Assert.NotNull(prepared);
+            Assert.Equal("Prepared", prepared!.Stage);
+            Assert.Equal(monitor.Url, prepared.SourceUrl);
+            Assert.Equal("continue from checkpoint", prepared.StartMessage);
+
+            await ConversationHandoffCheckpointStore.MarkTargetCreatedAsync(database, monitor.Id, targetTab);
+            var targetCreated = await ConversationHandoffCheckpointStore.LoadAsync(database, monitor.Id);
+            Assert.NotNull(targetCreated);
+            Assert.Equal("TargetCreated", targetCreated!.Stage);
+            Assert.Equal(targetTab.Id, targetCreated.TargetTabId);
+            Assert.Equal(targetTab.Url, targetCreated.TargetUrl);
+
+            await ConversationHandoffCheckpointStore.MarkDeliveryAcceptedAsync(database, monitor.Id, targetTab);
+            var accepted = await ConversationHandoffCheckpointStore.LoadAsync(database, monitor.Id);
+            Assert.NotNull(accepted);
+            Assert.Equal("DeliveryAccepted", accepted!.Stage);
+            Assert.Equal(targetTab.Url, accepted.TargetUrl);
+
+            var reopenedDatabase = new LocalDatabase(Path.Combine(root, "handoff.db"));
+            var afterRestart = await ConversationHandoffCheckpointStore.LoadAsync(reopenedDatabase, monitor.Id);
+            Assert.NotNull(afterRestart);
+            Assert.Equal("DeliveryAccepted", afterRestart!.Stage);
+            Assert.Equal("continue from checkpoint", afterRestart.StartMessage);
+
+            await ConversationHandoffCheckpointStore.ClearAsync(reopenedDatabase, monitor.Id);
+            Assert.Null(await ConversationHandoffCheckpointStore.LoadAsync(database, monitor.Id));
+        }
+        finally
+        {
+            try { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+            catch { }
+        }
+    }
+
+    private static string Source(params string[] parts)
+    {
+        var path = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..",
+            parts));
+        return File.ReadAllText(path);
     }
 }
