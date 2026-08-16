@@ -45,6 +45,16 @@ jobs:
             throw "GPTDeskTop-Setup.exe failed embedded payload verification with exit code $($process.ExitCode)."
           }
 
+      - name: Verify interactive setup wizard contract
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path 'Output/Setup/GPTDeskTop-Setup.exe').Path
+          $process = Start-Process -FilePath $setup -ArgumentList '--verify-wizard' -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "GPTDeskTop-Setup.exe does not contain the required interactive Next/Install/Finish wizard. ExitCode=$($process.ExitCode)"
+          }
+          Write-Host 'Verified standalone EXE contains the interactive GPTDeskTop Setup Wizard.'
+
       - name: Validate published application is Windows-loadable and starts managed code
         shell: pwsh
         run: |
@@ -119,7 +129,8 @@ jobs:
           Commit: ${{ github.sha }}
           Workflow run: ${{ github.run_id }}
 
-          The setup payload passed resource verification, PE32+/AMD64 validation, and a real Windows process-load + managed-startup probe before publication.
+          Primary deliverable: GPTDeskTop-Setup.exe. Opening it launches the interactive Setup Wizard (Welcome -> Options -> Install -> Finish).
+          The setup payload passed wizard-contract verification, resource verification, PE32+/AMD64 validation, and a real Windows process-load + managed-startup probe before publication.
           Required assets are attached below. Verify downloads with SHA256SUMS.txt.
           "@
 
