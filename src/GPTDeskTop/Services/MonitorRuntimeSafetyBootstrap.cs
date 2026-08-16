@@ -22,10 +22,18 @@ internal static class MonitorRuntimeSafetyBootstrap
     private const string InstallSendGuardExpression = """
 (() => {
   const key = '__gptDesktopSendStormGuard';
-  const version = 2;
+  const version = 3;
+  const unacceptedArmTimeoutMs = 12000;
   const existing = window[key];
   if (existing?.version === version) {
-    return { installed: true, blockedCount: existing.blockedCount || 0, armed: !!existing.armed };
+    try { existing.refreshLifecycle?.(); } catch { }
+    return {
+      installed: true,
+      blockedCount: existing.blockedCount || 0,
+      recoveredCount: existing.recoveredCount || 0,
+      armed: !!existing.armed,
+      accepted: !!existing.accepted
+    };
   }
   try { existing?.dispose?.(); } catch { }
 
@@ -35,6 +43,7 @@ internal static class MonitorRuntimeSafetyBootstrap
     const style = getComputedStyle(element);
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
+  const userCount = () => document.querySelectorAll('[data-message-author-role="user"]').length;
   const assistantCount = () => document.querySelectorAll('[data-message-author-role="assistant"]').length;
   // Keep the send-storm guard aligned with the main chat-state detector and composer-readiness probe.
   // Streaming DOM markers can survive hydration after a reply is visibly complete; treating them as
@@ -54,25 +63,66 @@ internal static class MonitorRuntimeSafetyBootstrap
   const state = {
     version,
     blockedCount: 0,
+    recoveredCount: 0,
     armed: false,
+    accepted: false,
+    armedAt: 0,
+    userCountAtSend: -1,
     assistantCountAtSend: -1,
+    refreshLifecycle: null,
     clickHandler: null,
     keyHandler: null,
     dispose: null
   };
 
+  const disarm = () => {
+    state.armed = false;
+    state.accepted = false;
+    state.armedAt = 0;
+    state.userCountAtSend = -1;
+    state.assistantCountAtSend = -1;
+  };
+
+  const observeAcceptedTurn = () => {
+    if (!state.armed || state.accepted) return;
+    if (userCount() > state.userCountAtSend || assistantCount() > state.assistantCountAtSend)
+      state.accepted = true;
+  };
+
   const newAssistantTurnCompleted = () =>
-    state.armed && assistantCount() > state.assistantCountAtSend && !isGenerating();
+    state.armed && state.accepted && assistantCount() > state.assistantCountAtSend && !isGenerating();
+
+  const unacceptedAttemptExpired = () =>
+    state.armed && !state.accepted && state.armedAt > 0 && Date.now() - state.armedAt >= unacceptedArmTimeoutMs;
+
+  state.refreshLifecycle = () => {
+    if (!state.armed) return;
+    observeAcceptedTurn();
+    if (newAssistantTurnCompleted()) {
+      disarm();
+      return;
+    }
+    // A capture-phase click can arm the guard even when ChatGPT never commits the user turn
+    // (DOM replacement, navigation, or a transport/recovery race). Never let that pre-commit
+    // state suppress Outbound forever. Accepted sends remain protected until their assistant turn ends.
+    if (unacceptedAttemptExpired()) {
+      state.recoveredCount++;
+      disarm();
+    }
+  };
 
   const allowOrBlock = event => {
-    if (newAssistantTurnCompleted()) state.armed = false;
+    state.refreshLifecycle();
     if (state.armed) {
       state.blockedCount++;
       event.preventDefault();
       event.stopImmediatePropagation();
       return false;
     }
+    state.userCountAtSend = userCount();
     state.assistantCountAtSend = assistantCount();
+    state.armedAt = Date.now();
+    state.accepted = false;
     state.armed = true;
     return true;
   };
@@ -95,7 +145,7 @@ internal static class MonitorRuntimeSafetyBootstrap
   window.addEventListener('click', state.clickHandler, true);
   window.addEventListener('keydown', state.keyHandler, true);
   window[key] = state;
-  return { installed: true, blockedCount: 0, armed: false };
+  return { installed: true, blockedCount: 0, recoveredCount: 0, armed: false, accepted: false };
 })()
 """;
 
@@ -123,6 +173,7 @@ internal static class MonitorRuntimeSafetyBootstrap
             using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
             using var sessions = new ChromeDevToolsSessionPool();
             var previousBlockedCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            var previousRecoveredCounts = new Dictionary<string, int>(StringComparer.Ordinal);
             var consecutiveEndpointFailures = 0;
             var nextRecoveryAllowedUtc = DateTimeOffset.MinValue;
 
@@ -137,7 +188,7 @@ internal static class MonitorRuntimeSafetyBootstrap
                     sessions.Prune(tabs);
 
                     foreach (var tab in tabs.Where(IsChatGptPage))
-                        await InstallSendGuardAsync(sessions, tab, previousBlockedCounts).ConfigureAwait(false);
+                        await InstallSendGuardAsync(sessions, tab, previousBlockedCounts, previousRecoveredCounts).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
                 {
@@ -183,7 +234,8 @@ internal static class MonitorRuntimeSafetyBootstrap
     private static async Task InstallSendGuardAsync(
         ChromeDevToolsSessionPool sessions,
         ChromeTab tab,
-        Dictionary<string, int> previousBlockedCounts)
+        Dictionary<string, int> previousBlockedCounts,
+        Dictionary<string, int> previousRecoveredCounts)
     {
         using var commandCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         try
@@ -199,10 +251,19 @@ internal static class MonitorRuntimeSafetyBootstrap
                 && blockedElement.ValueKind == JsonValueKind.Number
                     ? blockedElement.GetInt32()
                     : 0;
-            var previous = previousBlockedCounts.TryGetValue(tab.Id, out var prior) ? prior : 0;
-            if (blockedCount > previous)
-                WriteEvent("send-storm-suppressed", null, blockedCount - previous);
+            var previousBlocked = previousBlockedCounts.TryGetValue(tab.Id, out var priorBlocked) ? priorBlocked : 0;
+            if (blockedCount > previousBlocked)
+                WriteEvent("send-storm-suppressed", null, blockedCount - previousBlocked);
             previousBlockedCounts[tab.Id] = blockedCount;
+
+            var recoveredCount = result.TryGetProperty("recoveredCount", out var recoveredElement)
+                && recoveredElement.ValueKind == JsonValueKind.Number
+                    ? recoveredElement.GetInt32()
+                    : 0;
+            var previousRecovered = previousRecoveredCounts.TryGetValue(tab.Id, out var priorRecovered) ? priorRecovered : 0;
+            if (recoveredCount > previousRecovered)
+                WriteEvent("send-guard-auto-released", "UnacceptedTimeout", recoveredCount - previousRecovered);
+            previousRecoveredCounts[tab.Id] = recoveredCount;
         }
         catch (OperationCanceledException)
         {
