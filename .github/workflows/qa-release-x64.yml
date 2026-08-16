@@ -116,6 +116,14 @@ jobs:
           if ($probe.ExitCode -ne 0) { throw "Standalone setup rejected its embedded payload. ExitCode=$($probe.ExitCode)" }
           Write-Host 'Verified setup embedded payload includes a valid Windows x64 application image.'
 
+      - name: Verify interactive setup wizard contract
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path 'Output/Setup/GPTDeskTop-Setup.exe').Path
+          $probe = Start-Process -FilePath $setup -ArgumentList '--verify-wizard' -PassThru -Wait
+          if ($probe.ExitCode -ne 0) { throw "Standalone setup does not expose the required interactive wizard. ExitCode=$($probe.ExitCode)" }
+          Write-Host 'Verified setup EXE launches the required Welcome/Options/Install/Finish wizard in normal mode.'
+
       - name: Verify setup compile output
         shell: pwsh
         run: |
