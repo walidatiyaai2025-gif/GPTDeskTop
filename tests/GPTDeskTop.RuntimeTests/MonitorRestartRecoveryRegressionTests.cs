@@ -36,14 +36,18 @@ public sealed class MonitorRestartRecoveryRegressionTests
     }
 
     [Fact]
-    public void MissingMonitorTabRecoveryReopensExactConversationAndSendsConfiguredFollowUp()
+    public void MissingMonitorTabRecoveryReacquiresExactConversationWithoutDestructiveRestart()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "MonitorTabRecoveryService.cs");
 
         Assert.Contains("SavedMonitorTabResolver.Resolve(monitor, tabs)", source, StringComparison.Ordinal);
+        Assert.Contains("if (tabs is not null)", source, StringComparison.Ordinal);
         Assert.Contains("chrome.CreateTabAsync(monitor.Url", source, StringComparison.Ordinal);
         Assert.Contains("chrome.LaunchMonitorChrome(monitor.Url)", source, StringComparison.Ordinal);
-        Assert.Contains("WaitForChatReadyAsync(chrome, recoveredTab", source, StringComparison.Ordinal);
+        Assert.Contains("Only a genuinely unavailable CDP endpoint is allowed to restart", source, StringComparison.Ordinal);
+        Assert.Contains("WaitForChatReachableAsync(chrome, recoveredTab", source, StringComparison.Ordinal);
+        Assert.Contains("PersistRuntimeTargetAsync(database, monitor, recoveredTab", source, StringComparison.Ordinal);
+        Assert.Contains("MonitorTabRebound", source, StringComparison.Ordinal);
         Assert.Contains("monitor.AutoReply", source, StringComparison.Ordinal);
         Assert.Contains("chrome.SendChatMessageVerifiedAsync(", source, StringComparison.Ordinal);
         Assert.Contains("requireNewTurn: true", source, StringComparison.Ordinal);
@@ -52,7 +56,21 @@ public sealed class MonitorRestartRecoveryRegressionTests
         Assert.Contains("monitor.ModelRoutingEnabled", source, StringComparison.Ordinal);
         Assert.Contains("chrome.TrySelectModelAsync", source, StringComparison.Ordinal);
         Assert.Contains("ChromeHidden", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("WaitForChatReadyAsync(chrome, recoveredTab", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SendChatMessageAsync(tab, followUp", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReacquisitionNeverSendsFollowUpWhileRecoveredConversationIsGenerating()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "MonitorTabRecoveryService.cs");
+
+        Assert.Contains("if (!recoveredState.IsGenerating)", source, StringComparison.Ordinal);
+        Assert.Contains("&& !recoveredState.IsGenerating", source, StringComparison.Ordinal);
+        Assert.Contains("MonitorTabReboundGenerating", source, StringComparison.Ordinal);
+        Assert.Contains("without sending a follow-up", source, StringComparison.Ordinal);
+        Assert.Contains("string.IsNullOrWhiteSpace(recoveredState.ErrorText)", source, StringComparison.Ordinal);
+        Assert.Contains("requireNewTurn: true", source, StringComparison.Ordinal);
     }
 
     [Fact]
