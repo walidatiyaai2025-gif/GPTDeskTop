@@ -1,0 +1,49 @@
+name: Handoff continuity checkpoint
+
+on:
+  push:
+    branches:
+      - agent/handoff-continuity-checkpoint
+    paths:
+      - 'scripts/apply-handoff-continuity-checkpoint.py'
+      - '.github/workflows/handoff-continuity-checkpoint.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/handoff-continuity-checkpoint
+          fetch-depth: 0
+
+      - name: Apply handoff continuity patch
+        run: python scripts/apply-handoff-continuity-checkpoint.py
+
+      - name: Validate runtime regression suite
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore
+
+      - name: Remove one-shot integration files
+        if: success()
+        shell: bash
+        run: |
+          rm -f scripts/apply-handoff-continuity-checkpoint.py
+          rm -f .github/workflows/handoff-continuity-checkpoint.yml
+
+      - name: Commit integrated fix
+        if: success()
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'No integration changes required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: persist fresh-chat handoff checkpoint and resume exact work state'
+          git push origin HEAD:agent/handoff-continuity-checkpoint
