@@ -247,7 +247,7 @@ internal static class PremiumRuntimeShellExperience
     private static void FocusControl(Control control)
     {
         if (control.IsDisposed) return;
-        control.Parent?.ScrollControlIntoView(control);
+        (control.Parent as ScrollableControl)?.ScrollControlIntoView(control);
         control.Focus();
     }
 
@@ -309,3 +309,4 @@ internal static class PremiumRuntimeShellExperience
         public bool NavigationInstalled { get; set; }
     }
 }
+

@@ -69,7 +69,7 @@ public sealed class MainForm : Form
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.Manual;
-        MinimumSize = new Size(980, 680);
+        MinimumSize = new Size(1280, 760);
         KeyPreview = true;
         ApplyInitialWindowLayout();
 
@@ -109,10 +109,10 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             RowCount = 5,
-            Padding = new Padding(16),
+            Padding = new Padding(10),
             BackColor = FluentTheme.Background
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 53));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 47));
