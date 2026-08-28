@@ -27,7 +27,7 @@ public sealed class FieldDeliveryTimeoutRecoveryRegressionTests
     public void StructuredRenderedErrorBypassesPassiveUnchangedResponseWait()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs");
-        var error = source.IndexOf("var isError = !string.IsNullOrWhiteSpace(state.ErrorText)", StringComparison.Ordinal);
+        var error = source.IndexOf("var isError = !state.IsGenerating && !string.IsNullOrWhiteSpace(state.ErrorText)", StringComparison.Ordinal);
         var passive = source.IndexOf("if (!isError && (state.IsGenerating || string.IsNullOrWhiteSpace(text)", StringComparison.Ordinal);
         Assert.True(error >= 0 && passive > error);
         Assert.Contains("RenderedErrorObserved", source, StringComparison.Ordinal);
@@ -50,8 +50,9 @@ public sealed class FieldDeliveryTimeoutRecoveryRegressionTests
     public void RetryCardDetectorIsTargetedAndDoesNotScanConversationBodyGlobally()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
-        Assert.Contains("version === 6", source, StringComparison.Ordinal);
-        Assert.Contains("const version = 6", source, StringComparison.Ordinal);
+        Assert.Contains("version === 7", source, StringComparison.Ordinal);
+        Assert.Contains("const version = 7", source, StringComparison.Ordinal);
+        Assert.Contains("const isCurrentTurnElement = element =>", source, StringComparison.Ordinal);
         Assert.Contains("button,[role=\"button\"]", source, StringComparison.Ordinal);
         Assert.Contains("retry", source, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("depth < 5", source, StringComparison.Ordinal);
