@@ -87,4 +87,12 @@ main_text = main_text.replace('root.RowStyles.Add(new RowStyle(SizeType.Absolute
                               'root.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));', 1)
 main.write_text(main_text, encoding='utf-8', newline='\n')
 
+shell = root / 'src/GPTDeskTop/UI/PremiumRuntimeShellExperience.cs'
+shell_text = shell.read_text(encoding='utf-8-sig')
+shell_text = shell_text.replace('control.Parent?.ScrollControlIntoView(control);',
+                                '(control.Parent as ScrollableControl)?.ScrollControlIntoView(control);')
+shell_text = shell_text.replace('FocusControl(grid ?? main);',
+                                'FocusControl(grid is null ? main : grid);')
+shell.write_text(shell_text, encoding='utf-8', newline='\n')
+
 print('Premium UI patch applied.')
