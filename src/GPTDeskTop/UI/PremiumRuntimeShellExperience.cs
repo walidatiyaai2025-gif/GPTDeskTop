@@ -230,7 +230,7 @@ internal static class PremiumRuntimeShellExperience
         var grid = Descendants(main).OfType<DataGridView>()
             .FirstOrDefault(candidate => candidate.Columns.Cast<DataGridViewColumn>()
                 .Any(column => string.Equals(column.HeaderText, "Tab ID", StringComparison.OrdinalIgnoreCase)));
-        FocusControl(grid ?? main);
+        FocusControl(grid is null ? main : grid);
     }
 
     private static void FocusMonitorGrid(MainForm main)
@@ -241,7 +241,7 @@ internal static class PremiumRuntimeShellExperience
                 var headers = candidate.Columns.Cast<DataGridViewColumn>().Select(column => column.HeaderText).ToHashSet(StringComparer.OrdinalIgnoreCase);
                 return headers.Contains("Runtime") && headers.Contains("Auto reply");
             });
-        FocusControl(grid ?? main);
+        FocusControl(grid is null ? main : grid);
     }
 
     private static void FocusControl(Control control)
@@ -309,4 +309,5 @@ internal static class PremiumRuntimeShellExperience
         public bool NavigationInstalled { get; set; }
     }
 }
+
 
