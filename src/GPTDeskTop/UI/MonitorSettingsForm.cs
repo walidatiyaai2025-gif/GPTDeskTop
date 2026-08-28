@@ -4,12 +4,12 @@ namespace GPTDeskTop.UI;
 
 public sealed class MonitorSettingsForm : Form
 {
-    private readonly TextBox _autoReplyBox = new() { Dock = DockStyle.Fill };
+    private readonly TextBox _autoReplyBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true };
     private readonly NumericUpDown _delaySeconds = new() { Minimum = 0, Maximum = 300, Width = 130 };
     private readonly NumericUpDown _timerSeconds = new() { Minimum = 1, Maximum = 60, Width = 130 };
     private readonly CheckBox _enabledCheck = new() { Text = "Monitor is enabled", AutoSize = true };
     private readonly CheckBox _rotationEnabledCheck = new() { Text = "Enable conversation rotation for this monitor", AutoSize = true };
-    private readonly TextBox _newChatMessageBox = new() { Dock = DockStyle.Fill };
+    private readonly TextBox _newChatMessageBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true };
     private readonly NumericUpDown _newChatDelaySeconds = new() { Minimum = 0, Maximum = 600, Width = 130 };
     private readonly NumericUpDown _rotationCooldownSeconds = new() { Minimum = 0, Maximum = 3600, Width = 130 };
     private readonly NumericUpDown _maxRotations = new() { Minimum = 0, Maximum = 1000, Width = 130 };
@@ -170,6 +170,7 @@ public sealed class MonitorSettingsForm : Form
         var page = CreateTab("General");
         var layout = CreateSettingsLayout(7);
         AddSectionTitle(layout, 0, "Response automation", "Core behavior for detecting a completed response and deciding when to continue the conversation.");
+        layout.RowStyles[2] = new RowStyle(SizeType.Absolute, 96);
         AddRow(layout, 2, "Auto reply", _autoReplyBox, "Message sent after a stable assistant response.");
         AddRow(layout, 3, "Delay before send", _delaySeconds, "Seconds to wait before sending the auto reply.");
         AddRow(layout, 4, "Monitor timer", _timerSeconds, "Polling interval in seconds.");
@@ -186,6 +187,7 @@ public sealed class MonitorSettingsForm : Form
         AddSectionTitle(layout, 0, "Conversation rotation", "Applies to context-limit rotation and the global assistant-message-count threshold.");
         layout.Controls.Add(_rotationEnabledCheck, 0, 2);
         layout.SetColumnSpan(_rotationEnabledCheck, 2);
+        layout.RowStyles[3] = new RowStyle(SizeType.Absolute, 96);
         AddRow(layout, 3, "Context-limit start message", _newChatMessageBox, "Fallback/handoff message used when ChatGPT reports the current conversation is too long.");
         AddRow(layout, 4, "New Chat delay", _newChatDelaySeconds, "Seconds to wait before opening and preparing the replacement conversation.");
         AddRow(layout, 5, "Rotation cooldown", _rotationCooldownSeconds, "Pause after a successful handoff before normal monitoring resumes.");

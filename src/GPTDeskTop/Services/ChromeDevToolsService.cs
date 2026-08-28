@@ -17,11 +17,11 @@ public sealed class ChromeDevToolsService
     private const int MonitorRecoveryEndpointGraceAttempts = 8;
     private const int MonitorRecoveryEndpointGraceDelayMs = 250;
     private const string BrowserSessionId = "__gptdesktop_monitor_browser__";
-    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 6 ? window.__gptDesktopChatStateCache.read() : null";
+    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 7 ? window.__gptDesktopChatStateCache.read() : null";
     private const string ChatStateInstallExpressionTemplate = """
 (() => {
   const key = '__gptDesktopChatStateCache';
-  const version = 6;
+  const version = 7;
   const smartFollowEnabled = __SMART_ENABLED__;
   const smartFollowThrottleMs = __SMART_THROTTLE_MS__;
   const smartFollowNearBottomPx = __SMART_NEAR_BOTTOM_PX__;
@@ -55,11 +55,30 @@ public sealed class ChromeDevToolsService
     }
     return false;
   };
+  const isAfterOrInside = (element, anchor) => {
+    if (!element || !anchor) return true;
+    if (element === anchor || anchor.contains(element)) return true;
+    return !!(anchor.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING);
+  };
+  const isCurrentTurnElement = element => {
+    if (!element) return false;
+    const users = document.querySelectorAll('[data-message-author-role="user"]');
+    const assistants = document.querySelectorAll('[data-message-author-role="assistant"]');
+    const lastUser = users.length ? users[users.length - 1] : null;
+    const lastAssistant = assistants.length ? assistants[assistants.length - 1] : null;
+
+    // Historical error/retry cards can remain rendered in long conversations. Recovery authority
+    // belongs only to UI that is part of the latest user/assistant turn, never an older DOM card.
+    if (lastUser && !isAfterOrInside(element, lastUser)) return false;
+    const latestAssistantBelongsToTurn = !!(lastUser && lastAssistant && isAfterOrInside(lastAssistant, lastUser));
+    if (latestAssistantBelongsToTurn && !isAfterOrInside(element, lastAssistant)) return false;
+    return true;
+  };
   const findErrorText = () => {
     const selectors = ['[role="alert"]', '[aria-live="assertive"]', '[data-testid*="error"]', '[data-testid*="retry"]'];
     for (const selector of selectors) {
       for (const element of document.querySelectorAll(selector)) {
-        if (!visible(element)) continue;
+        if (!visible(element) || !isCurrentTurnElement(element)) continue;
         const text = (element.innerText || element.textContent || '').trim();
         if (text && errorPattern.test(text)) return text;
       }
@@ -67,13 +86,14 @@ public sealed class ChromeDevToolsService
 
     // ChatGPT sometimes renders the delivery-timeout card without an alert/testid on its
     // outer container. Inspect only a small ancestor chain around a visible native Retry
-    // control; never scan document.body or conversation text globally.
+    // control, and only when that control belongs to the latest conversation turn.
     for (const button of document.querySelectorAll('button,[role="button"]')) {
-      if (!visible(button)) continue;
+      if (!visible(button) || !isCurrentTurnElement(button)) continue;
       const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''} ${button.innerText || button.textContent || ''}`.trim();
-      if (!/\bretry\b|try again|إعادة المحاولة|حاول مرة أخرى/i.test(label)) continue;
+      if (!/retry|try again|إعادة المحاولة|حاول مرة أخرى/i.test(label)) continue;
       let container = button;
       for (let depth = 0; container && depth < 5; depth++, container = container.parentElement) {
+        if (!isCurrentTurnElement(container)) continue;
         const text = (container.innerText || container.textContent || '').trim();
         if (!text || text.length > 600) continue;
         if (errorPattern.test(text)) return text;
@@ -226,7 +246,7 @@ public sealed class ChromeDevToolsService
     // A visible Stop control is the authoritative generation signal. Streaming CSS/data
     // markers can survive hydration/reconciliation after the response has actually completed.
     const isGenerating = !!stopButton;
-    const errorText = findErrorText();
+    const errorText = isGenerating ? '' : findErrorText();
     const last = !isGenerating && lastAssistant ? (lastAssistant.innerText || '').trim() : '';
     state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, autoFollow: state.autoFollow?.snapshot?.() || { mode: 'disabled', sequence: 0, event: 'disabled' } };
     if (isGenerating) state.autoFollow?.onMutation?.();

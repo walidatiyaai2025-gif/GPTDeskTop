@@ -11,10 +11,10 @@ public sealed class SettingsForm : Form
     private readonly NumericUpDown _defaultTimer = new() { Minimum = 1, Maximum = 60, Width = 140 };
     private readonly NumericUpDown _rotateAfterMessages = new() { Minimum = 0, Maximum = 10000, Width = 140 };
     private readonly NumericUpDown _notificationDuration = new() { Minimum = 1, Maximum = 60, Width = 140 };
-    private readonly TextBox _defaultReply = new() { Dock = DockStyle.Fill, Text = "كمل" };
-    private readonly TextBox _messageCountRotationStartMessage = new() { Dock = DockStyle.Fill, Text = "كمل" };
-    private readonly TextBox _chatGptErrorRecovery = new() { Dock = DockStyle.Fill, Text = "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه." };
-    private readonly TextBox _timeoutRecovery = new() { Dock = DockStyle.Fill, Text = "كمل" };
+    private readonly TextBox _defaultReply = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, Text = "كمل" };
+    private readonly TextBox _messageCountRotationStartMessage = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, Text = "كمل" };
+    private readonly TextBox _chatGptErrorRecovery = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, Text = "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه." };
+    private readonly TextBox _timeoutRecovery = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, Text = "كمل" };
     private readonly CheckBox _soundEnabled = new() { Text = "Play sound with balloon notifications", AutoSize = true };
     private readonly ComboBox _soundType = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
     private readonly Button _exportBackupButton = new() { Text = "&Export Configuration Backup", AutoSize = true };
@@ -124,6 +124,7 @@ public sealed class SettingsForm : Form
         var page = CreateTab("Monitoring");
         var layout = CreateSettingsLayout(8);
         AddSectionTitle(layout, 0, "Monitor defaults", "Applied when a new monitor is created. Existing monitor-specific values are not overwritten.");
+        layout.RowStyles[2] = new RowStyle(SizeType.Absolute, 96);
         AddRow(layout, 2, "Default auto reply", _defaultReply, "Message sent after a stable assistant response.");
         AddRow(layout, 3, "Reply delay", _defaultDelay, "Seconds to wait before sending the configured auto reply.");
         AddRow(layout, 4, "Polling timer", _defaultTimer, "Seconds between ChatGPT state checks for a running monitor.");
@@ -138,8 +139,11 @@ public sealed class SettingsForm : Form
         var layout = CreateSettingsLayout(10);
         AddSectionTitle(layout, 0, "Conversation continuity", "Proactively rotate chats before they become too long while preserving the same Monitor ID.");
         AddRow(layout, 2, "Rotate after assistant messages (0 = off)", _rotateAfterMessages, "0 disables proactive message-count rotation. The current visible assistant count is used.");
+        layout.RowStyles[3] = new RowStyle(SizeType.Absolute, 96);
         AddRow(layout, 3, "Message-count new Chat start message", _messageCountRotationStartMessage, "Fixed message sent after a successful message-count rotation.");
         AddSectionTitle(layout, 5, "Automatic error recovery", "ChatGPT-rendered errors create a fresh conversation under the same Monitor ID; delivery timeouts keep their own recovery template.");
+        layout.RowStyles[7] = new RowStyle(SizeType.Absolute, 96);
+        layout.RowStyles[8] = new RowStyle(SizeType.Absolute, 96);
         AddRow(layout, 7, "ChatGPT error continuation", _chatGptErrorRecovery, "Message sent after a ChatGPT page error forces a fresh recovery chat.");
         AddRow(layout, 8, "Delivery-timeout recovery", _timeoutRecovery, "Message sent when ChatGPT explicitly reports a message-delivery timeout.");
         page.Controls.Add(layout);
