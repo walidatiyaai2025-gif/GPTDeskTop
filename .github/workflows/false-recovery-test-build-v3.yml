@@ -1,0 +1,111 @@
+name: False Recovery Test Build v3
+
+on:
+  push:
+    branches:
+      - fix/false-recovery-current-turn
+
+jobs:
+  validate-package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout fix branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/false-recovery-current-turn
+
+      - name: Apply production fix idempotently
+        shell: pwsh
+        run: python scripts/apply_false_recovery_fix.py
+
+      - name: Confirm retired elapsed-time test is absent
+        shell: pwsh
+        run: |
+          $matches = Get-ChildItem tests -Recurse -Filter *.cs | Select-String -Pattern 'NoResponseWatchdogCopiesConfiguredMessageAndResetsTimer'
+          if ($matches) {
+            $matches | ForEach-Object { Write-Host "$($_.Path):$($_.LineNumber): $($_.Line)" }
+            throw 'Retired elapsed-time recovery test is still present in the clean checkout.'
+          }
+          Write-Host 'PASS: no stale elapsed-time recovery test exists in current source tree.'
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Restore runtime tests
+        run: dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+
+      - name: Runtime tests
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
+
+      - name: Build Release x64
+        run: dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
+
+      - name: Verify false-recovery regression behavior
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'src/GPTDeskTop/bin/Release/net8.0-windows/GPTDeskTop.exe').Path
+          $workingDirectory = Split-Path $exe -Parent
+          $root = Join-Path $env:RUNNER_TEMP "gptdesktop-false-recovery-v3-$env:GITHUB_RUN_ID"
+          $resultPath = Join-Path $root 'result.json'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $probe = Start-Process -FilePath $exe -WorkingDirectory $workingDirectory -ArgumentList @('--qa-no-response-probe', $resultPath) -PassThru
+          $deadline = (Get-Date).AddSeconds(150)
+          while (-not $probe.HasExited) {
+            if ((Get-Date) -ge $deadline) {
+              Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue
+              throw 'False-recovery regression probe exceeded 150 seconds.'
+            }
+            Start-Sleep -Seconds 1
+            $probe.Refresh()
+          }
+          if ($probe.ExitCode -ne 0) {
+            $errorPath = "$resultPath.error.txt"
+            if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
+            throw "False-recovery regression probe failed. ExitCode=$($probe.ExitCode)"
+          }
+          $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+          if ([int]$result.SlowFalseRecoveryActivityCount -ne 0) { throw "Historical timeout caused false recovery; count=$($result.SlowFalseRecoveryActivityCount)." }
+          if ($result.SlowText -ne 'slow-complete-load-1') { throw "Slow generating chat was disturbed; final='$($result.SlowText)'." }
+          if ($result.RecoveryText -ne 'recovery-received:qa-error-continuation') { throw "Real current error did not recover correctly; final='$($result.RecoveryText)'." }
+          Write-Host 'PASS: historical timeout ignored during current generation; genuine current error still recovers.'
+
+      - name: Verify multiline Settings contract
+        shell: pwsh
+        run: |
+          $settings = Get-Content src/GPTDeskTop/UI/SettingsForm.cs -Raw
+          $monitorSettings = Get-Content src/GPTDeskTop/UI/MonitorSettingsForm.cs -Raw
+          if (($settings | Select-String -Pattern 'Multiline = true' -AllMatches).Matches.Count -lt 4) { throw 'Global Settings message editors are not all multiline.' }
+          if (($monitorSettings | Select-String -Pattern 'Multiline = true' -AllMatches).Matches.Count -lt 2) { throw 'Monitor Settings message editors are not all multiline.' }
+          if (($settings | Select-String -Pattern 'ScrollBars = ScrollBars.Vertical' -AllMatches).Matches.Count -lt 4) { throw 'Global message editors are missing vertical scrolling.' }
+          if (($monitorSettings | Select-String -Pattern 'ScrollBars = ScrollBars.Vertical' -AllMatches).Matches.Count -lt 2) { throw 'Monitor message editors are missing vertical scrolling.' }
+          Write-Host 'PASS: all Settings message editors are multiline with vertical scrolling.'
+
+      - name: Verify Setup EXE and write SHA-256
+        shell: pwsh
+        run: |
+          $setup = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (-not (Test-Path $setup)) { throw 'GPTDeskTop-Setup.exe was not produced.' }
+          if ((Get-Item $setup).Length -le 0) { throw 'GPTDeskTop-Setup.exe is empty.' }
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path $setup
+          $process = Start-Process -FilePath (Resolve-Path $setup).Path -ArgumentList '--verify-payload' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Setup payload verification failed: $($process.ExitCode)" }
+          $process = Start-Process -FilePath (Resolve-Path $setup).Path -ArgumentList '--verify-wizard' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Setup wizard verification failed: $($process.ExitCode)" }
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path 'Output/Setup/GPTDeskTop-Setup.sha256.txt' -Value "$hash  GPTDeskTop-Setup.exe" -Encoding ascii
+
+      - name: Upload verified Setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-False-Recovery-Fix-Setup-v3
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/GPTDeskTop-Setup.sha256.txt
+          if-no-files-found: error
+          compression-level: 0
