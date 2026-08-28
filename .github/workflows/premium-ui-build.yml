@@ -1,0 +1,126 @@
+name: Premium Runtime UI Build
+
+on:
+  push:
+    branches:
+      - ui/premium-real-runtime-v1
+
+permissions:
+  contents: write
+
+jobs:
+  validate-package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout premium branch
+        uses: actions/checkout@v4
+        with:
+          ref: ui/premium-real-runtime-v1
+          fetch-depth: 0
+
+      - name: Apply premium UI patch idempotently
+        shell: pwsh
+        run: |
+          python scripts/apply_premium_ui.py
+          $shell = Get-Content src/GPTDeskTop/UI/PremiumRuntimeShellExperience.cs -Raw
+          $shell = $shell.Replace('control.Parent?.ScrollControlIntoView(control);', '(control.Parent as ScrollableControl)?.ScrollControlIntoView(control);')
+          Set-Content src/GPTDeskTop/UI/PremiumRuntimeShellExperience.cs -Value $shell -Encoding utf8
+
+      - name: Persist premium source patch
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/GPTDeskTop/UI/FluentTheme.cs src/GPTDeskTop/UI/MainForm.cs src/GPTDeskTop/UI/PremiumRuntimeShellExperience.cs
+          if (-not (git diff --cached --quiet)) {
+            git commit -m "feat(ui): apply premium dark runtime shell"
+            git push origin HEAD:ui/premium-real-runtime-v1
+          } else {
+            Write-Host 'Premium source patch already persisted.'
+          }
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore solution
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Restore runtime tests
+        run: dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+
+      - name: Runtime tests
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
+
+      - name: Build Release x64
+        run: dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
+
+      - name: Verify recovery regression behavior
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'src/GPTDeskTop/bin/Release/net8.0-windows/GPTDeskTop.exe').Path
+          $workingDirectory = Split-Path $exe -Parent
+          $root = Join-Path $env:RUNNER_TEMP "gptdesktop-premium-recovery-$env:GITHUB_RUN_ID"
+          $resultPath = Join-Path $root 'result.json'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $probe = Start-Process -FilePath $exe -WorkingDirectory $workingDirectory -ArgumentList @('--qa-no-response-probe', $resultPath) -PassThru
+          $deadline = (Get-Date).AddSeconds(150)
+          while (-not $probe.HasExited) {
+            if ((Get-Date) -ge $deadline) {
+              Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue
+              throw 'Recovery regression probe exceeded 150 seconds.'
+            }
+            Start-Sleep -Seconds 1
+            $probe.Refresh()
+          }
+          if ($probe.ExitCode -ne 0) {
+            $errorPath = "$resultPath.error.txt"
+            if (Test-Path $errorPath) { Get-Content $errorPath | Write-Host }
+            throw "Recovery regression probe failed. ExitCode=$($probe.ExitCode)"
+          }
+          $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+          if ([int]$result.SlowFalseRecoveryActivityCount -ne 0) { throw "Premium UI regressed false recovery; count=$($result.SlowFalseRecoveryActivityCount)." }
+          if ($result.SlowText -ne 'slow-complete-load-1') { throw "Slow generating chat was disturbed; final='$($result.SlowText)'." }
+          if ($result.RecoveryText -ne 'recovery-received:qa-error-continuation') { throw "Real current error did not recover correctly; final='$($result.RecoveryText)'." }
+
+      - name: Verify premium UI contract
+        shell: pwsh
+        run: |
+          $theme = Get-Content src/GPTDeskTop/UI/FluentTheme.cs -Raw
+          $shell = Get-Content src/GPTDeskTop/UI/PremiumRuntimeShellExperience.cs -Raw
+          $settings = Get-Content src/GPTDeskTop/UI/SettingsForm.cs -Raw
+          $monitorSettings = Get-Content src/GPTDeskTop/UI/MonitorSettingsForm.cs -Raw
+          if ($theme -notmatch 'Background = Color.FromArgb\(5, 14, 24\)') { throw 'Premium dark palette was not applied.' }
+          if ($shell -notmatch 'PremiumNavigationRail') { throw 'Premium navigation rail is missing.' }
+          foreach ($label in @('Dashboard','Projects','Open Conversations','Saved Monitors','Recovery Inspector','Development Messages','Git Settings','Settings')) {
+            if ($shell -notmatch [regex]::Escape($label)) { throw "Premium navigation is missing $label." }
+          }
+          if (($settings | Select-String -Pattern 'Multiline = true' -AllMatches).Matches.Count -lt 4) { throw 'Global Settings message editors lost multiline behavior.' }
+          if (($monitorSettings | Select-String -Pattern 'Multiline = true' -AllMatches).Matches.Count -lt 2) { throw 'Monitor Settings message editors lost multiline behavior.' }
+          Write-Host 'PASS: premium shell uses only real GPTDeskTop navigation and preserves multiline message editors.'
+
+      - name: Verify Setup EXE and write SHA-256
+        shell: pwsh
+        run: |
+          $setup = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (-not (Test-Path $setup)) { throw 'GPTDeskTop-Setup.exe was not produced.' }
+          if ((Get-Item $setup).Length -le 0) { throw 'GPTDeskTop-Setup.exe is empty.' }
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path $setup
+          $process = Start-Process -FilePath (Resolve-Path $setup).Path -ArgumentList '--verify-payload' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Setup payload verification failed: $($process.ExitCode)" }
+          $process = Start-Process -FilePath (Resolve-Path $setup).Path -ArgumentList '--verify-wizard' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Setup wizard verification failed: $($process.ExitCode)" }
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path 'Output/Setup/GPTDeskTop-Setup.sha256.txt' -Value "$hash  GPTDeskTop-Setup.exe" -Encoding ascii
+
+      - name: Upload verified premium Setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-2.0.0-Premium-UI-Setup
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/GPTDeskTop-Setup.sha256.txt
+          if-no-files-found: error
+          compression-level: 0
