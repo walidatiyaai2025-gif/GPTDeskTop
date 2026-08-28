@@ -1,1 +1,1 @@
-Trigger clean current-tree recovery + multiline Settings validation build v3.
+Trigger verified current-turn recovery + multiline Settings validation build v4.
