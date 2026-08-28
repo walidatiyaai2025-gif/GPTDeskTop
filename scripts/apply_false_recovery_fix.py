@@ -157,4 +157,63 @@ if "historical-timeout-card" not in probe:
     raise RuntimeError("historical timeout regression fixture was not installed")
 probe_path.write_text(probe, encoding="utf-8")
 
-print("False-recovery current-turn fix applied and regression fixture installed.")
+
+settings_path = ROOT / "src/GPTDeskTop/UI/SettingsForm.cs"
+settings = settings_path.read_text(encoding="utf-8")
+message_box_options = "Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true"
+settings = replace_once(settings,
+    '    private readonly TextBox _defaultReply = new() { Dock = DockStyle.Fill, Text = "كمل" };',
+    f'    private readonly TextBox _defaultReply = new() {{ {message_box_options}, Text = "كمل" }};',
+    "global default reply multiline")
+settings = replace_once(settings,
+    '    private readonly TextBox _messageCountRotationStartMessage = new() { Dock = DockStyle.Fill, Text = "كمل" };',
+    f'    private readonly TextBox _messageCountRotationStartMessage = new() {{ {message_box_options}, Text = "كمل" }};',
+    "global rotation message multiline")
+settings = replace_once(settings,
+    '    private readonly TextBox _chatGptErrorRecovery = new() { Dock = DockStyle.Fill, Text = "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه." };',
+    f'    private readonly TextBox _chatGptErrorRecovery = new() {{ {message_box_options}, Text = "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه." }};',
+    "global error recovery multiline")
+settings = replace_once(settings,
+    '    private readonly TextBox _timeoutRecovery = new() { Dock = DockStyle.Fill, Text = "كمل" };',
+    f'    private readonly TextBox _timeoutRecovery = new() {{ {message_box_options}, Text = "كمل" }};',
+    "global timeout recovery multiline")
+settings = replace_once(settings,
+    '        AddRow(layout, 2, "Default auto reply", _defaultReply, "Message sent after a stable assistant response.");',
+    '        layout.RowStyles[2] = new RowStyle(SizeType.Absolute, 96);\n        AddRow(layout, 2, "Default auto reply", _defaultReply, "Message sent after a stable assistant response.");',
+    "global default reply row height")
+settings = replace_once(settings,
+    '        AddRow(layout, 3, "Message-count new Chat start message", _messageCountRotationStartMessage, "Fixed message sent after a successful message-count rotation.");',
+    '        layout.RowStyles[3] = new RowStyle(SizeType.Absolute, 96);\n        AddRow(layout, 3, "Message-count new Chat start message", _messageCountRotationStartMessage, "Fixed message sent after a successful message-count rotation.");',
+    "global rotation message row height")
+settings = replace_once(settings,
+    '        AddRow(layout, 7, "ChatGPT error continuation", _chatGptErrorRecovery, "Message sent after a ChatGPT page error forces a fresh recovery chat.");\n        AddRow(layout, 8, "Delivery-timeout recovery", _timeoutRecovery, "Message sent when ChatGPT explicitly reports a message-delivery timeout.");',
+    '        layout.RowStyles[7] = new RowStyle(SizeType.Absolute, 96);\n        layout.RowStyles[8] = new RowStyle(SizeType.Absolute, 96);\n        AddRow(layout, 7, "ChatGPT error continuation", _chatGptErrorRecovery, "Message sent after a ChatGPT page error forces a fresh recovery chat.");\n        AddRow(layout, 8, "Delivery-timeout recovery", _timeoutRecovery, "Message sent when ChatGPT explicitly reports a message-delivery timeout.");',
+    "global recovery message row heights")
+if settings.count("Multiline = true") < 4:
+    raise RuntimeError("global Settings message fields were not converted to multiline")
+settings_path.write_text(settings, encoding="utf-8")
+
+
+monitor_settings_path = ROOT / "src/GPTDeskTop/UI/MonitorSettingsForm.cs"
+monitor_settings = monitor_settings_path.read_text(encoding="utf-8")
+monitor_settings = replace_once(monitor_settings,
+    '    private readonly TextBox _autoReplyBox = new() { Dock = DockStyle.Fill };',
+    f'    private readonly TextBox _autoReplyBox = new() {{ {message_box_options} }};',
+    "monitor auto reply multiline")
+monitor_settings = replace_once(monitor_settings,
+    '    private readonly TextBox _newChatMessageBox = new() { Dock = DockStyle.Fill };',
+    f'    private readonly TextBox _newChatMessageBox = new() {{ {message_box_options} }};',
+    "monitor new chat message multiline")
+monitor_settings = replace_once(monitor_settings,
+    '        AddRow(layout, 2, "Auto reply", _autoReplyBox, "Message sent after a stable assistant response.");',
+    '        layout.RowStyles[2] = new RowStyle(SizeType.Absolute, 96);\n        AddRow(layout, 2, "Auto reply", _autoReplyBox, "Message sent after a stable assistant response.");',
+    "monitor auto reply row height")
+monitor_settings = replace_once(monitor_settings,
+    '        AddRow(layout, 3, "Context-limit start message", _newChatMessageBox, "Fallback/handoff message used when ChatGPT reports the current conversation is too long.");',
+    '        layout.RowStyles[3] = new RowStyle(SizeType.Absolute, 96);\n        AddRow(layout, 3, "Context-limit start message", _newChatMessageBox, "Fallback/handoff message used when ChatGPT reports the current conversation is too long.");',
+    "monitor rotation message row height")
+if monitor_settings.count("Multiline = true") < 2:
+    raise RuntimeError("per-monitor message fields were not converted to multiline")
+monitor_settings_path.write_text(monitor_settings, encoding="utf-8")
+
+print("False-recovery current-turn fix, regression fixture, and multiline Settings messages applied.")
