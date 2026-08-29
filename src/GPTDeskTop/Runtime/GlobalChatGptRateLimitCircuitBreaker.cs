@@ -198,8 +198,11 @@ public sealed class GlobalChatGptRateLimitCircuitBreaker
                     classification.Reason,
                     classification.Category,
                     "RateLimitDetected|RetryScheduled");
-                PersistTargetLocked(target);
+
+                // Enter the blocked state before durable I/O. If persistence fails, this process
+                // remains blocked and cannot convert a detected limiter into send authority.
                 ApplyLocked(target);
+                PersistTargetLocked(target);
                 publish = SnapshotLocked("RateLimitDetected", $"category={classification.Category}; retry={_retryAtUtc:O}; backoff=5m");
                 secondEvent = "GlobalSendPause";
             }
@@ -223,8 +226,11 @@ public sealed class GlobalChatGptRateLimitCircuitBreaker
                         classification.Reason,
                         classification.Category,
                         transition);
-                    PersistTargetLocked(target);
+
+                    // Advancing a blocked state is also fail-closed: the in-memory fence is
+                    // extended before durable I/O and is never rolled back on storage failure.
                     ApplyLocked(target);
+                    PersistTargetLocked(target);
                     publish = SnapshotLocked("RateLimitStillActive", $"category={classification.Category}; backoff={BackoffSchedule[_backoffIndex].TotalMinutes:0}m");
                 }
                 else

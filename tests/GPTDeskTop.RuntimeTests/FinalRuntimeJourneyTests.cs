@@ -84,7 +84,10 @@ public sealed class FinalRuntimeJourneyTests
 
             autonomousTask.Transition(AutonomousTaskPhase.WaitingForChatGpt, "global-rate-limit-pause");
             cCancellation.Cancel();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await sendCBeforeRestart);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            {
+                await sendCBeforeRestart;
+            });
 
             var restoredTask = new AutonomousTaskController(taskPath, "ignored-after-restart", "ignored-after-restart");
             Assert.Equal("task-e2e-001", restoredTask.Snapshot.TaskId);
@@ -124,17 +127,20 @@ public sealed class FinalRuntimeJourneyTests
             Assert.Equal(1, cPhysicalSends);
 
             var timeoutPhysicalSends = 0;
-            await Assert.ThrowsAsync<TimeoutException>(() => resumedCoordinator.SendOnceAsync(
-                104,
-                "chat-timeout",
-                "recover-me",
-                () =>
-                {
-                    Interlocked.Increment(ref timeoutPhysicalSends);
-                    return Task.FromException<bool>(new TimeoutException("simulated delivery timeout"));
-                },
-                null,
-                CancellationToken.None));
+            await Assert.ThrowsAsync<TimeoutException>(async () =>
+            {
+                await resumedCoordinator.SendOnceAsync(
+                    104,
+                    "chat-timeout",
+                    "recover-me",
+                    () =>
+                    {
+                        Interlocked.Increment(ref timeoutPhysicalSends);
+                        return Task.FromException<bool>(new TimeoutException("simulated delivery timeout"));
+                    },
+                    null,
+                    CancellationToken.None);
+            });
             Assert.Equal(1, timeoutPhysicalSends);
             Assert.Equal(
                 OutboundDeliveryPhase.ReconcileRequired,

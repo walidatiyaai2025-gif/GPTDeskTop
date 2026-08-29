@@ -30,7 +30,7 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
             .ToArray();
 
         var results = await Task.WhenAll(operations);
-        Assert.All(results, Assert.True);
+        Assert.All(results, result => Assert.True(result));
 
         var times = physicalSendUtc.ToArray();
         Assert.Equal(3, times.Length);
