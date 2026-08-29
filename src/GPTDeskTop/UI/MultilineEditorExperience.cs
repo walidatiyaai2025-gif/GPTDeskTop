@@ -71,5 +71,7 @@ internal static class MultilineEditorExperience
         }
     }
 
-    private sealed class AppliedMarker;
+    private sealed class AppliedMarker
+    {
+    }
 }
