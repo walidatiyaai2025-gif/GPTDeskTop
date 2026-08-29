@@ -93,6 +93,10 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
         Assert.Contains("_outboundDelivery.SendOnceAsync(", developmentBridge, StringComparison.Ordinal);
         Assert.Contains("() => _chrome.SendChatMessageVerifiedAsync(_tab, message, cancellationToken)", developmentBridge, StringComparison.Ordinal);
 
+        var targetFactory = ReadSource("src", "GPTDeskTop", "Services", "DevelopmentTaskEngine", "DevelopmentTaskMonitorTargetFactory.cs");
+        Assert.Contains("_outboundDelivery.SendOnceAsync(", targetFactory, StringComparison.Ordinal);
+        Assert.Contains("() => _chrome.SendChatMessageVerifiedAsync(tab, message)", targetFactory, StringComparison.Ordinal);
+
         var sourceRoot = Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory,
             "..", "..", "..", "..", "..", "src", "GPTDeskTop"));
@@ -107,6 +111,7 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
             new[]
             {
                 "Services/ChatGptMonitorService.cs",
+                "Services/DevelopmentTaskEngine/DevelopmentTaskMonitorTargetFactory.cs",
                 "Services/DevelopmentTaskEngine/MonitorDevelopmentTaskBridge.cs",
                 "Services/ICrashRecoveryRuntime.cs"
             }.OrderBy(path => path, StringComparer.Ordinal).ToArray(),
