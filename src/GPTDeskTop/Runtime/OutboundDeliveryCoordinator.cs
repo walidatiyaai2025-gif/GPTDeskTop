@@ -608,7 +608,7 @@ public sealed class OutboundDeliveryCoordinator
             private readonly GlobalEntry _entry;
             private int _disposed;
 
-            private GlobalLease(GlobalFifoSendAuthority owner, GlobalEntry entry)
+            public GlobalLease(GlobalFifoSendAuthority owner, GlobalEntry entry)
             {
                 _owner = owner;
                 _entry = entry;
