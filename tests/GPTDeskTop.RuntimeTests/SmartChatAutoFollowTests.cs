@@ -70,6 +70,3 @@ public sealed class SmartChatAutoFollowTests
         Assert.Contains("\"SmartAutoFollowNearBottomPixels\": 180", source, StringComparison.Ordinal);
     }
 }
-
-
-

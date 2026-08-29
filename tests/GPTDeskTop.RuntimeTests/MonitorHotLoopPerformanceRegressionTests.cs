@@ -111,9 +111,3 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             source.Split("\"MessageCountRotationStartMessage\"", StringSplitOptions.None).Length - 1);
     }
 }
-
-
-
-
-
-

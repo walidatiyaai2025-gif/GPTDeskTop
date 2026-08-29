@@ -52,6 +52,3 @@ public sealed class ChatStateCompletionRegressionTests
         Assert.DoesNotContain("stop responding|stop|إيقاف/i", source, StringComparison.Ordinal);
     }
 }
-
-
-

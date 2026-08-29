@@ -62,6 +62,3 @@ public sealed class ChatStateGeneratingSignalRegressionTests
         Assert.True(completedTextRead > generationDecision);
     }
 }
-
-
-

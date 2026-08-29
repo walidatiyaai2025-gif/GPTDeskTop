@@ -78,6 +78,3 @@ public sealed class FieldDeliveryTimeoutRecoveryRegressionTests
         return File.ReadAllText(path);
     }
 }
-
-
-
