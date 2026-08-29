@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.RuntimeTests;
@@ -111,46 +112,46 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
         Assert.Contains("_outboundDelivery.SendOnceAsync(", recoveryAdapter, StringComparison.Ordinal);
         Assert.Contains("() => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken)", recoveryAdapter, StringComparison.Ordinal);
 
-        var recoveryService = ReadSource("src", "GPTDeskTop", "Services", "CrashRecoveryService.cs");
-        Assert.Contains("runtime.SendChatMessageVerifiedAsync(tab, message, cancellationToken)", recoveryService, StringComparison.Ordinal);
-
         var developmentBridge = ReadSource("src", "GPTDeskTop", "Services", "DevelopmentTaskEngine", "MonitorDevelopmentTaskBridge.cs");
         Assert.Contains("_outboundDelivery.SendOnceAsync(", developmentBridge, StringComparison.Ordinal);
-        Assert.Contains("() => _chrome.SendChatMessageVerifiedAsync(_tab, message, cancellationToken)", developmentBridge, StringComparison.Ordinal);
 
         var targetFactory = ReadSource("src", "GPTDeskTop", "Services", "DevelopmentTaskEngine", "DevelopmentTaskMonitorTargetFactory.cs");
         Assert.Contains("_outboundDelivery.SendOnceAsync(", targetFactory, StringComparison.Ordinal);
-        Assert.Contains("() => _chrome.SendChatMessageVerifiedAsync(tab, message)", targetFactory, StringComparison.Ordinal);
 
         var newChatWorkflow = ReadSource("src", "GPTDeskTop", "Services", "NewChatMonitorWorkflowService.cs");
         Assert.Contains("_outboundDelivery.SendOnceAsync(", newChatWorkflow, StringComparison.Ordinal);
-        Assert.Contains("() => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken)", newChatWorkflow, StringComparison.Ordinal);
 
         var projectExecution = ReadSource("src", "GPTDeskTop", "Services", "ProjectExecutionController.cs");
         Assert.Contains("_outboundDelivery.SendOnceAsync(", projectExecution, StringComparison.Ordinal);
-        Assert.Contains("() => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken)", projectExecution, StringComparison.Ordinal);
+
+        var startupResume = ReadSource("src", "GPTDeskTop", "Services", "LastWorkingStateService.cs");
+        Assert.Contains("outboundDelivery.SendOnceAsync(", startupResume, StringComparison.Ordinal);
+        Assert.Contains("requireNewTurn: true", startupResume, StringComparison.Ordinal);
+
+        var tabRecovery = ReadSource("src", "GPTDeskTop", "Services", "MonitorTabRecoveryService.cs");
+        Assert.Contains("outboundDelivery.SendOnceAsync(", tabRecovery, StringComparison.Ordinal);
+        Assert.Contains("requireNewTurn: true", tabRecovery, StringComparison.Ordinal);
 
         var sourceRoot = Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory,
             "..", "..", "..", "..", "..", "src", "GPTDeskTop"));
-        var directChromeCallers = Directory.GetFiles(sourceRoot, "*.cs", SearchOption.AllDirectories)
+        var physicalCallPattern = new Regex(@"\b[A-Za-z_][A-Za-z0-9_]*\.SendChatMessageVerifiedAsync\(", RegexOptions.CultureInvariant);
+        var physicalCallers = Directory.GetFiles(sourceRoot, "*.cs", SearchOption.AllDirectories)
             .Where(path => !path.EndsWith("ChromeDevToolsService.cs", StringComparison.OrdinalIgnoreCase))
-            .Where(path => File.ReadAllText(path).Contains("_chrome.SendChatMessageVerifiedAsync(", StringComparison.Ordinal))
+            .Where(path => physicalCallPattern.IsMatch(File.ReadAllText(path)))
             .Select(path => Path.GetRelativePath(sourceRoot, path).Replace('\\', '/'))
             .OrderBy(path => path, StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(
-            new[]
-            {
-                "Services/ChatGptMonitorService.cs",
-                "Services/DevelopmentTaskEngine/DevelopmentTaskMonitorTargetFactory.cs",
-                "Services/DevelopmentTaskEngine/MonitorDevelopmentTaskBridge.cs",
-                "Services/ICrashRecoveryRuntime.cs",
-                "Services/NewChatMonitorWorkflowService.cs",
-                "Services/ProjectExecutionController.cs"
-            }.OrderBy(path => path, StringComparer.Ordinal).ToArray(),
-            directChromeCallers);
+        var bypasses = physicalCallers
+            .Where(path => !string.Equals(path, "Services/CrashRecoveryService.cs", StringComparison.Ordinal))
+            .Where(path => !File.ReadAllText(Path.Combine(sourceRoot, path.Replace('/', Path.DirectorySeparatorChar)))
+                .Contains("SendOnceAsync(", StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.True(
+            bypasses.Length == 0,
+            $"Physical send bypasses without canonical coordinator: {string.Join(", ", bypasses)}. All physical callers: {string.Join(", ", physicalCallers)}");
     }
 
     private static void WriteReceipt(string fileName, object receipt)

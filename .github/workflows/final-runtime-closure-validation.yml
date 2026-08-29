@@ -132,6 +132,19 @@ jobs:
           if ([int]$receipt.uncertainSendDuplicateCount -ne 0) { throw "Duplicate physical send count was $($receipt.uncertainSendDuplicateCount)." }
           if ($receipt.taskIdBeforeRollover -ne $receipt.taskIdAfterRollover) { throw 'Task ID continuity failed across rollover.' }
 
+      - name: PR #323 MON-015 reconciliation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj `
+            --configuration Release --no-restore -p:EnableWindowsTargeting=true `
+            --filter "FullyQualifiedName~HandoffContinuityCheckpointRegressionTests" `
+            --logger "trx;LogFileName=mon-015-reconciliation.trx" `
+            --results-directory artifacts/test-results `
+            --verbosity normal 2>&1 | Tee-Object -FilePath artifacts/test-results/mon-015-reconciliation.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { exit $code }
+
       - name: Full runtime suite
         shell: pwsh
         run: |
@@ -164,6 +177,7 @@ jobs:
             'artifacts/test-results/qa-rl-001.trx',
             'artifacts/test-results/qa-send-001.trx',
             'artifacts/test-results/runtime-qa-e2e-001.trx',
+            'artifacts/test-results/mon-015-reconciliation.trx',
             'artifacts/test-results/full-runtime.trx'
           )
           foreach ($path in $required) {
