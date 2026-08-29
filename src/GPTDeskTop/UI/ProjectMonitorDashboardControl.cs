@@ -175,11 +175,23 @@ public sealed class ProjectMonitorDashboardControl : UserControl
         root.Controls.Add(_summary, 0, 1);
 
         root.Controls.Add(CreatePanel("Project runtime", "Select a project to inspect its real persisted task and GitHub evidence.", _projects), 0, 2);
-        var bottom = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterWidth = 6, BackColor = FluentTheme.Background, Panel1MinSize = 360, Panel2MinSize = 300 };
-        bottom.Panel1.Padding = new Padding(0, 8, 5, 0);
-        bottom.Panel2.Padding = new Padding(5, 8, 0, 0);
-        bottom.Panel1.Controls.Add(CreatePanel("Selected project tasks", "Task status comes directly from ProjectState.", _tasks));
-        bottom.Panel2.Controls.Add(CreatePanel("Project context / evidence", "Repository, branch, monitor binding, decisions and verification evidence.", _details));
+        var bottom = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            BackColor = FluentTheme.Background,
+            Margin = new Padding(0, 8, 0, 0),
+            Padding = Padding.Empty
+        };
+        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
+        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+        var tasksHost = CreatePanel("Selected project tasks", "Task status comes directly from ProjectState.", _tasks);
+        tasksHost.Margin = new Padding(0, 0, 5, 0);
+        var detailsHost = CreatePanel("Project context / evidence", "Repository, branch, monitor binding, decisions and verification evidence.", _details);
+        detailsHost.Margin = new Padding(5, 0, 0, 0);
+        bottom.Controls.Add(tasksHost, 0, 0);
+        bottom.Controls.Add(detailsHost, 1, 0);
         root.Controls.Add(bottom, 0, 3);
         Controls.Add(root);
     }
