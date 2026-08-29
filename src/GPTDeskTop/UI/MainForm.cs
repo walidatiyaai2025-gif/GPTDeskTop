@@ -38,6 +38,9 @@ public sealed class MainForm : Form
     private readonly Label _tabsMetricValue = CreateMetricValue("0");
     private readonly Label _monitorsMetricValue = CreateMetricValue("0");
     private readonly Label _runningMetricValue = CreateMetricValue("0");
+    private readonly Label _sendQueueMetricValue = CreateMetricValue("IDLE");
+    private readonly Label _rateLimitMetricValue = CreateMetricValue("READY");
+    private readonly System.Windows.Forms.Timer _safetyStatusTimer = new() { Interval = 1000 };
     private readonly Label _versionLabel = new() { Text = $"GPTDeskTop v{GetAppVersion()}  •  .NET 8  •  Chrome CDP", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold), ForeColor = FluentTheme.Muted };
     private readonly Font _monitorStatusFont = new("Segoe UI Variable Text", 9F, FontStyle.Bold);
     private readonly ToolTip _toolTip = new() { AutoPopDelay = 8000, InitialDelay = 450, ReshowDelay = 100 };
@@ -76,6 +79,10 @@ public sealed class MainForm : Form
         BuildUi();
         BuildContextMenus();
         WireEvents();
+        _safetyStatusTimer.Tick += (_, _) => UpdateGlobalSafetyMetrics();
+        FormClosed += (_, _) => { _safetyStatusTimer.Stop(); _safetyStatusTimer.Dispose(); };
+        _safetyStatusTimer.Start();
+        UpdateGlobalSafetyMetrics();
         ConfigureTooltips();
         FluentTheme.Apply(this);
         FluentTheme.StyleButton(_launchChromeButton, primary: true);
@@ -172,6 +179,8 @@ public sealed class MainForm : Form
             BackColor = FluentTheme.Surface,
             Padding = new Padding(0, 2, 0, 0)
         };
+        metrics.Controls.Add(CreateMetricChip("Rate Limit", _rateLimitMetricValue));
+        metrics.Controls.Add(CreateMetricChip("Global Send", _sendQueueMetricValue));
         metrics.Controls.Add(CreateMetricChip("Running", _runningMetricValue));
         metrics.Controls.Add(CreateMetricChip("Monitors", _monitorsMetricValue));
         metrics.Controls.Add(CreateMetricChip("Conversation tabs", _tabsMetricValue));
@@ -685,7 +694,22 @@ public sealed class MainForm : Form
     }
 
     private void OnMonitorActivity(long id, string message)
-        => Ui(() => AppendActivity($"M{id}: {message}"));
+        => Ui(() =>
+        {
+            UpdateGlobalSafetyMetrics();
+            AppendActivity(id > 0 ? $"M{id}: {message}" : message);
+        });
+
+    private void UpdateGlobalSafetyMetrics()
+    {
+        _sendQueueMetricValue.Text = _monitor.GlobalSendQueueStatus;
+        _rateLimitMetricValue.Text = _monitor.GlobalRateLimitStatus;
+        _rateLimitMetricValue.ForeColor = _monitor.IsPausedByGlobalRateLimit ? FluentTheme.Danger : FluentTheme.Success;
+        var baseTitle = $"GPTDeskTop v{GetAppVersion()}";
+        Text = _monitor.IsPausedByGlobalRateLimit
+            ? $"{baseTitle} — CHATGPT RATE LIMITED — ALL AUTOMATED SENDS PAUSED"
+            : baseTitle;
+    }
 
     private void OnMonitorHistoryChanged()
         => Ui(async () => await RefreshHistoryAsync());

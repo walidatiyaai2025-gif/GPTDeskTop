@@ -77,6 +77,9 @@ internal static class OperatorWorkspaceV2Experience
             development.Visible = false;
             development.Height = 0;
             development.MinimumSize = Size.Empty;
+            runtimeHealth.Visible = false;
+            runtimeHealth.Height = 0;
+            runtimeHealth.MinimumSize = Size.Empty;
 
             var refreshTimer = new System.Windows.Forms.Timer { Interval = 500 };
             refreshTimer.Tick += (_, _) => footerStatus.Text = BuildDevelopmentFooterText(development);

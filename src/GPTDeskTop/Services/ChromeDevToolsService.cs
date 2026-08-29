@@ -17,11 +17,11 @@ public sealed class ChromeDevToolsService
     private const int MonitorRecoveryEndpointGraceAttempts = 8;
     private const int MonitorRecoveryEndpointGraceDelayMs = 250;
     private const string BrowserSessionId = "__gptdesktop_monitor_browser__";
-    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 7 ? window.__gptDesktopChatStateCache.read() : null";
+    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 8 ? window.__gptDesktopChatStateCache.read() : null";
     private const string ChatStateInstallExpressionTemplate = """
 (() => {
   const key = '__gptDesktopChatStateCache';
-  const version = 7;
+  const version = 8;
   const smartFollowEnabled = __SMART_ENABLED__;
   const smartFollowThrottleMs = __SMART_THROTTLE_MS__;
   const smartFollowNearBottomPx = __SMART_NEAR_BOTTOM_PX__;
@@ -36,6 +36,19 @@ public sealed class ChromeDevToolsService
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
   const errorPattern = /message delivery timed out|something went wrong|there was an error|network error|failed to (generate|load)|unable to (generate|load)|error generating|حدث خطأ|خطأ في الشبكة|تعذر/i;
+  const globalRateLimitPattern = /too many requests|making requests too quickly|temporarily limited access(?: to your conversations)?|please wait a few minutes before trying again/i;
+  const findGlobalRateLimitText = () => {
+    const selectors = ['[role="dialog"]', '[aria-modal="true"]', '[role="alert"]'];
+    for (const selector of selectors) {
+      for (const element of document.querySelectorAll(selector)) {
+        if (!visible(element)) continue;
+        if (element.closest('[data-message-author-role]')) continue;
+        const text = (element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text && text.length <= 2500 && globalRateLimitPattern.test(text)) return text;
+      }
+    }
+    return '';
+  };
   const findStopButton = () => {
     const testStopButton = document.querySelector('button[data-testid="stop-button"]');
     if (visible(testStopButton)) return testStopButton;
@@ -230,7 +243,7 @@ public sealed class ChromeDevToolsService
   const state = {
     version,
     dirty: true,
-    snapshot: { assistantCount: 0, lastAssistantText: '', isGenerating: false, errorText: '', autoFollow: { mode: smartFollowEnabled ? 'following' : 'disabled', sequence: 0, event: smartFollowEnabled ? 'installed' : 'disabled' } },
+    snapshot: { assistantCount: 0, lastAssistantText: '', isGenerating: false, errorText: '', globalRateLimitText: '', autoFollow: { mode: smartFollowEnabled ? 'following' : 'disabled', sequence: 0, event: smartFollowEnabled ? 'installed' : 'disabled' } },
     observer: null,
     autoFollow: null,
     read: null
@@ -240,6 +253,7 @@ public sealed class ChromeDevToolsService
   state.read = () => {
     if (!state.dirty) return state.snapshot;
     state.dirty = false;
+    const globalRateLimitText = findGlobalRateLimitText();
     const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
     const lastAssistant = messages.length ? messages[messages.length - 1] : null;
     const stopButton = findStopButton();
@@ -248,7 +262,7 @@ public sealed class ChromeDevToolsService
     const isGenerating = !!stopButton;
     const errorText = isGenerating ? '' : findErrorText();
     const last = !isGenerating && lastAssistant ? (lastAssistant.innerText || '').trim() : '';
-    state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, autoFollow: state.autoFollow?.snapshot?.() || { mode: 'disabled', sequence: 0, event: 'disabled' } };
+    state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, globalRateLimitText, autoFollow: state.autoFollow?.snapshot?.() || { mode: 'disabled', sequence: 0, event: 'disabled' } };
     if (isGenerating) state.autoFollow?.onMutation?.();
     return state.snapshot;
   };
@@ -489,7 +503,8 @@ public sealed class ChromeDevToolsService
             value.TryGetProperty("assistantCount", out var count) ? count.GetInt32() : 0,
             value.TryGetProperty("lastAssistantText", out var text) ? text.GetString() ?? string.Empty : string.Empty,
             value.TryGetProperty("isGenerating", out var generating) && generating.GetBoolean(),
-            value.TryGetProperty("errorText", out var error) ? error.GetString() ?? string.Empty : string.Empty);
+            value.TryGetProperty("errorText", out var error) ? error.GetString() ?? string.Empty : string.Empty,
+            value.TryGetProperty("globalRateLimitText", out var rateLimit) ? rateLimit.GetString() ?? string.Empty : string.Empty);
     }
     private int IncrementChatStateTransportFailures(ChromeTab tab)
     {

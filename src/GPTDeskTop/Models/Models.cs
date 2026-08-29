@@ -13,7 +13,8 @@ public sealed record ChatPageState(
     int AssistantCount,
     string LastAssistantText,
     bool IsGenerating,
-    string ErrorText);
+    string ErrorText,
+    string GlobalRateLimitText = "");
 
 public sealed class SavedMonitor
 {

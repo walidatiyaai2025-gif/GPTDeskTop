@@ -11,10 +11,10 @@ public sealed class SettingsForm : Form
     private readonly NumericUpDown _defaultTimer = new() { Minimum = 1, Maximum = 60, Width = 140 };
     private readonly NumericUpDown _rotateAfterMessages = new() { Minimum = 0, Maximum = 10000, Width = 140 };
     private readonly NumericUpDown _notificationDuration = new() { Minimum = 1, Maximum = 60, Width = 140 };
-    private readonly TextBox _defaultReply = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, Text = "كمل" };
-    private readonly TextBox _messageCountRotationStartMessage = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, Text = "كمل" };
-    private readonly TextBox _chatGptErrorRecovery = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, Text = "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه." };
-    private readonly TextBox _timeoutRecovery = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, Text = "كمل" };
+    private readonly TextBox _defaultReply = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false, Text = "كمل" };
+    private readonly TextBox _messageCountRotationStartMessage = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false, Text = "كمل" };
+    private readonly TextBox _chatGptErrorRecovery = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false, Text = "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه." };
+    private readonly TextBox _timeoutRecovery = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false, Text = "كمل" };
     private readonly CheckBox _soundEnabled = new() { Text = "Play sound with balloon notifications", AutoSize = true };
     private readonly ComboBox _soundType = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
     private readonly Button _exportBackupButton = new() { Text = "&Export Configuration Backup", AutoSize = true };

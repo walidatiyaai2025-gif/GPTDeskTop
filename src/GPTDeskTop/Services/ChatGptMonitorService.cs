@@ -14,6 +14,7 @@ public sealed class ChatGptMonitorService
     private readonly MonitoringConfig _config;
     private readonly ModelRoutingService _modelRouting = new();
     private readonly OutboundDeliveryCoordinator _outboundDelivery = new();
+    private readonly GlobalChatGptRateLimitCircuitBreaker _globalRateLimit = GlobalChatGptRateLimitCircuitBreaker.Shared;
     private readonly object _sync = new();
     private readonly Dictionary<long, MonitorRuntime> _running = new();
     private readonly Dictionary<long, LifecycleGateEntry> _lifecycleGates = new();
@@ -26,9 +27,28 @@ public sealed class ChatGptMonitorService
     public event Action<long, string, string, bool>? ResponseReceived;
 
     public bool IsRunning { get { lock (_sync) return _running.Count > 0; } }
+    public string GlobalSendQueueStatus => _outboundDelivery.DisplayStatus;
+    public string GlobalRateLimitStatus => _globalRateLimit.DisplayStatus;
+    public bool IsPausedByGlobalRateLimit => _globalRateLimit.IsActive;
 
     public ChatGptMonitorService(ChromeDevToolsService chrome, LocalDatabase database, MonitoringConfig config)
-    { _chrome = chrome; _database = database; _config = config; }
+    {
+        _chrome = chrome;
+        _database = database;
+        _config = config;
+        _outboundDelivery.QueueStatusChanged += status =>
+        {
+            Activity?.Invoke(status.ActiveMonitorId ?? 0, $"Global Send Queue: {_outboundDelivery.DisplayStatus}");
+            RunningStateChanged?.Invoke();
+        };
+        _globalRateLimit.StatusChanged += status =>
+        {
+            Activity?.Invoke(0, status.IsActive
+                ? $"CHATGPT RATE LIMITED — ALL AUTOMATED SENDS PAUSED — {_globalRateLimit.DisplayStatus}"
+                : "ChatGPT global rate limit cleared — serialized sends resumed.");
+            RunningStateChanged?.Invoke();
+        };
+    }
 
     public bool IsMonitorRunning(long monitorId) { lock (_sync) return _running.ContainsKey(monitorId); }
 
@@ -174,6 +194,7 @@ public sealed class ChatGptMonitorService
             runtime.StopOwnsCleanup = true;
         }
 
+        _outboundDelivery.CancelMonitor(monitorId);
         runtime.Cancellation.Cancel();
         try
         {
@@ -303,6 +324,7 @@ public sealed class ChatGptMonitorService
             ChatPageState initial;
             using (RuntimeFlightRecorder.BeginScope(monitor.Id, tab.Id, tab.Url))
                 initial = await GetChatStateWithRetryAsync(monitor.Id, tab, cancellationToken);
+            _globalRateLimit.ObserveVisibleState(initial.GlobalRateLimitText);
             var initialText = GetEffectiveResponse(initial);
             var initialCountRotationDue = monitor.ConversationRotationEnabled
                 && rotateAfterMessages > 0
@@ -314,7 +336,8 @@ public sealed class ChatGptMonitorService
             var lastHandledText = initialCountRotationDue ? string.Empty : initialText;
             var candidateText = string.Empty;
             var candidateSince = DateTimeOffset.MinValue;
-            await ApplyModelRouteAsync(monitor, tab, recovery: false, contextRotation: false, cancellationToken);
+            if (!_globalRateLimit.IsActive)
+                await ApplyModelRouteAsync(monitor, tab, recovery: false, contextRotation: false, cancellationToken);
             var pollPeriod = TimeSpan.FromSeconds(timerSeconds);
             var initialPollStagger = MonitorPollScheduler.GetInitialStagger(monitor.Id, pollPeriod);
             if (initialPollStagger > TimeSpan.Zero)
@@ -327,6 +350,12 @@ public sealed class ChatGptMonitorService
                     var prefix = $"[{monitor.Title}]";
                     using var pollFlightScope = RuntimeFlightRecorder.BeginScope(monitor.Id, tab.Id, tab.Url);
                     var state = await _chrome.GetChatStateAsync(tab, cancellationToken);
+                    _globalRateLimit.ObserveVisibleState(state.GlobalRateLimitText);
+                    if (_globalRateLimit.IsActive)
+                    {
+                        Activity?.Invoke(monitor.Id, $"{prefix} PausedByGlobalRateLimit — {_globalRateLimit.DisplayStatus}");
+                        continue;
+                    }
                     var text = GetEffectiveResponse(state);
                     transientFailures = 0;
                     if (DateTimeOffset.UtcNow >= nextRuntimeSettingsRefreshUtc)
@@ -395,7 +424,7 @@ public sealed class ChatGptMonitorService
                     {
                         if (monitor.MaxConversationRotations > 0 && monitor.RotationCount >= monitor.MaxConversationRotations) { Activity?.Invoke(monitor.Id, $"{prefix} Conversation limit detected, but maximum rotations ({monitor.MaxConversationRotations}) has been reached. Monitor remains stopped on the current chat."); await _database.AddLogAsync("System", monitor.NewChatStartMessage, text, "RotationLimitReached", monitor.Id, tab.Id, monitor.Title, cancellationToken); continue; }
                         Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT reported a conversation/context limit. Rotating to a new chat..."); if (monitor.NewChatDelaySeconds > 0) await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(monitor.NewChatDelaySeconds, 0, 600)), cancellationToken);
-                        var oldTab = tab; var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken); await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken); await ApplyModelRouteAsync(monitor, newTab, recovery: false, contextRotation: true, cancellationToken); await Task.Delay(Math.Max(500, _config.DelayAfterSendMilliseconds), cancellationToken);
+                        var oldTab = tab; if (_globalRateLimit.IsActive) { Activity?.Invoke(monitor.Id, $"{prefix} Fresh-chat recovery deferred by global ChatGPT rate limit."); continue; } var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken); await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken); await ApplyModelRouteAsync(monitor, newTab, recovery: false, contextRotation: true, cancellationToken); await Task.Delay(Math.Max(500, _config.DelayAfterSendMilliseconds), cancellationToken);
                         var handoffService = new ConversationHandoffService(_database); var handoffMessage = await handoffService.BuildAsync(monitor, text, oldTab, cancellationToken); var startMessage = string.IsNullOrWhiteSpace(handoffMessage) ? (string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage) : handoffMessage; var sent = await SendWhenReadyAsync(monitor.Id, newTab, startMessage, allowRecoveryReload: true, cancellationToken);
                         if (!sent)
                         {
@@ -434,7 +463,7 @@ public sealed class ChatGptMonitorService
                     if (isError && IsDeliveryTimeout(text))
                     {
                         RuntimeFlightRecorder.Record("Monitor", "DeliveryTimeoutRecovery", "started", "fresh-chat-handoff");
-                        Activity?.Invoke(monitor.Id, $"{prefix} Message delivery timeout saved. Creating a new ChatGPT chat..."); var recoveryMessage = await _database.GetSettingAsync("TimeoutRecoveryMessage", cancellationToken) ?? "كمل"; var oldTab = tab; var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken); await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken); await ApplyModelRouteAsync(monitor, newTab, recovery: true, contextRotation: false, cancellationToken); await Task.Delay(Math.Max(500, _config.DelayAfterSendMilliseconds), cancellationToken); var sent = await SendWhenReadyAsync(monitor.Id, newTab, recoveryMessage, allowRecoveryReload: true, cancellationToken);
+                        Activity?.Invoke(monitor.Id, $"{prefix} Message delivery timeout saved. Creating a new ChatGPT chat..."); var recoveryMessage = await _database.GetSettingAsync("TimeoutRecoveryMessage", cancellationToken) ?? "كمل"; var oldTab = tab; if (_globalRateLimit.IsActive) { Activity?.Invoke(monitor.Id, $"{prefix} Fresh-chat recovery deferred by global ChatGPT rate limit."); continue; } var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken); await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken); await ApplyModelRouteAsync(monitor, newTab, recovery: true, contextRotation: false, cancellationToken); await Task.Delay(Math.Max(500, _config.DelayAfterSendMilliseconds), cancellationToken); var sent = await SendWhenReadyAsync(monitor.Id, newTab, recoveryMessage, allowRecoveryReload: true, cancellationToken);
                         if (!sent)
                         {
                             RuntimeFlightRecorder.Record("Monitor", "DeliveryTimeoutRecovery", "deferred", "continuation-delivery-unverified", tabId: newTab.Id, conversationRef: newTab.Url);
@@ -664,6 +693,11 @@ public sealed class ChatGptMonitorService
 
     private async Task<ChromeTab?> RotateByMessageCountAsync(SavedMonitor monitor, ChromeTab oldTab, int assistantCount, int threshold, string triggerText, string configuredStartMessage, CancellationToken cancellationToken)
     {
+        if (_globalRateLimit.IsActive)
+        {
+            Activity?.Invoke(monitor.Id, $"[{monitor.Title}] Message-count rotation deferred by global ChatGPT rate limit.");
+            return null;
+        }
         var prefix = $"[{monitor.Title}]";
         var startMessage = string.IsNullOrWhiteSpace(configuredStartMessage) ? "كمل" : configuredStartMessage.Trim();
         Activity?.Invoke(monitor.Id, $"{prefix} Assistant count {assistantCount} reached threshold {threshold}. Opening a new ChatGPT conversation...");
@@ -671,6 +705,8 @@ public sealed class ChatGptMonitorService
         if (monitor.NewChatDelaySeconds > 0)
             await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(monitor.NewChatDelaySeconds, 0, 600)), cancellationToken);
 
+        if (_globalRateLimit.IsActive)
+            return null;
         var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
         await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken);
         await ApplyModelRouteAsync(monitor, newTab, recovery: false, contextRotation: true, cancellationToken);

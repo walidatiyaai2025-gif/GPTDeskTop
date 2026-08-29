@@ -4,12 +4,12 @@ namespace GPTDeskTop.UI;
 
 public sealed class MonitorSettingsForm : Form
 {
-    private readonly TextBox _autoReplyBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true };
+    private readonly TextBox _autoReplyBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false };
     private readonly NumericUpDown _delaySeconds = new() { Minimum = 0, Maximum = 300, Width = 130 };
     private readonly NumericUpDown _timerSeconds = new() { Minimum = 1, Maximum = 60, Width = 130 };
     private readonly CheckBox _enabledCheck = new() { Text = "Monitor is enabled", AutoSize = true };
     private readonly CheckBox _rotationEnabledCheck = new() { Text = "Enable conversation rotation for this monitor", AutoSize = true };
-    private readonly TextBox _newChatMessageBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true };
+    private readonly TextBox _newChatMessageBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false };
     private readonly NumericUpDown _newChatDelaySeconds = new() { Minimum = 0, Maximum = 600, Width = 130 };
     private readonly NumericUpDown _rotationCooldownSeconds = new() { Minimum = 0, Maximum = 3600, Width = 130 };
     private readonly NumericUpDown _maxRotations = new() { Minimum = 0, Maximum = 1000, Width = 130 };

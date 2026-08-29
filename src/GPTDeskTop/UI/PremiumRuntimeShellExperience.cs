@@ -75,20 +75,19 @@ internal static class PremiumRuntimeShellExperience
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
 
-        layout.Controls.Add(BuildBrand(), 0, 0);
         layout.Controls.Add(BuildNavigation(main, projects, inspector, messages, settings), 0, 1);
         layout.Controls.Add(BuildRuntimeFooter(inspector), 0, 2);
         rail.Controls.Add(layout);
 
         main.Controls.Add(rail);
         main.Controls.SetChildIndex(rail, Math.Min(1, main.Controls.Count - 1));
-        main.MinimumSize = new Size(Math.Max(main.MinimumSize.Width, 1280), Math.Max(main.MinimumSize.Height, 760));
-        if (main.Width < 1280 || main.Height < 760)
-            main.Size = new Size(Math.Max(main.Width, 1280), Math.Max(main.Height, 760));
+        main.MinimumSize = new Size(Math.Max(main.MinimumSize.Width, 1100), Math.Max(main.MinimumSize.Height, 680));
+        if (main.Width < 1100 || main.Height < 680)
+            main.Size = new Size(Math.Max(main.Width, 1100), Math.Max(main.Height, 680));
 
         return true;
     }
