@@ -1,7 +1,9 @@
+using System.Drawing;
 using System.Drawing.Imaging;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Windows.Forms;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
@@ -30,8 +32,19 @@ public sealed class RenderedPremiumUiAcceptanceTests
         try
         {
             RunSta(() => ExecuteRenderedAcceptance(repoRoot, evidenceDirectory, checks, screenshots, failures));
-            Record(checks, failures, "design-parity", File.Exists(referencePath) && referenceSha.Length == 64,
-                File.Exists(referencePath) ? $"Approved reference SHA-256 {referenceSha}." : "Approved premium reference is missing.");
+            var parityPass = File.Exists(referencePath)
+                             && referenceSha.Length == 64
+                             && GatePassed(checks, "rendered-palette")
+                             && GatePassed(checks, "1366x768")
+                             && GatePassed(checks, "1600x900")
+                             && GatePassed(checks, "1920x1080")
+                             && GatePassed(checks, "125%-DPI")
+                             && screenshots.Where(x => x.Destination is "Dashboard" or "Projects" or "Development Messages" or "GitHub / Git Settings")
+                                 .All(x => x.Status == "PASS");
+            Record(checks, failures, "design-parity", parityPass,
+                parityPass
+                    ? $"Approved reference provenance verified (SHA-256 {referenceSha}); locked palette and required rendered viewport/destination evidence all PASS."
+                    : "Approved reference provenance, locked palette, or required rendered viewport/destination evidence did not pass.");
         }
         catch (Exception ex)
         {
@@ -79,6 +92,7 @@ public sealed class RenderedPremiumUiAcceptanceTests
         List<ScreenshotEvidence> screenshots,
         List<string> failures)
     {
+        _ = repoRoot;
         var scratch = Path.Combine(Path.GetTempPath(), "gptdesktop-ui-acceptance-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
         DevelopmentTaskRuntimeBinding? binding = null;
@@ -144,7 +158,8 @@ public sealed class RenderedPremiumUiAcceptanceTests
             Render(main, 1920, 1080, 96, projectsPath);
             var projects = Descendants(main).OfType<ProjectMonitorDashboardControl>().FirstOrDefault(x => x.Name == "PremiumProjectsWorkspace");
             var projectsGrid = projects is null ? null : Descendants(projects).OfType<DataGridView>().FirstOrDefault(x => x.AccessibleName == "Registered projects");
-            var projectHeaders = projectsGrid?.Columns.Cast<DataGridViewColumn>().Select(x => x.HeaderText).ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [];
+            var projectHeaders = projectsGrid?.Columns.Cast<DataGridViewColumn>().Select(x => x.HeaderText).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                                 ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var projectsPass = projects is not null && SingleSurface(main)
                                && new[] { "Project", "Status", "Progress", "Active tasks", "Health", "Branch", "Repository", "Updated", "Latest result" }.All(projectHeaders.Contains);
             Record(checks, failures, "Projects", projectsPass, "Rendered embedded Projects workspace with repository, branch, progress, health and real persisted evidence controls.");
@@ -219,11 +234,11 @@ public sealed class RenderedPremiumUiAcceptanceTests
                               && FluentTheme.Border == Color.FromArgb(28, 48, 70);
             Record(checks, failures, "rendered-palette", palettePass, "Rendered production surfaces use the locked premium palette values.");
 
-            var ownedPass = checks.TryGetValue("Projects", out var p) && p.Status == "PASS"
-                            && checks.TryGetValue("Development Messages", out var d) && d.Status == "PASS"
-                            && checks.TryGetValue("GitHub/Git", out var g) && g.Status == "PASS"
-                            && checks.TryGetValue("single-surface", out var s) && s.Status == "PASS"
-                            && checks.TryGetValue("multiline-interaction", out var m) && m.Status == "PASS";
+            var ownedPass = GatePassed(checks, "Projects")
+                            && GatePassed(checks, "Development Messages")
+                            && GatePassed(checks, "GitHub/Git")
+                            && GatePassed(checks, "single-surface")
+                            && GatePassed(checks, "multiline-interaction");
             Record(checks, failures, "QA-UI-001", ownedPass, "All owned UI product closure gates passed on rendered production WinForms controls.");
         }
         finally
@@ -289,6 +304,9 @@ public sealed class RenderedPremiumUiAcceptanceTests
             foreach (var descendant in Descendants(child)) yield return descendant;
         }
     }
+
+    private static bool GatePassed(IReadOnlyDictionary<string, EvidenceCheck> checks, string key)
+        => checks.TryGetValue(key, out var check) && check.Status == "PASS";
 
     private static void Record(
         Dictionary<string, EvidenceCheck> checks,
