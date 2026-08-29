@@ -20,7 +20,13 @@ jobs:
 
       - name: Apply final runtime and UI closure idempotently
         shell: pwsh
-        run: python scripts/apply_premium_ui.py
+        run: |
+          python scripts/apply_premium_ui.py
+          $queuePath = 'src/GPTDeskTop/Runtime/OutboundDeliveryCoordinator.cs'
+          $queue = Get-Content $queuePath -Raw
+          $queue = $queue.Replace('public sealed class QueueLease', 'private sealed class QueueLease')
+          $queue = $queue.Replace('private QueueLease(OutboundDeliveryCoordinator owner, QueueEntry entry)', 'public QueueLease(OutboundDeliveryCoordinator owner, QueueEntry entry)')
+          Set-Content $queuePath -Value $queue -Encoding utf8
 
       - name: Persist exact tested source
         shell: pwsh
@@ -29,7 +35,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           if (-not (git diff --cached --quiet)) {
-            git commit -m "fix(runtime): serialize sends and add global rate-limit breaker"
+            git commit -m "fix(runtime): finalize global send queue accessibility"
             git push origin HEAD:ui/premium-real-runtime-v1
           } else {
             Write-Host 'Final runtime/UI source closure already persisted.'
