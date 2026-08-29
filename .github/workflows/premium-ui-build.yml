@@ -18,7 +18,7 @@ jobs:
           ref: ui/premium-real-runtime-v1
           fetch-depth: 0
 
-      - name: Apply premium UI patch idempotently
+      - name: Apply premium UI and runtime closure idempotently
         shell: pwsh
         run: |
           python scripts/apply_premium_ui.py
@@ -26,17 +26,29 @@ jobs:
           $shell = $shell.Replace('control.Parent?.ScrollControlIntoView(control);', '(control.Parent as ScrollableControl)?.ScrollControlIntoView(control);')
           Set-Content src/GPTDeskTop/UI/PremiumRuntimeShellExperience.cs -Value $shell -Encoding utf8
 
-      - name: Persist premium source patch
+      - name: Persist final source closure
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/GPTDeskTop/UI/FluentTheme.cs src/GPTDeskTop/UI/MainForm.cs src/GPTDeskTop/UI/PremiumRuntimeShellExperience.cs
+          git add -- \
+            src/GPTDeskTop/UI/FluentTheme.cs \
+            src/GPTDeskTop/UI/MainForm.cs \
+            src/GPTDeskTop/UI/PremiumRuntimeShellExperience.cs \
+            src/GPTDeskTop/UI/OperatorWorkspaceV2Experience.cs \
+            src/GPTDeskTop/UI/MonitorSettingsForm.cs \
+            src/GPTDeskTop/UI/SettingsForm.cs \
+            src/GPTDeskTop/Models/Models.cs \
+            src/GPTDeskTop/Services/ChromeDevToolsService.cs \
+            src/GPTDeskTop/Services/ChatGptMonitorService.cs \
+            src/GPTDeskTop/Runtime/OutboundDeliveryCoordinator.cs \
+            src/GPTDeskTop/Runtime/GlobalChatGptRateLimitCircuitBreaker.cs \
+            tests/GPTDeskTop.RuntimeTests/GlobalOutboundSafetyRegressionTests.cs
           if (-not (git diff --cached --quiet)) {
-            git commit -m "feat(ui): apply premium dark runtime shell"
+            git commit -m "fix(runtime): serialize sends and add global rate-limit breaker"
             git push origin HEAD:ui/premium-real-runtime-v1
           } else {
-            Write-Host 'Premium source patch already persisted.'
+            Write-Host 'Final runtime/UI source closure already persisted.'
           }
 
       - name: Setup .NET 8
@@ -52,6 +64,30 @@ jobs:
 
       - name: Runtime tests
         run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
+
+      - name: Verify final runtime safety contracts
+        shell: pwsh
+        run: |
+          $queue = Get-Content src/GPTDeskTop/Runtime/OutboundDeliveryCoordinator.cs -Raw
+          $breaker = Get-Content src/GPTDeskTop/Runtime/GlobalChatGptRateLimitCircuitBreaker.cs -Raw
+          $chrome = Get-Content src/GPTDeskTop/Services/ChromeDevToolsService.cs -Raw
+          $monitor = Get-Content src/GPTDeskTop/Services/ChatGptMonitorService.cs -Raw
+          $main = Get-Content src/GPTDeskTop/UI/MainForm.cs -Raw
+          $settings = Get-Content src/GPTDeskTop/UI/SettingsForm.cs -Raw
+          $monitorSettings = Get-Content src/GPTDeskTop/UI/MonitorSettingsForm.cs -Raw
+          if ($queue -notmatch 'TimeSpan.FromSeconds\(5\)') { throw 'Global 5-second send gap is missing.' }
+          if ($queue -notmatch 'Queue<QueueEntry>') { throw 'Canonical FIFO send queue is missing.' }
+          foreach ($minutes in @('5','10','15','30')) {
+            if ($breaker -notmatch "TimeSpan.FromMinutes\($minutes\)") { throw "Rate-limit backoff $minutes minutes is missing." }
+          }
+          foreach ($marker in @('too many requests','making requests too quickly','temporarily limited access','please wait a few minutes before trying again')) {
+            if ($chrome.ToLowerInvariant() -notmatch [regex]::Escape($marker)) { throw "Visible global rate-limit marker '$marker' is missing." }
+          }
+          if ($monitor -notmatch 'ObserveVisibleState') { throw 'Monitor runtime is not wired to the global breaker.' }
+          if ($main -notmatch 'Global Send') { throw 'Global Send queue status is not visible on MainForm.' }
+          if ($main -notmatch 'Rate Limit') { throw 'Global rate-limit status is not visible on MainForm.' }
+          if (($settings | Select-String -Pattern 'AutoSize = false' -AllMatches).Matches.Count -lt 4) { throw 'Global Settings message editors are not real multiline controls.' }
+          if (($monitorSettings | Select-String -Pattern 'AutoSize = false' -AllMatches).Matches.Count -lt 2) { throw 'Monitor Settings message editors are not real multiline controls.' }
 
       - name: Build Release x64
         run: dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
@@ -99,7 +135,7 @@ jobs:
           }
           if (($settings | Select-String -Pattern 'Multiline = true' -AllMatches).Matches.Count -lt 4) { throw 'Global Settings message editors lost multiline behavior.' }
           if (($monitorSettings | Select-String -Pattern 'Multiline = true' -AllMatches).Matches.Count -lt 2) { throw 'Monitor Settings message editors lost multiline behavior.' }
-          Write-Host 'PASS: premium shell uses only real GPTDeskTop navigation and preserves multiline message editors.'
+          Write-Host 'PASS: premium single-surface shell preserves real multiline message editors.'
 
       - name: Verify Setup EXE and write SHA-256
         shell: pwsh
