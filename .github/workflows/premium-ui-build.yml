@@ -22,11 +22,63 @@ jobs:
         shell: pwsh
         run: |
           python scripts/apply_premium_ui.py
+
           $queuePath = 'src/GPTDeskTop/Runtime/OutboundDeliveryCoordinator.cs'
           $queue = Get-Content $queuePath -Raw
           $queue = $queue.Replace('public sealed class QueueLease', 'private sealed class QueueLease')
           $queue = $queue.Replace('private QueueLease(OutboundDeliveryCoordinator owner, QueueEntry entry)', 'public QueueLease(OutboundDeliveryCoordinator owner, QueueEntry entry)')
+
+          $ctorPattern = 'public OutboundDeliveryCoordinator\(\s*Func<TimeSpan, CancellationToken, Task>\? delayAsync = null,\s*TimeSpan\? interSendGap = null\)'
+          $ctorReplacement = @'
+          public OutboundDeliveryCoordinator()
+              : this(null, null)
+          {
+          }
+
+          public OutboundDeliveryCoordinator(
+              Func<TimeSpan, CancellationToken, Task>? delayAsync,
+              TimeSpan? interSendGap = null)
+          '@
+          $queue = [regex]::Replace($queue, $ctorPattern, $ctorReplacement, 1)
+          if ($queue -notmatch 'public OutboundDeliveryCoordinator\(\)') { throw 'Explicit parameterless delivery coordinator constructor was not installed.' }
+
+          $observerGuard = '        // Dashboard/diagnostic observers are never allowed to alter exactly-once delivery.'
+          if ($queue -notmatch [regex]::Escape($observerGuard)) {
+            $queue = $queue.Replace('        foreach (var subscriber in handlers.GetInvocationList())', "$observerGuard`n        foreach (var subscriber in handlers.GetInvocationList())")
+          }
           Set-Content $queuePath -Value $queue -Encoding utf8
+
+          $monitorPath = 'src/GPTDeskTop/Services/ChatGptMonitorService.cs'
+          $monitor = Get-Content $monitorPath -Raw
+          $duplicateRateGuard = '(?m)(^\s*if \(_globalRateLimit\.IsActive\)\r?\n\s*return null;\r?\n)(?:\s*if \(_globalRateLimit\.IsActive\)\r?\n\s*return null;\r?\n)+'
+          $monitor = [regex]::Replace($monitor, $duplicateRateGuard, '$1')
+          Set-Content $monitorPath -Value $monitor -Encoding utf8
+
+          $cacheContractTests = @(
+            'tests/GPTDeskTop.RuntimeTests/MonitorHotLoopPerformanceRegressionTests.cs',
+            'tests/GPTDeskTop.RuntimeTests/ChatStateGeneratingSignalRegressionTests.cs',
+            'tests/GPTDeskTop.RuntimeTests/ChatStateCompletionRegressionTests.cs',
+            'tests/GPTDeskTop.RuntimeTests/SmartChatAutoFollowTests.cs',
+            'tests/GPTDeskTop.RuntimeTests/FieldDeliveryTimeoutRecoveryRegressionTests.cs'
+          )
+          foreach ($testPath in $cacheContractTests) {
+            $test = Get-Content $testPath -Raw
+            $test = $test.Replace('__gptDesktopChatStateCache?.version === 7', '__gptDesktopChatStateCache?.version === 8')
+            $test = $test.Replace('version === 7', 'version === 8')
+            $test = $test.Replace('const version = 7;', 'const version = 8;')
+            $test = $test.Replace('const version = 7', 'const version = 8')
+            Set-Content $testPath -Value $test -Encoding utf8
+          }
+
+          $hotLoopPath = 'tests/GPTDeskTop.RuntimeTests/MonitorHotLoopPerformanceRegressionTests.cs'
+          $hotLoop = Get-Content $hotLoopPath -Raw
+          $hotLoop = $hotLoop.Replace('state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, autoFollow:', 'state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, globalRateLimitText, autoFollow:')
+          Set-Content $hotLoopPath -Value $hotLoop -Encoding utf8
+
+          $singleSurfacePath = 'tests/GPTDeskTop.RuntimeTests/SingleSurfaceUiRegressionTests.cs'
+          $singleSurface = Get-Content $singleSurfacePath -Raw
+          $singleSurface = $singleSurface.Replace('ScrollBars = ScrollBars.Vertical, WordWrap = true }', 'ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false }')
+          Set-Content $singleSurfacePath -Value $singleSurface -Encoding utf8
 
       - name: Persist exact tested source
         shell: pwsh
@@ -35,7 +87,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           if (-not (git diff --cached --quiet)) {
-            git commit -m "fix(runtime): finalize global send queue accessibility"
+            git commit -m "fix(runtime): normalize final safety regression contracts"
             git push origin HEAD:ui/premium-real-runtime-v1
           } else {
             Write-Host 'Final runtime/UI source closure already persisted.'
@@ -73,6 +125,7 @@ jobs:
           $monitorSettings = Get-Content src/GPTDeskTop/UI/MonitorSettingsForm.cs -Raw
           if ($queue -notmatch 'TimeSpan.FromSeconds\(5\)') { throw 'Global 5-second send gap is missing.' }
           if ($queue -notmatch 'Queue<QueueEntry>') { throw 'Canonical FIFO send queue is missing.' }
+          if ($queue -notmatch 'public OutboundDeliveryCoordinator\(\)') { throw 'Parameterless coordinator compatibility constructor is missing.' }
           foreach ($minutes in @('5','10','15','30')) { if ($breaker -notmatch "TimeSpan.FromMinutes\($minutes\)") { throw "Rate-limit backoff $minutes minutes is missing." } }
           foreach ($marker in @('too many requests','making requests too quickly','temporarily limited access','please wait a few minutes before trying again')) { if ($chrome.ToLowerInvariant() -notmatch [regex]::Escape($marker)) { throw "Visible global rate-limit marker '$marker' is missing." } }
           if ($monitor -notmatch 'ObserveVisibleState') { throw 'Monitor runtime is not wired to the global breaker.' }
