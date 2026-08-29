@@ -31,11 +31,11 @@ public sealed class ChatStateGeneratingSignalRegressionTests
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
         Assert.Contains(
-            "__gptDesktopChatStateCache?.version === 7",
+            "__gptDesktopChatStateCache?.version === 8",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
-            "const version = 7;",
+            "const version = 8;",
             source,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
@@ -62,3 +62,4 @@ public sealed class ChatStateGeneratingSignalRegressionTests
         Assert.True(completedTextRead > generationDecision);
     }
 }
+

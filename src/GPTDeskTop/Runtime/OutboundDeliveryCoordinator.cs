@@ -47,9 +47,14 @@ public sealed class OutboundDeliveryCoordinator
     private QueueEntry? _active;
     private long _sequence;
 
-    public OutboundDeliveryCoordinator(
-        Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
-        TimeSpan? interSendGap = null)
+    public OutboundDeliveryCoordinator()
+    : this(null, null)
+{
+}
+
+public OutboundDeliveryCoordinator(
+    Func<TimeSpan, CancellationToken, Task>? delayAsync,
+    TimeSpan? interSendGap = null)
     {
         _delayAsync = delayAsync ?? Task.Delay;
         _interSendGap = interSendGap ?? DefaultInterSendGap;
@@ -298,6 +303,7 @@ public sealed class OutboundDeliveryCoordinator
             _queue.Count(entry => !entry.Cancelled),
             _active?.MonitorId,
             DateTimeOffset.UtcNow);
+        // Dashboard/diagnostic observers are never allowed to alter exactly-once delivery.
         foreach (var subscriber in handlers.GetInvocationList())
         {
             try { ((Action<OutboundQueueStatus>)subscriber)(status); }
@@ -320,6 +326,7 @@ public sealed class OutboundDeliveryCoordinator
         var handlers = StatusChanged;
         if (handlers is null)
             return;
+        // Dashboard/diagnostic observers are never allowed to alter exactly-once delivery.
         foreach (var subscriber in handlers.GetInvocationList())
         {
             try { ((Action<OutboundDeliveryStatus>)subscriber)(status); }

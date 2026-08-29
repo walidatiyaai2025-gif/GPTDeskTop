@@ -23,7 +23,7 @@ public sealed class SmartChatAutoFollowTests
     public void ChatStateCacheContainsSmartFollowPauseResumeAndThrottleContract()
     {
         var source = RepoFile("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
-        Assert.Contains("const version = 7;", source, StringComparison.Ordinal);
+        Assert.Contains("const version = 8;", source, StringComparison.Ordinal);
         Assert.Contains("createSmartFollowController", source, StringComparison.Ordinal);
         Assert.Contains("paused-by-user", source, StringComparison.Ordinal);
         Assert.Contains("user-away-from-bottom", source, StringComparison.Ordinal);
@@ -70,3 +70,4 @@ public sealed class SmartChatAutoFollowTests
         Assert.Contains("\"SmartAutoFollowNearBottomPixels\": 180", source, StringComparison.Ordinal);
     }
 }
+

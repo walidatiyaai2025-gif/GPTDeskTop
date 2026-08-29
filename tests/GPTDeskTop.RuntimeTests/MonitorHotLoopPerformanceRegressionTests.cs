@@ -24,7 +24,7 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
         Assert.True(generationCheck >= 0);
         Assert.True(responseRead > generationCheck);
         Assert.Contains(
-            "state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, autoFollow:",
+            "state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, globalRateLimitText, autoFollow:",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -48,7 +48,7 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
         Assert.Contains(
-            "private const string ChatStateReadExpression = \"window.__gptDesktopChatStateCache?.version === 7 ? window.__gptDesktopChatStateCache.read() : null\";",
+            "private const string ChatStateReadExpression = \"window.__gptDesktopChatStateCache?.version === 8 ? window.__gptDesktopChatStateCache.read() : null\";",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -111,3 +111,5 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             source.Split("\"MessageCountRotationStartMessage\"", StringSplitOptions.None).Length - 1);
     }
 }
+
+

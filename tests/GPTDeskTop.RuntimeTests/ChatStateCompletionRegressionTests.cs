@@ -14,8 +14,8 @@ public sealed class ChatStateCompletionRegressionTests
         var source = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
-        Assert.Contains("__gptDesktopChatStateCache?.version === 7", source, StringComparison.Ordinal);
-        Assert.Contains("const version = 7;", source, StringComparison.Ordinal);
+        Assert.Contains("__gptDesktopChatStateCache?.version === 8", source, StringComparison.Ordinal);
+        Assert.Contains("const version = 8;", source, StringComparison.Ordinal);
         Assert.DoesNotContain("__gptDesktopChatStateCache?.version === 6", source, StringComparison.Ordinal);
     }
 
@@ -52,3 +52,4 @@ public sealed class ChatStateCompletionRegressionTests
         Assert.DoesNotContain("stop responding|stop|إيقاف/i", source, StringComparison.Ordinal);
     }
 }
+
