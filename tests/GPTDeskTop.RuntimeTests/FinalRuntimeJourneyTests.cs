@@ -1,0 +1,204 @@
+using System.Collections.Concurrent;
+using GPTDeskTop.Data;
+using GPTDeskTop.Runtime;
+using GPTDeskTop.Services;
+
+namespace GPTDeskTop.RuntimeTests;
+
+public sealed class FinalRuntimeJourneyTests
+{
+    private const string LimitedText = "Too many requests. Please wait a few minutes before trying again.";
+
+    [Fact]
+    [Trait("Category", "IntegratedRuntimeE2E")]
+    public async Task ThreeMonitorJourneySurvivesRateLimitRestartUncertainSendRolloverAndCompletionGate()
+    {
+        var root = CreateTempRoot();
+        try
+        {
+            var database = new LocalDatabase(Path.Combine(root, "runtime.db"));
+            await database.InitializeAsync();
+            var clock = new MutableClock(new DateTimeOffset(2026, 8, 29, 18, 0, 0, TimeSpan.Zero));
+            var breaker = new GlobalChatGptRateLimitCircuitBreaker(clock.Read);
+            await breaker.InitializeAsync(database);
+
+            var taskPath = Path.Combine(root, "autonomous-task.json");
+            var autonomousTask = new AutonomousTaskController(taskPath, "task-e2e-001", "chat-a");
+            autonomousTask.Transition(AutonomousTaskPhase.TaskRunning, "startup-restored-monitor-state");
+
+            var coordinator = new OutboundDeliveryCoordinator(
+                delayAsync: null,
+                interSendGap: null,
+                rateLimit: breaker);
+            var physicalTimes = new ConcurrentDictionary<long, DateTimeOffset>();
+            var cPhysicalSends = 0;
+            using var cCancellation = new CancellationTokenSource();
+
+            var sendA = coordinator.SendOnceAsync(
+                101,
+                "chat-a",
+                "A",
+                () =>
+                {
+                    physicalTimes[101] = DateTimeOffset.UtcNow;
+                    return Task.FromResult(true);
+                },
+                null,
+                CancellationToken.None);
+
+            var sendB = coordinator.SendOnceAsync(
+                102,
+                "chat-b",
+                "B",
+                () =>
+                {
+                    physicalTimes[102] = DateTimeOffset.UtcNow;
+                    breaker.ObserveVisibleState(LimitedText);
+                    return Task.FromResult(true);
+                },
+                null,
+                CancellationToken.None);
+
+            var sendCBeforeRestart = coordinator.SendOnceAsync(
+                103,
+                "chat-c",
+                "C",
+                () =>
+                {
+                    Interlocked.Increment(ref cPhysicalSends);
+                    physicalTimes[103] = DateTimeOffset.UtcNow;
+                    return Task.FromResult(true);
+                },
+                null,
+                cCancellation.Token);
+
+            Assert.True(await sendA);
+            Assert.True(await sendB);
+            Assert.True(breaker.IsActive);
+            Assert.Equal("1", await database.GetSettingAsync(GlobalChatGptRateLimitCircuitBreaker.IsActiveKey));
+            Assert.True((physicalTimes[102] - physicalTimes[101]).TotalMilliseconds >= 5000);
+
+            await Task.Delay(150);
+            Assert.False(sendCBeforeRestart.IsCompleted);
+            Assert.Equal(0, cPhysicalSends);
+
+            autonomousTask.Transition(AutonomousTaskPhase.WaitingForChatGpt, "global-rate-limit-pause");
+            cCancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await sendCBeforeRestart);
+
+            var restoredTask = new AutonomousTaskController(taskPath, "ignored-after-restart", "ignored-after-restart");
+            Assert.Equal("task-e2e-001", restoredTask.Snapshot.TaskId);
+            Assert.Equal(AutonomousTaskPhase.WaitingForChatGpt, restoredTask.Snapshot.Phase);
+
+            var restoredBreaker = new GlobalChatGptRateLimitCircuitBreaker(clock.Read);
+            await restoredBreaker.InitializeAsync(database);
+            Assert.True(restoredBreaker.IsActive);
+            Assert.Equal(breaker.RetryAtUtc, restoredBreaker.RetryAtUtc);
+
+            clock.UtcNow = restoredBreaker.RetryAtUtc!.Value;
+            var probeClears = 0;
+            restoredBreaker.StatusChanged += status =>
+            {
+                if (status.EventName == "RateLimitCleared") Interlocked.Increment(ref probeClears);
+            };
+            restoredBreaker.ObserveVisibleState(null);
+            restoredBreaker.ObserveVisibleState(null);
+            Assert.Equal(1, probeClears);
+            Assert.False(restoredBreaker.IsActive);
+
+            var resumedCoordinator = new OutboundDeliveryCoordinator(
+                delayAsync: (_, _) => Task.CompletedTask,
+                interSendGap: TimeSpan.Zero,
+                rateLimit: restoredBreaker);
+            Assert.True(await resumedCoordinator.SendOnceAsync(
+                103,
+                "chat-c",
+                "C",
+                () =>
+                {
+                    Interlocked.Increment(ref cPhysicalSends);
+                    return Task.FromResult(true);
+                },
+                null,
+                CancellationToken.None));
+            Assert.Equal(1, cPhysicalSends);
+
+            var timeoutPhysicalSends = 0;
+            await Assert.ThrowsAsync<TimeoutException>(() => resumedCoordinator.SendOnceAsync(
+                104,
+                "chat-timeout",
+                "recover-me",
+                () =>
+                {
+                    Interlocked.Increment(ref timeoutPhysicalSends);
+                    return Task.FromException<bool>(new TimeoutException("simulated delivery timeout"));
+                },
+                null,
+                CancellationToken.None));
+            Assert.Equal(1, timeoutPhysicalSends);
+            Assert.Equal(
+                OutboundDeliveryPhase.ReconcileRequired,
+                resumedCoordinator.Snapshot().Single(snapshot => snapshot.MonitorId == 104).Phase);
+
+            var duplicatePhysicalSends = 0;
+            var duplicateAccepted = await resumedCoordinator.SendOnceAsync(
+                104,
+                "chat-timeout",
+                "recover-me",
+                () =>
+                {
+                    Interlocked.Increment(ref duplicatePhysicalSends);
+                    return Task.FromResult(true);
+                },
+                null,
+                CancellationToken.None);
+            Assert.False(duplicateAccepted);
+            Assert.Equal(0, duplicatePhysicalSends);
+            resumedCoordinator.MarkCompleted(104);
+            Assert.Equal(
+                OutboundDeliveryPhase.Completed,
+                resumedCoordinator.Snapshot().Single(snapshot => snapshot.MonitorId == 104).Phase);
+
+            var taskIdBeforeRollover = restoredTask.Snapshot.TaskId;
+            restoredTask.Rollover("chat-rollover-2");
+            Assert.Equal(taskIdBeforeRollover, restoredTask.Snapshot.TaskId);
+            Assert.Equal("chat-rollover-2", restoredTask.Snapshot.ConversationKey);
+            Assert.Equal(AutonomousTaskPhase.ConversationRollover, restoredTask.Snapshot.Phase);
+
+            Assert.False(restoredTask.TryComplete(
+                true,
+                new(true, true, false, false, true, false, true)));
+            Assert.Equal(AutonomousTaskPhase.VerifyingCompletion, restoredTask.Snapshot.Phase);
+            Assert.True(restoredTask.TryComplete(
+                false,
+                new(true, true, true, true, true, true, true)));
+            Assert.Equal(AutonomousTaskPhase.Completed, restoredTask.Snapshot.Phase);
+
+            await CrashRecoveryStateService.MarkCleanShutdownAsync(database);
+            Assert.Equal("1", await database.GetSettingAsync("LastShutdownClean"));
+        }
+        finally
+        {
+            DeleteTempRoot(root);
+        }
+    }
+
+    private sealed class MutableClock
+    {
+        public MutableClock(DateTimeOffset utcNow) => UtcNow = utcNow;
+        public DateTimeOffset UtcNow { get; set; }
+        public DateTimeOffset Read() => UtcNow;
+    }
+
+    private static string CreateTempRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"gptdesktop-runtime-e2e-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        return root;
+    }
+
+    private static void DeleteTempRoot(string root)
+    {
+        try { Directory.Delete(root, recursive: true); } catch { }
+    }
+}

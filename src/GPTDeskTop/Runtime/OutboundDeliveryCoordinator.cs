@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using GPTDeskTop.Services;
 
 namespace GPTDeskTop.Runtime;
@@ -35,6 +36,15 @@ public sealed record OutboundQueueStatus(
     DateTimeOffset UpdatedUtc,
     bool IsCooldown = false);
 
+public sealed record OutboundDeliveryReceipt(
+    string OperationId,
+    long MonitorId,
+    DateTimeOffset EnqueueUtc,
+    DateTimeOffset SendAuthorityUtc,
+    DateTimeOffset ReleaseUtc,
+    DateTimeOffset NextSendUtc,
+    long MeasuredGapMs);
+
 public sealed class OutboundDeliveryCoordinator
 {
     private static readonly TimeSpan DuplicateWindow = TimeSpan.FromMinutes(2);
@@ -45,25 +55,32 @@ public sealed class OutboundDeliveryCoordinator
     private readonly Queue<QueueEntry> _queue = new();
     private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
     private readonly TimeSpan _interSendGap;
+    private readonly GlobalChatGptRateLimitCircuitBreaker _rateLimit;
     private QueueEntry? _active;
     private bool _isCooldown;
     private long _sequence;
+    private DateTimeOffset? _lastSendAuthorityUtc;
 
     public OutboundDeliveryCoordinator()
-    : this(null, null)
-{
-}
+        : this(null, null, null)
+    {
+    }
 
-public OutboundDeliveryCoordinator(
-    Func<TimeSpan, CancellationToken, Task>? delayAsync,
-    TimeSpan? interSendGap = null)
+    public OutboundDeliveryCoordinator(
+        Func<TimeSpan, CancellationToken, Task>? delayAsync,
+        TimeSpan? interSendGap = null,
+        GlobalChatGptRateLimitCircuitBreaker? rateLimit = null)
     {
         _delayAsync = delayAsync ?? Task.Delay;
         _interSendGap = interSendGap ?? DefaultInterSendGap;
+        if (_interSendGap < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(interSendGap), "Inter-send gap cannot be negative.");
+        _rateLimit = rateLimit ?? GlobalChatGptRateLimitCircuitBreaker.Shared;
     }
 
     public event Action<OutboundDeliveryStatus>? StatusChanged;
     public event Action<OutboundQueueStatus>? QueueStatusChanged;
+    public event Action<OutboundDeliveryReceipt>? ReceiptReleased;
 
     public int QueuedCount
     {
@@ -109,11 +126,14 @@ public OutboundDeliveryCoordinator(
 
         var fingerprint = Fingerprint(message);
         var logicalId = $"{monitorId}:{conversationKey}:{fingerprint}";
-        using var queueLease = await AcquireQueueLeaseAsync(monitorId, logicalId, cancellationToken).ConfigureAwait(false);
+        var queueLease = await AcquireQueueLeaseAsync(monitorId, logicalId, cancellationToken).ConfigureAwait(false);
         var physicalSendAttempted = false;
+        DateTimeOffset? sendAuthorityUtc = null;
+        DateTimeOffset? nextSendUtc = null;
+        long measuredGapMs = 0;
         try
         {
-            await GlobalChatGptRateLimitCircuitBreaker.Shared.WaitUntilAllowedAsync(cancellationToken).ConfigureAwait(false);
+            await _rateLimit.WaitUntilAllowedAsync(cancellationToken).ConfigureAwait(false);
 
             if (_snapshots.TryGetValue(monitorId, out var previous)
                 && IsDuplicateInFlight(previous, conversationKey, fingerprint))
@@ -137,6 +157,18 @@ public OutboundDeliveryCoordinator(
             bool accepted;
             try
             {
+                sendAuthorityUtc = DateTimeOffset.UtcNow;
+                lock (_queueSync)
+                {
+                    if (_lastSendAuthorityUtc.HasValue)
+                    {
+                        measuredGapMs = Math.Max(
+                            0,
+                            (long)Math.Floor((sendAuthorityUtc.Value - _lastSendAuthorityUtc.Value).TotalMilliseconds));
+                    }
+                    _lastSendAuthorityUtc = sendAuthorityUtc;
+                }
+
                 physicalSendAttempted = true;
                 accepted = await physicalSend().ConfigureAwait(false);
             }
@@ -172,6 +204,8 @@ public OutboundDeliveryCoordinator(
             if (physicalSendAttempted)
             {
                 lock (_queueSync) { _isCooldown = true; PublishQueueStatusLocked(); }
+                var cooldownStartedUtc = DateTimeOffset.UtcNow;
+                nextSendUtc = cooldownStartedUtc + _interSendGap;
                 activity?.Invoke($"Global send queue: enforcing {_interSendGap.TotalSeconds:0}-second inter-send cooldown.");
                 RuntimeFlightRecorder.Record("Delivery", "GlobalInterSendCooldown", "started", $"{_interSendGap.TotalSeconds:0}s", monitorId);
                 try
@@ -183,6 +217,22 @@ public OutboundDeliveryCoordinator(
                     ExceptionLogService.Log(ex, "OutboundDeliveryCoordinator.InterSendCooldown");
                 }
                 finally { lock (_queueSync) { _isCooldown = false; PublishQueueStatusLocked(); } }
+            }
+
+            var releaseUtc = DateTimeOffset.UtcNow;
+            queueLease.Dispose();
+
+            if (physicalSendAttempted && sendAuthorityUtc.HasValue && nextSendUtc.HasValue)
+            {
+                var receipt = new OutboundDeliveryReceipt(
+                    queueLease.OperationId,
+                    monitorId,
+                    queueLease.EnqueueUtc,
+                    sendAuthorityUtc.Value,
+                    releaseUtc,
+                    nextSendUtc.Value,
+                    measuredGapMs);
+                PublishReceipt(receipt, activity);
             }
         }
     }
@@ -225,7 +275,7 @@ public OutboundDeliveryCoordinator(
         QueueEntry entry;
         lock (_queueSync)
         {
-            entry = new QueueEntry(++_sequence, monitorId, logicalId, cancellationToken);
+            entry = new QueueEntry(++_sequence, monitorId, logicalId, cancellationToken, DateTimeOffset.UtcNow);
             _queue.Enqueue(entry);
             entry.CancellationRegistration = cancellationToken.Register(() => CancelQueuedEntry(entry));
             RuntimeFlightRecorder.Record("Delivery", "GlobalQueueEnqueued", "queued", $"sequence={entry.Sequence}", monitorId);
@@ -311,7 +361,6 @@ public OutboundDeliveryCoordinator(
             _active?.MonitorId,
             DateTimeOffset.UtcNow,
             _isCooldown);
-        // Dashboard/diagnostic observers are never allowed to alter exactly-once delivery.
         foreach (var subscriber in handlers.GetInvocationList())
         {
             try { ((Action<OutboundQueueStatus>)subscriber)(status); }
@@ -334,11 +383,26 @@ public OutboundDeliveryCoordinator(
         var handlers = StatusChanged;
         if (handlers is null)
             return;
-        // Dashboard/diagnostic observers are never allowed to alter exactly-once delivery.
         foreach (var subscriber in handlers.GetInvocationList())
         {
             try { ((Action<OutboundDeliveryStatus>)subscriber)(status); }
             catch (Exception ex) { ExceptionLogService.Log(ex, "OutboundDeliveryCoordinator.StatusChanged"); }
+        }
+    }
+
+    private void PublishReceipt(OutboundDeliveryReceipt receipt, Action<string>? activity)
+    {
+        var json = JsonSerializer.Serialize(receipt);
+        RuntimeFlightRecorder.Record("Delivery", "GlobalSendReceipt", "released", json, receipt.MonitorId);
+        activity?.Invoke($"GlobalSendReceipt|{json}");
+
+        var handlers = ReceiptReleased;
+        if (handlers is null)
+            return;
+        foreach (var subscriber in handlers.GetInvocationList())
+        {
+            try { ((Action<OutboundDeliveryReceipt>)subscriber)(receipt); }
+            catch (Exception ex) { ExceptionLogService.Log(ex, "OutboundDeliveryCoordinator.ReceiptReleased"); }
         }
     }
 
@@ -356,18 +420,27 @@ public OutboundDeliveryCoordinator(
 
     private sealed class QueueEntry
     {
-        public QueueEntry(long sequence, long monitorId, string logicalId, CancellationToken cancellationToken)
+        public QueueEntry(
+            long sequence,
+            long monitorId,
+            string logicalId,
+            CancellationToken cancellationToken,
+            DateTimeOffset enqueueUtc)
         {
             Sequence = sequence;
             MonitorId = monitorId;
             LogicalId = logicalId;
             CancellationToken = cancellationToken;
+            EnqueueUtc = enqueueUtc;
+            OperationId = $"send-{sequence:D8}";
             Completion = new TaskCompletionSource<QueueLease>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         public long Sequence { get; }
         public long MonitorId { get; }
         public string LogicalId { get; }
+        public string OperationId { get; }
+        public DateTimeOffset EnqueueUtc { get; }
         public CancellationToken CancellationToken { get; }
         public TaskCompletionSource<QueueLease> Completion { get; }
         public CancellationTokenRegistration CancellationRegistration { get; set; }
@@ -392,6 +465,9 @@ public OutboundDeliveryCoordinator(
             _owner = owner;
             _entry = entry;
         }
+
+        public string OperationId => _entry.OperationId;
+        public DateTimeOffset EnqueueUtc => _entry.EnqueueUtc;
 
         public void Dispose()
         {
