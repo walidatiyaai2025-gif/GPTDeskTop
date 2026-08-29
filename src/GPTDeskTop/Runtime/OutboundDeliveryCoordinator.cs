@@ -573,7 +573,7 @@ public sealed class OutboundDeliveryCoordinator
                 _queue.Dequeue();
         }
 
-        private sealed class GlobalEntry
+        public sealed class GlobalEntry
         {
             public GlobalEntry(long sequence, long monitorId, CancellationToken cancellationToken, DateTimeOffset enqueueUtc)
             {
