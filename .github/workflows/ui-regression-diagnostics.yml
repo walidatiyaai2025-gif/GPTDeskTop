@@ -1,0 +1,38 @@
+name: UI Regression Diagnostics
+
+on:
+  push:
+    branches:
+      - ui/premium-real-runtime-v1
+
+jobs:
+  runtime-tests:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ui/premium-real-runtime-v1
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore runtime tests
+        run: dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+
+      - name: Run runtime tests with diagnostics
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts/test-results -Force | Out-Null
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore -p:EnableWindowsTargeting=true --logger "trx;LogFileName=runtime-tests.trx" --results-directory artifacts/test-results --verbosity normal 2>&1 | Tee-Object -FilePath artifacts/test-results/runtime-tests.log
+          exit $LASTEXITCODE
+
+      - name: Upload runtime test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-runtime-test-diagnostics
+          path: artifacts/test-results
+          if-no-files-found: warn
