@@ -84,7 +84,7 @@ public sealed class OperatorWorkspaceV2RegressionTests
         Assert.DoesNotContain("_owner.ControlAdded", source, StringComparison.Ordinal);
         Assert.Contains("SupportDiagnosticsControl? supportDiagnostics = null;", program, StringComparison.Ordinal);
         Assert.Contains("void EnsureSupportDiagnostics()", program, StringComparison.Ordinal);
-        Assert.Contains("supportDiagnostics ??= new SupportDiagnosticsControl", program, StringComparison.Ordinal);
+        Assert.Contains("supportDiagnostics = new SupportDiagnosticsControl", program, StringComparison.Ordinal);
     }
 
     [Fact]
