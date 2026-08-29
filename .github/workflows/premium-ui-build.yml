@@ -23,6 +23,11 @@ jobs:
         run: |
           python scripts/apply_premium_ui.py
 
+          function Write-Utf8Stable([string]$Path, [string]$Content) {
+            $normalized = $Content.TrimEnd([char[]]"`r`n") + "`n"
+            [System.IO.File]::WriteAllText($Path, $normalized, [System.Text.UTF8Encoding]::new($false))
+          }
+
           $queuePath = 'src/GPTDeskTop/Runtime/OutboundDeliveryCoordinator.cs'
           $queue = Get-Content $queuePath -Raw
           $queue = $queue.Replace('public sealed class QueueLease', 'private sealed class QueueLease')
@@ -46,13 +51,13 @@ jobs:
           if ($queue -notmatch [regex]::Escape($observerGuard)) {
             $queue = $queue.Replace('        foreach (var subscriber in handlers.GetInvocationList())', "$observerGuard`n        foreach (var subscriber in handlers.GetInvocationList())")
           }
-          Set-Content $queuePath -Value $queue -Encoding utf8
+          Write-Utf8Stable $queuePath $queue
 
           $monitorPath = 'src/GPTDeskTop/Services/ChatGptMonitorService.cs'
           $monitor = Get-Content $monitorPath -Raw
           $duplicateRateGuard = '(?m)(^\s*if \(_globalRateLimit\.IsActive\)\r?\n\s*return null;\r?\n)(?:\s*if \(_globalRateLimit\.IsActive\)\r?\n\s*return null;\r?\n)+'
           $monitor = [regex]::Replace($monitor, $duplicateRateGuard, '$1')
-          Set-Content $monitorPath -Value $monitor -Encoding utf8
+          Write-Utf8Stable $monitorPath $monitor
 
           $cacheContractTests = @(
             'tests/GPTDeskTop.RuntimeTests/MonitorHotLoopPerformanceRegressionTests.cs',
@@ -67,18 +72,18 @@ jobs:
             $test = $test.Replace('version === 7', 'version === 8')
             $test = $test.Replace('const version = 7;', 'const version = 8;')
             $test = $test.Replace('const version = 7', 'const version = 8')
-            Set-Content $testPath -Value $test -Encoding utf8
+            Write-Utf8Stable $testPath $test
           }
 
           $hotLoopPath = 'tests/GPTDeskTop.RuntimeTests/MonitorHotLoopPerformanceRegressionTests.cs'
           $hotLoop = Get-Content $hotLoopPath -Raw
           $hotLoop = $hotLoop.Replace('state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, autoFollow:', 'state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, globalRateLimitText, autoFollow:')
-          Set-Content $hotLoopPath -Value $hotLoop -Encoding utf8
+          Write-Utf8Stable $hotLoopPath $hotLoop
 
           $singleSurfacePath = 'tests/GPTDeskTop.RuntimeTests/SingleSurfaceUiRegressionTests.cs'
           $singleSurface = Get-Content $singleSurfacePath -Raw
           $singleSurface = $singleSurface.Replace('ScrollBars = ScrollBars.Vertical, WordWrap = true }', 'ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false }')
-          Set-Content $singleSurfacePath -Value $singleSurface -Encoding utf8
+          Write-Utf8Stable $singleSurfacePath $singleSurface
 
       - name: Persist exact tested source
         shell: pwsh
