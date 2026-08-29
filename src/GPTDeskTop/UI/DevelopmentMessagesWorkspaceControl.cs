@@ -122,27 +122,27 @@ public sealed class DevelopmentMessagesWorkspaceControl : UserControl
         summary.Controls.Add(summaryLayout);
         root.Controls.Add(summary, 0, 1);
 
-        var body = new SplitContainer
+        var body = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            Orientation = Orientation.Vertical,
-            SplitterWidth = 6,
+            ColumnCount = 2,
+            RowCount = 1,
             BackColor = FluentTheme.Background,
-            Panel1MinSize = 360,
-            Panel2MinSize = 300,
-            SplitterDistance = 650,
-            Margin = new Padding(0, 10, 0, 8)
+            Margin = new Padding(0, 10, 0, 8),
+            Padding = Padding.Empty
         };
-        body.Panel1.Padding = new Padding(0, 0, 5, 0);
-        body.Panel2.Padding = new Padding(5, 0, 0, 0);
-        body.Panel1.Controls.Add(CreateSectionCard("Message catalog", "Edit the persisted message variants consumed by the current runtime.", _catalog));
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
+        var catalogHost = CreateSectionCard("Message catalog", "Edit the persisted message variants consumed by the current runtime.", _catalog);
+        catalogHost.Margin = new Padding(0, 0, 5, 0);
+        body.Controls.Add(catalogHost, 0, 0);
 
-        var right = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = FluentTheme.Background, Margin = Padding.Empty };
+        var right = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = FluentTheme.Background, Margin = new Padding(5, 0, 0, 0) };
         right.RowStyles.Add(new RowStyle(SizeType.Absolute, 188));
         right.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         right.Controls.Add(CreateSectionCard("Schedule", "Work and cooling windows apply through the existing schedule store.", _schedule), 0, 0);
         right.Controls.Add(CreateSectionCard("Delivery receipts / evidence", "Verified deliveries from persisted DevelopmentTaskState receipts.", _receipts), 0, 1);
-        body.Panel2.Controls.Add(right);
+        body.Controls.Add(right, 1, 0);
         root.Controls.Add(body, 0, 2);
 
         var actions = new FlowLayoutPanel
