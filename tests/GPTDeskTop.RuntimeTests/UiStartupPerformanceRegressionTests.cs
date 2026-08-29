@@ -30,15 +30,15 @@ public sealed class UiStartupPerformanceRegressionTests
     [Fact]
     public void ProjectsAndGitHubHeavyUiRemainLazyUntilOperatorInvocation()
     {
+        var program = ReadSource("src", "GPTDeskTop", "Program.cs");
         var projects = ReadSource("src", "GPTDeskTop", "UI", "ProjectMonitorUiBootstrap.cs");
+        var shell = ReadSource("src", "GPTDeskTop", "UI", "PremiumRuntimeShellExperience.cs");
 
-        var showHubIndex = projects.IndexOf("private static void ShowProjectsHub", StringComparison.Ordinal);
-        var dashboardIndex = projects.IndexOf("new ProjectMonitorDashboardForm", StringComparison.Ordinal);
-        Assert.True(showHubIndex >= 0 && dashboardIndex > showHubIndex);
-
-        var showGitIndex = projects.IndexOf("private static void ShowGitSettings", StringComparison.Ordinal);
-        var githubControlIndex = projects.IndexOf("new GitHubIntegrationControl(database)", StringComparison.Ordinal);
-        Assert.True(showGitIndex >= 0 && githubControlIndex > showGitIndex);
+        Assert.DoesNotContain("new ProjectMonitorDashboardControl", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new GitHubIntegrationControl", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new GitHubIntegrationControl", projects, StringComparison.Ordinal);
+        Assert.Contains("GetOrCreate(registration, ProjectsDestination, () => ProjectMonitorUiBootstrap.CreateEmbeddedProjectsSurface(main))", shell, StringComparison.Ordinal);
+        Assert.Contains("GetOrCreate(registration, GitSettingsDestination, () => GitHubIntegrationUiBootstrap.CreateEmbeddedGitSettingsSurface(main))", shell, StringComparison.Ordinal);
     }
 
     [Fact]
