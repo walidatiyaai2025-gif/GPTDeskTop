@@ -6,7 +6,7 @@ on:
       - ui/premium-real-runtime-v1
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   validate-package:
@@ -19,6 +19,7 @@ jobs:
           fetch-depth: 0
 
       - name: Apply final runtime and UI closure idempotently
+        if: ${{ false }} # Historical bootstrap only; exact checked-in source is now authoritative.
         shell: pwsh
         run: |
           python scripts/apply_premium_ui.py
@@ -86,6 +87,7 @@ jobs:
           Write-Utf8Stable $singleSurfacePath $singleSurface
 
       - name: Persist exact tested source
+        if: ${{ false }} # CI validates immutable source and must never rewrite the candidate branch.
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
