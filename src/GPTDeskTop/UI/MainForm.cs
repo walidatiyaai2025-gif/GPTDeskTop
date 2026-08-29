@@ -69,7 +69,7 @@ public sealed class MainForm : Form
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.Manual;
-        MinimumSize = new Size(1280, 760);
+        MinimumSize = new Size(980, 680);
         KeyPreview = true;
         ApplyInitialWindowLayout();
 
