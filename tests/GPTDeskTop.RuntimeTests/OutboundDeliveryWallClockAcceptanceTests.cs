@@ -7,19 +7,24 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
 {
     [Fact]
     [Trait("Category", "WallClockAcceptance")]
-    public async Task ProductionCoordinatorQueuesThreeSendsWithRealFiveSecondAuthorityGap()
+    public async Task ThreeIndependentCoordinatorsShareOneRealFiveSecondGlobalAuthority()
     {
-        var coordinator = new OutboundDeliveryCoordinator();
+        var coordinators = new[]
+        {
+            new OutboundDeliveryCoordinator(),
+            new OutboundDeliveryCoordinator(),
+            new OutboundDeliveryCoordinator()
+        };
         var physicalSendUtc = new ConcurrentQueue<DateTimeOffset>();
         var receipts = new ConcurrentQueue<OutboundDeliveryReceipt>();
         var activity = new ConcurrentQueue<string>();
-        coordinator.ReceiptReleased += receipts.Enqueue;
+        foreach (var coordinator in coordinators)
+            coordinator.ReceiptReleased += receipts.Enqueue;
 
-        var operations = Enumerable.Range(1, 3)
-            .Select(index => coordinator.SendOnceAsync(
-                index,
-                $"chat-{index}",
-                $"message-{index}",
+        var operations = coordinators.Select((coordinator, index) => coordinator.SendOnceAsync(
+                index + 1,
+                $"chat-{index + 1}",
+                $"message-{index + 1}",
                 () =>
                 {
                     physicalSendUtc.Enqueue(DateTimeOffset.UtcNow);
@@ -41,7 +46,6 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
 
         var released = receipts.OrderBy(receipt => receipt.SendAuthorityUtc).ToArray();
         Assert.Equal(3, released.Length);
-        Assert.Equal(0, released[0].MeasuredGapMs);
         Assert.True(released[1].MeasuredGapMs >= 5000, $"Receipt gap 2 was {released[1].MeasuredGapMs} ms.");
         Assert.True(released[2].MeasuredGapMs >= 5000, $"Receipt gap 3 was {released[2].MeasuredGapMs} ms.");
         Assert.All(released, receipt =>
@@ -67,41 +71,46 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
     }
 
     [Fact]
-    public void ProductionGapRemainsFiveSecondsAndPhysicalComposerHasOneCoordinatorCallSite()
+    public void EveryProductionPhysicalSendPathIsWrappedByTheCanonicalCoordinator()
     {
         var coordinatorSource = ReadSource("src", "GPTDeskTop", "Runtime", "OutboundDeliveryCoordinator.cs");
         Assert.Contains("DefaultInterSendGap = TimeSpan.FromSeconds(5)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("GlobalFifoSendAuthority GlobalAuthority", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("GlobalAuthority.AcquireAsync", coordinatorSource, StringComparison.Ordinal);
 
         var monitorSource = ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs");
-        Assert.Equal(1, CountOccurrences(monitorSource, "SendChatMessageVerifiedAsync("));
-        Assert.Equal(1, CountOccurrences(monitorSource, "_outboundDelivery.SendOnceAsync("));
-        Assert.Contains(
-            "() => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken)",
-            monitorSource,
-            StringComparison.Ordinal);
+        Assert.Contains("_outboundDelivery.SendOnceAsync(", monitorSource, StringComparison.Ordinal);
+        Assert.Contains("() => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken)", monitorSource, StringComparison.Ordinal);
+
+        var recoveryAdapter = ReadSource("src", "GPTDeskTop", "Services", "ICrashRecoveryRuntime.cs");
+        Assert.Contains("_outboundDelivery.SendOnceAsync(", recoveryAdapter, StringComparison.Ordinal);
+        Assert.Contains("() => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken)", recoveryAdapter, StringComparison.Ordinal);
+
+        var recoveryService = ReadSource("src", "GPTDeskTop", "Services", "CrashRecoveryService.cs");
+        Assert.Contains("runtime.SendChatMessageVerifiedAsync(tab, message, cancellationToken)", recoveryService, StringComparison.Ordinal);
+
+        var developmentBridge = ReadSource("src", "GPTDeskTop", "Services", "DevelopmentTaskEngine", "MonitorDevelopmentTaskBridge.cs");
+        Assert.Contains("_outboundDelivery.SendOnceAsync(", developmentBridge, StringComparison.Ordinal);
+        Assert.Contains("() => _chrome.SendChatMessageVerifiedAsync(_tab, message, cancellationToken)", developmentBridge, StringComparison.Ordinal);
 
         var sourceRoot = Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory,
             "..", "..", "..", "..", "..", "src", "GPTDeskTop"));
-        var physicalCallers = Directory.GetFiles(sourceRoot, "*.cs", SearchOption.AllDirectories)
+        var directChromeCallers = Directory.GetFiles(sourceRoot, "*.cs", SearchOption.AllDirectories)
             .Where(path => !path.EndsWith("ChromeDevToolsService.cs", StringComparison.OrdinalIgnoreCase))
-            .Where(path => File.ReadAllText(path).Contains("SendChatMessageVerifiedAsync(", StringComparison.Ordinal))
+            .Where(path => File.ReadAllText(path).Contains("_chrome.SendChatMessageVerifiedAsync(", StringComparison.Ordinal))
             .Select(path => Path.GetRelativePath(sourceRoot, path).Replace('\\', '/'))
             .OrderBy(path => path, StringComparer.Ordinal)
             .ToArray();
-        Assert.Equal(new[] { "Services/ChatGptMonitorService.cs" }, physicalCallers);
-    }
 
-    private static int CountOccurrences(string source, string needle)
-    {
-        var count = 0;
-        var offset = 0;
-        while ((offset = source.IndexOf(needle, offset, StringComparison.Ordinal)) >= 0)
-        {
-            count++;
-            offset += needle.Length;
-        }
-        return count;
+        Assert.Equal(
+            new[]
+            {
+                "Services/ChatGptMonitorService.cs",
+                "Services/DevelopmentTaskEngine/MonitorDevelopmentTaskBridge.cs",
+                "Services/ICrashRecoveryRuntime.cs"
+            }.OrderBy(path => path, StringComparer.Ordinal).ToArray(),
+            directChromeCallers);
     }
 
     private static string ReadSource(params string[] parts)

@@ -1,4 +1,5 @@
 using GPTDeskTop.Models;
+using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.Services;
 
@@ -23,6 +24,7 @@ internal sealed class CrashRecoveryRuntimeAdapter : ICrashRecoveryRuntime
 {
     private readonly ChromeDevToolsService _chrome;
     private readonly ChatGptMonitorService _monitorService;
+    private readonly OutboundDeliveryCoordinator _outboundDelivery = new();
 
     public CrashRecoveryRuntimeAdapter(ChromeDevToolsService chrome, ChatGptMonitorService monitorService)
     {
@@ -41,7 +43,13 @@ internal sealed class CrashRecoveryRuntimeAdapter : ICrashRecoveryRuntime
         => _chrome.CreateTabAsync(url, cancellationToken);
 
     public Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken)
-        => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken);
+        => _outboundDelivery.SendOnceAsync(
+            0,
+            string.IsNullOrWhiteSpace(tab.Url) ? tab.Id : tab.Url,
+            message,
+            () => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken),
+            null,
+            cancellationToken);
 
     public Task StartMonitorAsync(SavedMonitor monitor, ChromeTab tab)
         => _monitorService.StartMonitorAsync(monitor, tab);

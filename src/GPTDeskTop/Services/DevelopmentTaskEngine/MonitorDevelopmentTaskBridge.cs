@@ -1,4 +1,5 @@
 using GPTDeskTop.Models;
+using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
@@ -13,6 +14,7 @@ public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
     private readonly ChromeDevToolsService _chrome;
     private readonly SavedMonitor _monitor;
     private readonly ChromeTab _tab;
+    private readonly OutboundDeliveryCoordinator _outboundDelivery = new();
     private DevelopmentTaskDeliveryCoordinator? _coordinator;
     private bool _disposed;
 
@@ -42,10 +44,18 @@ public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
             CheckpointDeliveredAsync);
     }
 
-    private async Task<bool> SendVerifiedAsync(string message, CancellationToken cancellationToken)
+    private Task<bool> SendVerifiedAsync(string message, CancellationToken cancellationToken)
     {
-        if (_disposed || !_monitorService.IsMonitorRunning(_monitor.Id)) return false;
-        return await _chrome.SendChatMessageVerifiedAsync(_tab, message, cancellationToken).ConfigureAwait(false);
+        if (_disposed || !_monitorService.IsMonitorRunning(_monitor.Id))
+            return Task.FromResult(false);
+
+        return _outboundDelivery.SendOnceAsync(
+            _monitor.Id,
+            string.IsNullOrWhiteSpace(_tab.Url) ? _tab.Id : _tab.Url,
+            message,
+            () => _chrome.SendChatMessageVerifiedAsync(_tab, message, cancellationToken),
+            null,
+            cancellationToken);
     }
 
     private Task CheckpointDeliveredAsync(string message, CancellationToken cancellationToken)
