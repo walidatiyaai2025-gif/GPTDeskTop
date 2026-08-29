@@ -1,0 +1,196 @@
+name: Final Runtime Closure Validation
+
+on:
+  push:
+    branches:
+      - worker/gptdesktop-final-runtime-closure
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-head-runtime-closure:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact pushed source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact source and initialize evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim()
+          $expected = '${{ github.sha }}'
+          Write-Host "EXPECTED_SOURCE_SHA=$expected"
+          Write-Host "ACTUAL_SOURCE_SHA=$actual"
+          git rev-parse HEAD
+          if ($actual -ne $expected) {
+            throw "Exact-head mismatch. Expected $expected, checked out $actual."
+          }
+
+          $runtimeEvidence = Join-Path $PWD 'artifacts/runtime-closure'
+          $testResults = Join-Path $PWD 'artifacts/test-results'
+          New-Item -ItemType Directory -Path $runtimeEvidence -Force | Out-Null
+          New-Item -ItemType Directory -Path $testResults -Force | Out-Null
+
+          $receipt = [ordered]@{
+            sourceSha = $actual
+            branch = '${{ github.ref_name }}'
+            event = '${{ github.event_name }}'
+            utcTimestamp = (Get-Date).ToUniversalTime().ToString('O')
+          }
+          $json = $receipt | ConvertTo-Json -Depth 4
+          Set-Content -Path (Join-Path $testResults 'exact-head-receipt.json') -Value $json -Encoding utf8
+          Set-Content -Path (Join-Path $runtimeEvidence 'source-receipt.json') -Value $json -Encoding utf8
+
+          "GPTDESKTOP_RUNTIME_CLOSURE_ARTIFACT_DIR=$runtimeEvidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GPTDESKTOP_RUNTIME_CLOSURE_SOURCE_SHA=$actual" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet restore GPTDeskTop.sln
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: QA-RL-001 focused durability tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj `
+            --configuration Release --no-restore -p:EnableWindowsTargeting=true `
+            --filter "FullyQualifiedName~GlobalRateLimitDurabilityTests" `
+            --logger "trx;LogFileName=qa-rl-001.trx" `
+            --results-directory artifacts/test-results `
+            --verbosity normal 2>&1 | Tee-Object -FilePath artifacts/test-results/qa-rl-001.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { exit $code }
+
+          $path = 'artifacts/runtime-closure/rate-limit-restart-receipt.json'
+          if (-not (Test-Path $path)) { throw 'QA-RL-001 did not produce rate-limit-restart-receipt.json.' }
+          $receipt = Get-Content $path -Raw | ConvertFrom-Json
+          if ($receipt.sourceSha -ne '${{ github.sha }}') { throw 'Rate-limit receipt source SHA mismatch.' }
+          if (-not $receipt.persistedActive -or -not $receipt.restoredActive) { throw 'Rate-limit persisted/restored active state was not proven.' }
+          if ([int]$receipt.probeCountAfterExpiry -ne 1) { throw "Expected one post-expiry probe, got $($receipt.probeCountAfterExpiry)." }
+          if ($receipt.sendAuthorizedBeforeClear) { throw 'Send was authorized before the breaker clear.' }
+          if (-not $receipt.sendAuthorizedAfterClear -or -not $receipt.passed) { throw 'Rate-limit clear/send resume evidence failed.' }
+
+      - name: QA-SEND-001 real wall-clock acceptance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj `
+            --configuration Release --no-restore -p:EnableWindowsTargeting=true `
+            --filter "FullyQualifiedName~OutboundDeliveryWallClockAcceptanceTests" `
+            --logger "trx;LogFileName=qa-send-001.trx" `
+            --results-directory artifacts/test-results `
+            --verbosity normal 2>&1 | Tee-Object -FilePath artifacts/test-results/qa-send-001.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { exit $code }
+
+          $path = 'artifacts/runtime-closure/send-gap-receipt.json'
+          if (-not (Test-Path $path)) { throw 'QA-SEND-001 did not produce send-gap-receipt.json.' }
+          $receipt = Get-Content $path -Raw | ConvertFrom-Json
+          if ($receipt.sourceSha -ne '${{ github.sha }}') { throw 'Send-gap receipt source SHA mismatch.' }
+          if ([double]$receipt.gap12Milliseconds -lt 5000) { throw "Gap 1 was only $($receipt.gap12Milliseconds) ms." }
+          if ([double]$receipt.gap23Milliseconds -lt 5000) { throw "Gap 2 was only $($receipt.gap23Milliseconds) ms." }
+          if ([double]$receipt.minimumGapMilliseconds -lt 5000) { throw "Minimum real gap was only $($receipt.minimumGapMilliseconds) ms." }
+          if ([int]$receipt.requiredMinimumMilliseconds -ne 5000 -or -not $receipt.passed) { throw 'Wall-clock receipt failed its acceptance contract.' }
+
+      - name: Runtime QA-E2E-001 integrated journey
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj `
+            --configuration Release --no-restore -p:EnableWindowsTargeting=true `
+            --filter "FullyQualifiedName~FinalRuntimeJourneyTests" `
+            --logger "trx;LogFileName=runtime-qa-e2e-001.trx" `
+            --results-directory artifacts/test-results `
+            --verbosity normal 2>&1 | Tee-Object -FilePath artifacts/test-results/runtime-qa-e2e-001.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { exit $code }
+
+          $path = 'artifacts/runtime-closure/final-runtime-journey-receipt.json'
+          if (-not (Test-Path $path)) { throw 'Runtime QA-E2E-001 did not produce final-runtime-journey-receipt.json.' }
+          $receipt = Get-Content $path -Raw | ConvertFrom-Json
+          if ($receipt.sourceSha -ne '${{ github.sha }}') { throw 'Runtime journey receipt source SHA mismatch.' }
+          foreach ($field in @('queueSerialized','rateLimitDetected','rateLimitPersisted','restartRestored','resumedAfterClear','prematureDoneRejected','completedAfterEvidence','passed')) {
+            if (-not $receipt.$field) { throw "Runtime journey evidence field '$field' was false." }
+          }
+          if ([int]$receipt.probeCount -ne 1) { throw "Expected one clear probe, got $($receipt.probeCount)." }
+          if ([int]$receipt.uncertainSendDuplicateCount -ne 0) { throw "Duplicate physical send count was $($receipt.uncertainSendDuplicateCount)." }
+          if ($receipt.taskIdBeforeRollover -ne $receipt.taskIdAfterRollover) { throw 'Task ID continuity failed across rollover.' }
+
+      - name: Full runtime suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj `
+            --configuration Release --no-restore -p:EnableWindowsTargeting=true `
+            --logger "trx;LogFileName=full-runtime.trx" `
+            --results-directory artifacts/test-results `
+            --verbosity normal 2>&1 | Tee-Object -FilePath artifacts/test-results/full-runtime.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { exit $code }
+
+      - name: Release x64 exact-head build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Final evidence integrity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $required = @(
+            'artifacts/runtime-closure/source-receipt.json',
+            'artifacts/runtime-closure/send-gap-receipt.json',
+            'artifacts/runtime-closure/rate-limit-restart-receipt.json',
+            'artifacts/runtime-closure/final-runtime-journey-receipt.json',
+            'artifacts/test-results/exact-head-receipt.json',
+            'artifacts/test-results/qa-rl-001.trx',
+            'artifacts/test-results/qa-send-001.trx',
+            'artifacts/test-results/runtime-qa-e2e-001.trx',
+            'artifacts/test-results/full-runtime.trx'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) { throw "Missing required evidence: $path" }
+          }
+          foreach ($receiptPath in @(
+            'artifacts/runtime-closure/send-gap-receipt.json',
+            'artifacts/runtime-closure/rate-limit-restart-receipt.json',
+            'artifacts/runtime-closure/final-runtime-journey-receipt.json'
+          )) {
+            $receipt = Get-Content $receiptPath -Raw | ConvertFrom-Json
+            if ($receipt.sourceSha -ne '${{ github.sha }}') { throw "Evidence source mismatch in $receiptPath" }
+            if (-not $receipt.passed) { throw "Evidence receipt reports failure: $receiptPath" }
+          }
+
+      - name: Upload runtime closure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-Final-Runtime-Closure-Evidence
+          path: artifacts/runtime-closure
+          if-no-files-found: error
+
+      - name: Upload full test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-Final-Runtime-Test-Results
+          path: artifacts/test-results
+          if-no-files-found: error
