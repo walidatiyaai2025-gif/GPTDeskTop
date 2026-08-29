@@ -707,6 +707,8 @@ public sealed class ChatGptMonitorService
 
         if (_globalRateLimit.IsActive)
             return null;
+        if (_globalRateLimit.IsActive)
+            return null;
         var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
         await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken);
         await ApplyModelRouteAsync(monitor, newTab, recovery: false, contextRotation: true, cancellationToken);

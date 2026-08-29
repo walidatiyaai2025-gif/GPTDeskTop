@@ -366,13 +366,13 @@ public sealed class OutboundDeliveryCoordinator
         }
     }
 
-    public sealed class QueueLease : IDisposable
+    private sealed class QueueLease : IDisposable
     {
         private readonly OutboundDeliveryCoordinator _owner;
         private readonly QueueEntry _entry;
         private int _disposed;
 
-        private QueueLease(OutboundDeliveryCoordinator owner, QueueEntry entry)
+        public QueueLease(OutboundDeliveryCoordinator owner, QueueEntry entry)
         {
             _owner = owner;
             _entry = entry;
@@ -386,3 +386,4 @@ public sealed class OutboundDeliveryCoordinator
         }
     }
 }
+
