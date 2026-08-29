@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.Json;
 using GPTDeskTop.Data;
 using GPTDeskTop.Runtime;
 
@@ -112,11 +114,22 @@ public sealed class GlobalRateLimitDurabilityTests
             var first = new GlobalChatGptRateLimitCircuitBreaker(clock.Read);
             await first.InitializeAsync(database);
             first.ObserveVisibleState(LimitedText);
+
+            var persistedActiveRaw = await database.GetSettingAsync(GlobalChatGptRateLimitCircuitBreaker.IsActiveKey);
+            var persistedBackoffRaw = await database.GetSettingAsync(GlobalChatGptRateLimitCircuitBreaker.BackoffIndexKey);
+            var persistedRetryRaw = await database.GetSettingAsync(GlobalChatGptRateLimitCircuitBreaker.RetryAtUtcKey);
+            Assert.Equal("1", persistedActiveRaw);
+            Assert.True(int.TryParse(persistedBackoffRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var persistedBackoffIndex));
+            Assert.False(string.IsNullOrWhiteSpace(persistedRetryRaw));
+
             clock.UtcNow = first.RetryAtUtc!.Value;
 
             var restored = new GlobalChatGptRateLimitCircuitBreaker(clock.Read);
             await restored.InitializeAsync(database);
             Assert.True(restored.IsProbeEligible);
+            var restoredActiveBeforeProbe = restored.IsActive;
+            var restoredBackoffIndex = restored.BackoffStep - 1;
+            var restoredRetryAtUtc = restored.RetryAtUtc;
 
             var physicalSends = 0;
             var blockedCoordinator = new OutboundDeliveryCoordinator(
@@ -133,7 +146,8 @@ public sealed class GlobalRateLimitDurabilityTests
                     null,
                     cancellation.Token));
             }
-            Assert.Equal(0, physicalSends);
+            var sendAuthorizedBeforeClear = physicalSends > 0;
+            Assert.False(sendAuthorizedBeforeClear);
 
             var clearEvents = 0;
             restored.StatusChanged += status =>
@@ -152,14 +166,30 @@ public sealed class GlobalRateLimitDurabilityTests
                 delayAsync: (_, _) => Task.CompletedTask,
                 interSendGap: TimeSpan.Zero,
                 rateLimit: restored);
-            Assert.True(await allowedCoordinator.SendOnceAsync(
+            var sendAuthorizedAfterClear = await allowedCoordinator.SendOnceAsync(
                 2,
                 "chat-2",
                 "continue-after-safe-probe",
                 () => { Interlocked.Increment(ref physicalSends); return Task.FromResult(true); },
                 null,
-                CancellationToken.None));
+                CancellationToken.None);
+            Assert.True(sendAuthorizedAfterClear);
             Assert.Equal(1, physicalSends);
+
+            WriteReceipt("rate-limit-restart-receipt.json", new
+            {
+                sourceSha = SourceSha(),
+                persistedActive = string.Equals(persistedActiveRaw, "1", StringComparison.Ordinal),
+                persistedBackoffIndex,
+                persistedRetryAtUtc = persistedRetryRaw,
+                restoredActive = restoredActiveBeforeProbe,
+                restoredBackoffIndex,
+                restoredRetryAtUtc,
+                probeCountAfterExpiry = clearEvents,
+                sendAuthorizedBeforeClear,
+                sendAuthorizedAfterClear,
+                passed = true
+            });
         }
         finally
         {
@@ -177,6 +207,21 @@ public sealed class GlobalRateLimitDurabilityTests
         Assert.True(lastShutdownRead > initialize);
         Assert.Contains(".InitializeAsync(database, cancellationToken)", source, StringComparison.Ordinal);
     }
+
+    private static void WriteReceipt(string fileName, object receipt)
+    {
+        var directory = Environment.GetEnvironmentVariable("GPTDESKTOP_RUNTIME_CLOSURE_ARTIFACT_DIR");
+        if (string.IsNullOrWhiteSpace(directory))
+            return;
+
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(
+            Path.Combine(directory, fileName),
+            JsonSerializer.Serialize(receipt, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private static string SourceSha()
+        => Environment.GetEnvironmentVariable("GPTDESKTOP_RUNTIME_CLOSURE_SOURCE_SHA") ?? "LOCAL";
 
     private sealed class MutableClock
     {
