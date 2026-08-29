@@ -32,7 +32,8 @@ public sealed record OutboundDeliveryStatus(
 public sealed record OutboundQueueStatus(
     int QueuedCount,
     long? ActiveMonitorId,
-    DateTimeOffset UpdatedUtc);
+    DateTimeOffset UpdatedUtc,
+    bool IsCooldown = false);
 
 public sealed class OutboundDeliveryCoordinator
 {
@@ -45,6 +46,7 @@ public sealed class OutboundDeliveryCoordinator
     private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
     private readonly TimeSpan _interSendGap;
     private QueueEntry? _active;
+    private bool _isCooldown;
     private long _sequence;
 
     public OutboundDeliveryCoordinator()
@@ -77,6 +79,8 @@ public OutboundDeliveryCoordinator(
         get { lock (_queueSync) return _active?.MonitorId; }
     }
 
+    public bool IsCooldown { get { lock (_queueSync) return _isCooldown; } }
+
     public string DisplayStatus
     {
         get
@@ -86,7 +90,7 @@ public OutboundDeliveryCoordinator(
                 var queued = _queue.Count(entry => !entry.Cancelled);
                 return _active is null
                     ? queued == 0 ? "IDLE" : $"WAITING {queued}"
-                    : queued == 0 ? $"M{_active.MonitorId} SENDING" : $"M{_active.MonitorId} +{queued}";
+                    : _isCooldown ? $"M{_active.MonitorId} COOLDOWN" : queued == 0 ? $"M{_active.MonitorId} SENDING" : $"M{_active.MonitorId} +{queued}";
             }
         }
     }
@@ -167,6 +171,7 @@ public OutboundDeliveryCoordinator(
         {
             if (physicalSendAttempted)
             {
+                lock (_queueSync) { _isCooldown = true; PublishQueueStatusLocked(); }
                 activity?.Invoke($"Global send queue: enforcing {_interSendGap.TotalSeconds:0}-second inter-send cooldown.");
                 RuntimeFlightRecorder.Record("Delivery", "GlobalInterSendCooldown", "started", $"{_interSendGap.TotalSeconds:0}s", monitorId);
                 try
@@ -177,6 +182,7 @@ public OutboundDeliveryCoordinator(
                 {
                     ExceptionLogService.Log(ex, "OutboundDeliveryCoordinator.InterSendCooldown");
                 }
+                finally { lock (_queueSync) { _isCooldown = false; PublishQueueStatusLocked(); } }
             }
         }
     }
@@ -258,6 +264,7 @@ public OutboundDeliveryCoordinator(
             if (!ReferenceEquals(_active, entry))
                 return;
             _active = null;
+            _isCooldown = false;
             entry.CancellationRegistration.Dispose();
             RuntimeFlightRecorder.Record("Delivery", "GlobalQueueReleased", "released", $"sequence={entry.Sequence}", entry.MonitorId);
             PruneCancelledHeadLocked();
@@ -302,7 +309,8 @@ public OutboundDeliveryCoordinator(
         var status = new OutboundQueueStatus(
             _queue.Count(entry => !entry.Cancelled),
             _active?.MonitorId,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            _isCooldown);
         // Dashboard/diagnostic observers are never allowed to alter exactly-once delivery.
         foreach (var subscriber in handlers.GetInvocationList())
         {

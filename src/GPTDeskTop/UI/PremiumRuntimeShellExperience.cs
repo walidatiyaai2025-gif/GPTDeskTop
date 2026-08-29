@@ -12,7 +12,24 @@ namespace GPTDeskTop.UI;
 /// </summary>
 internal static class PremiumRuntimeShellExperience
 {
+    internal const int NavigationRailWidth = 216;
+    internal const int MinimumShellWidth = 1100;
+    internal const int MinimumShellHeight = 680;
     private static readonly ConditionalWeakTable<Form, Registration> Registrations = new();
+
+    internal static Size CalculateLogicalViewport(Size physicalViewport, int deviceDpi)
+    {
+        var scale = Math.Max(96, deviceDpi) / 96d;
+        return new Size(
+            Math.Max(0, (int)Math.Floor(physicalViewport.Width / scale)),
+            Math.Max(0, (int)Math.Floor(physicalViewport.Height / scale)));
+    }
+
+    internal static bool SupportsViewport(Size physicalViewport, int deviceDpi)
+    {
+        var logical = CalculateLogicalViewport(physicalViewport, deviceDpi);
+        return logical.Width >= MinimumShellWidth && logical.Height >= MinimumShellHeight;
+    }
 
     [ModuleInitializer]
     internal static void Initialize()
@@ -40,6 +57,9 @@ internal static class PremiumRuntimeShellExperience
 
     private static bool TryInstallNavigation(MainForm main)
     {
+        if (main.Controls.Find("PremiumShellRoot", searchAllChildren: false).Length != 0)
+            return true;
+
         if (main.MainMenuStrip is null)
             return false;
 
@@ -55,11 +75,16 @@ internal static class PremiumRuntimeShellExperience
         if (projects is null || inspector is null || settings is null || messages is null)
             return false;
 
+        var existingSurface = main.Controls.Cast<Control>()
+            .FirstOrDefault(control => control.Dock == DockStyle.Fill && control is TableLayoutPanel);
+        if (existingSurface is null)
+            return false;
+
         var rail = new Panel
         {
             Name = "PremiumNavigationRail",
             Dock = DockStyle.Left,
-            Width = 216,
+            Width = NavigationRailWidth,
             BackColor = FluentTheme.SurfaceRaised,
             Padding = new Padding(12, 14, 12, 12),
             AccessibleName = "GPTDeskTop primary navigation",
@@ -75,19 +100,46 @@ internal static class PremiumRuntimeShellExperience
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
 
+        layout.Controls.Add(BuildBrand(), 0, 0);
         layout.Controls.Add(BuildNavigation(main, projects, inspector, messages, settings), 0, 1);
         layout.Controls.Add(BuildRuntimeFooter(inspector), 0, 2);
         rail.Controls.Add(layout);
 
-        main.Controls.Add(rail);
-        main.Controls.SetChildIndex(rail, Math.Min(1, main.Controls.Count - 1));
-        main.MinimumSize = new Size(Math.Max(main.MinimumSize.Width, 1100), Math.Max(main.MinimumSize.Height, 680));
-        if (main.Width < 1100 || main.Height < 680)
-            main.Size = new Size(Math.Max(main.Width, 1100), Math.Max(main.Height, 680));
+        var contentHost = new Panel
+        {
+            Name = "PremiumContentHost",
+            Dock = DockStyle.Fill,
+            BackColor = FluentTheme.Background,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            AccessibleName = "Current workspace destination"
+        };
+        main.Controls.Remove(existingSurface);
+        contentHost.Controls.Add(existingSurface);
+
+        var shell = new SplitContainer
+        {
+            Name = "PremiumShellRoot",
+            Dock = DockStyle.Fill,
+            FixedPanel = FixedPanel.Panel1,
+            IsSplitterFixed = true,
+            SplitterWidth = 1,
+            SplitterDistance = NavigationRailWidth,
+            BackColor = FluentTheme.Border,
+            TabStop = false
+        };
+        shell.Panel1MinSize = NavigationRailWidth;
+        shell.Panel1.Controls.Add(rail);
+        shell.Panel2.Controls.Add(contentHost);
+        main.Controls.Add(shell);
+        shell.SendToBack();
+        main.MinimumSize = new Size(Math.Max(main.MinimumSize.Width, MinimumShellWidth), Math.Max(main.MinimumSize.Height, MinimumShellHeight));
+        if (main.Width < MinimumShellWidth || main.Height < MinimumShellHeight)
+            main.Size = new Size(Math.Max(main.Width, MinimumShellWidth), Math.Max(main.Height, MinimumShellHeight));
 
         return true;
     }
@@ -153,15 +205,34 @@ internal static class PremiumRuntimeShellExperience
             Margin = Padding.Empty
         };
 
-        nav.Controls.Add(CreateNavButton("▦   Dashboard", () => main.Focus(), active: true));
-        nav.Controls.Add(CreateNavButton("▱   Projects", () => InvokeCanonicalButton(projects)));
-        nav.Controls.Add(CreateNavButton("◌   Open Conversations", () => FocusConversationGrid(main)));
-        nav.Controls.Add(CreateNavButton("▣   Saved Monitors", () => FocusMonitorGrid(main)));
-        nav.Controls.Add(CreateNavButton("♢   Recovery Inspector", () => InvokeCanonicalButton(inspector)));
-        nav.Controls.Add(CreateNavButton("</>  Development Messages", () => InvokeCanonicalButton(messages)));
-        nav.Controls.Add(CreateNavButton("◉   Git Settings", () => _ = GitHubIntegrationUiBootstrap.ShowGitSettingsAsync(main)));
-        nav.Controls.Add(CreateNavButton("⚙   Settings", () => InvokeCanonicalButton(settings)));
+        AddNavigationDestination(nav, "▦   Dashboard", () => main.Focus(), active: true);
+        AddNavigationDestination(nav, "▱   Projects", () => InvokeCanonicalButton(projects));
+        AddNavigationDestination(nav, "◌   Open Conversations", () => FocusConversationGrid(main));
+        AddNavigationDestination(nav, "▣   Saved Monitors", () => FocusMonitorGrid(main));
+        AddNavigationDestination(nav, "♢   Recovery / Runtime Inspector", () => InvokeCanonicalButton(inspector));
+        AddNavigationDestination(nav, "</>  Development Messages", () => InvokeCanonicalButton(messages));
+        AddNavigationDestination(nav, "◉   GitHub / Git Settings", () => _ = GitHubIntegrationUiBootstrap.ShowGitSettingsAsync(main));
+        AddNavigationDestination(nav, "⚙   Settings", () => InvokeCanonicalButton(settings));
         return nav;
+    }
+
+    private static void AddNavigationDestination(FlowLayoutPanel navigation, string text, Action action, bool active = false)
+    {
+        Button? button = null;
+        button = CreateNavButton(text, () =>
+        {
+            foreach (var peer in navigation.Controls.OfType<Button>())
+                SetNavigationState(peer, ReferenceEquals(peer, button));
+            action();
+        }, active);
+        navigation.Controls.Add(button);
+    }
+
+    private static void SetNavigationState(Button button, bool active)
+    {
+        button.BackColor = active ? FluentTheme.AccentSubtle : FluentTheme.SurfaceRaised;
+        button.ForeColor = active ? FluentTheme.Accent : FluentTheme.MutedStrong;
+        button.AccessibleDescription = active ? "Current destination" : "Open destination";
     }
 
     private static Control BuildRuntimeFooter(Button inspector)

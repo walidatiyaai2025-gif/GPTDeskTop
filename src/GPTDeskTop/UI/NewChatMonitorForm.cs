@@ -7,7 +7,10 @@ public sealed class NewChatMonitorForm : Form
         Dock = DockStyle.Fill,
         Multiline = true,
         AcceptsReturn = true,
-        ScrollBars = ScrollBars.Vertical
+        ScrollBars = ScrollBars.Vertical,
+        WordWrap = true,
+        AutoSize = false,
+        MinimumSize = new Size(0, 72)
     };
 
     private readonly TextBox _monitorReplyBox = new()
@@ -15,7 +18,10 @@ public sealed class NewChatMonitorForm : Form
         Dock = DockStyle.Fill,
         Multiline = true,
         AcceptsReturn = true,
-        ScrollBars = ScrollBars.Vertical
+        ScrollBars = ScrollBars.Vertical,
+        WordWrap = true,
+        AutoSize = false,
+        MinimumSize = new Size(0, 72)
     };
 
     private readonly Button _createButton = new() { Text = "Create Chat + Start Monitor", AutoSize = true };

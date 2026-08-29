@@ -173,4 +173,45 @@ public sealed class GlobalOutboundSafetyRegressionTests
         breaker.ObserveVisibleState(string.Empty);
         Assert.False(breaker.IsActive);
     }
+
+    [Fact]
+    public async Task ConcurrentCooldownObservations_ProduceOneGlobalProbeDecision()
+    {
+        var now = new DateTimeOffset(2026, 8, 29, 0, 0, 0, TimeSpan.Zero);
+        var breaker = new GlobalChatGptRateLimitCircuitBreaker(() => now, (_, _) => Task.CompletedTask);
+        breaker.ObserveVisibleState("Too many requests");
+        now = now.AddMinutes(5);
+        var transitions = 0;
+        breaker.StatusChanged += status => { if (status.EventName == "RateLimitStillActive") Interlocked.Increment(ref transitions); };
+
+        await Task.WhenAll(Enumerable.Range(0, 20).Select(_ => Task.Run(() => breaker.ObserveVisibleState("Too many requests"))));
+
+        Assert.Equal(1, transitions);
+        Assert.Equal(2, breaker.BackoffStep);
+    }
+
+    [Fact]
+    public void RecoveryRotationAndAutoReplyShareCanonicalQueueBackedSendMethod()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
+        Assert.Contains("RotateByMessageCountAsync", source, StringComparison.Ordinal);
+        Assert.Contains("TimeoutRecoveryMessage", source, StringComparison.Ordinal);
+        Assert.Contains("ChatGptErrorContinuationMessage", source, StringComparison.Ordinal);
+        Assert.Contains("var autoSent = await SendWhenReadyAsync", source, StringComparison.Ordinal);
+        var method = source[source.IndexOf("private async Task<bool> SendWhenReadyAsync", StringComparison.Ordinal)..];
+        Assert.Contains("_outboundDelivery.SendOnceAsync", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("SendChatMessageVerifiedAsync(tab, message", source[..source.IndexOf("private async Task<bool> SendWhenReadyAsync", StringComparison.Ordinal)], StringComparison.Ordinal);
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "GPTDeskTop.sln"))) return directory.FullName;
+            directory = directory.Parent;
+        }
+        throw new DirectoryNotFoundException();
+    }
 }

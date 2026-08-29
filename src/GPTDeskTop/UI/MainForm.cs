@@ -149,15 +149,15 @@ public sealed class MainForm : Form
         };
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = FluentTheme.Surface };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70));
 
         var titleBlock = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = FluentTheme.Surface };
         titleBlock.RowStyles.Add(new RowStyle(SizeType.Percent, 58));
         titleBlock.RowStyles.Add(new RowStyle(SizeType.Percent, 42));
         titleBlock.Controls.Add(new Label
         {
-            Text = "GPTDeskTop",
+            Text = "Dashboard",
             Dock = DockStyle.Fill,
             Font = new Font("Segoe UI Variable Display", 18F, FontStyle.Bold),
             ForeColor = FluentTheme.Text,
@@ -351,7 +351,7 @@ public sealed class MainForm : Form
     {
         var panel = new Panel
         {
-            Width = 118,
+            Width = 96,
             Height = 54,
             BackColor = FluentTheme.SurfaceAlt,
             BorderStyle = BorderStyle.FixedSingle,
@@ -702,11 +702,22 @@ public sealed class MainForm : Form
 
     private void UpdateGlobalSafetyMetrics()
     {
-        _sendQueueMetricValue.Text = _monitor.GlobalSendQueueStatus;
-        _rateLimitMetricValue.Text = _monitor.GlobalRateLimitStatus;
-        _rateLimitMetricValue.ForeColor = _monitor.IsPausedByGlobalRateLimit ? FluentTheme.Danger : FluentTheme.Success;
+        var snapshot = _monitor.GetRuntimeSnapshot();
+        _sendQueueMetricValue.Text = $"{snapshot.GlobalSendState} · Q{snapshot.QueuedCount}";
+        _sendQueueMetricValue.AccessibleDescription = snapshot.CurrentMonitorId is long monitorId
+            ? $"Current monitor {snapshot.CurrentMonitorName ?? $"#{monitorId}"}; task {snapshot.CurrentTaskState?.ToString() ?? "none"}."
+            : $"No active monitor; task {snapshot.CurrentTaskState?.ToString() ?? "none"}.";
+        _toolTip.SetToolTip(_sendQueueMetricValue, _sendQueueMetricValue.AccessibleDescription);
+        _rateLimitMetricValue.Text = snapshot.RateLimitActive
+            ? $"WAIT {Math.Ceiling(snapshot.RateLimitRemaining.TotalMinutes):0}m"
+            : snapshot.ChatGptState.ToString().ToUpperInvariant();
+        _rateLimitMetricValue.AccessibleDescription = snapshot.NextProbeUtc is DateTimeOffset nextProbe
+            ? $"Next probe at {nextProbe.ToLocalTime():t}."
+            : "No rate-limit probe scheduled.";
+        _toolTip.SetToolTip(_rateLimitMetricValue, _rateLimitMetricValue.AccessibleDescription);
+        _rateLimitMetricValue.ForeColor = snapshot.RateLimitActive ? FluentTheme.Danger : FluentTheme.Success;
         var baseTitle = $"GPTDeskTop v{GetAppVersion()}";
-        Text = _monitor.IsPausedByGlobalRateLimit
+        Text = snapshot.RateLimitActive
             ? $"{baseTitle} — CHATGPT RATE LIMITED — ALL AUTOMATED SENDS PAUSED"
             : baseTitle;
     }

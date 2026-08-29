@@ -21,7 +21,7 @@ internal static class MultilineEditorExperience
         {
             if (form.IsDisposed || form.Disposing)
                 continue;
-            if (form is not MonitorSettingsForm && form is not SettingsForm)
+            if (form is not MonitorSettingsForm && form is not SettingsForm && form is not NewChatMonitorForm)
                 continue;
             if (Applied.TryGetValue(form, out _))
                 continue;
