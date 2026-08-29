@@ -5,6 +5,16 @@
 > **TARGET BRANCH:** `ui/premium-real-runtime-v1`  
 > **RULE:** No worker, developer, agent, or reviewer may invent, substitute, simplify, or redesign the visual system without explicit owner approval.
 
+## 0. Approved visual reference — mandatory
+
+The repository-pinned visual source of truth is:
+
+`docs/ui-reference/APPROVED_PREMIUM_DASHBOARD_REFERENCE.jpg`
+
+![Approved GPTDeskTop Premium Dashboard](ui-reference/APPROVED_PREMIUM_DASHBOARD_REFERENCE.jpg)
+
+This image is not inspiration. It is the **approved implementation target** for the premium shell/dashboard language. Workers must compare their implementation against it. Where a screen is not literally shown in the reference, it must extend the same layout system, density, palette, typography, card treatment, navigation, and control language without inventing a different product style.
+
 ## 1. Non-negotiable design rule
 
 The approved premium design is the visual source of truth. Implementation must reproduce its information architecture, visual hierarchy, density, spacing, card structure, navigation pattern, control placement, status language, and semantic colors while wiring only real GPTDeskTop capabilities.
