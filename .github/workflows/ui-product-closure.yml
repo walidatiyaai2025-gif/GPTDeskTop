@@ -1,0 +1,114 @@
+name: GPTDeskTop UI Product Closure
+
+on:
+  push:
+    branches:
+      - worker/gptdesktop-final-ui-product-closure
+  pull_request:
+    branches:
+      - ui/premium-real-runtime-v1
+
+permissions:
+  contents: read
+
+jobs:
+  ui-product-acceptance:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        shell: pwsh
+        run: |
+          dotnet restore GPTDeskTop.sln
+          dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+
+      - name: UI and runtime regression suite
+        id: tests
+        continue-on-error: true
+        shell: pwsh
+        env:
+          UI_EVIDENCE_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          New-Item -ItemType Directory -Path artifacts/test-results -Force | Out-Null
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj `
+            --configuration Release `
+            --no-restore `
+            -p:EnableWindowsTargeting=true `
+            --logger "trx;LogFileName=ui-product-closure.trx" `
+            --results-directory artifacts/test-results `
+            --verbosity normal 2>&1 | Tee-Object -FilePath artifacts/test-results/ui-product-closure.log
+          exit $LASTEXITCODE
+
+      - name: Release x64 build
+        id: build
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64 2>&1 | Tee-Object -FilePath artifacts/test-results/release-x64-build.log
+          exit $LASTEXITCODE
+
+      - name: Produce machine-readable CI summary
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts/ui-evidence -Force | Out-Null
+          $trxPath = 'artifacts/test-results/ui-product-closure.trx'
+          $total = 0
+          $passed = 0
+          $failed = 0
+          $skipped = 0
+          if (Test-Path $trxPath) {
+            [xml]$trx = Get-Content $trxPath -Raw
+            $counters = $trx.TestRun.ResultSummary.Counters
+            if ($null -ne $counters) {
+              $total = [int]$counters.total
+              $passed = [int]$counters.passed
+              $failed = [int]$counters.failed
+              if ($null -ne $counters.notExecuted) { $skipped = [int]$counters.notExecuted }
+            }
+          }
+          $summary = [ordered]@{
+            schema = 'gptdesktop.ui-ci-summary.v1'
+            taskId = 'GPTDESKTOP-T0002-UI-PRODUCT-CLOSURE'
+            sourceSha = '${{ github.sha }}'
+            ref = '${{ github.ref }}'
+            tests = [ordered]@{ total = $total; passed = $passed; failed = $failed; skipped = $skipped; outcome = '${{ steps.tests.outcome }}' }
+            releaseX64 = [ordered]@{ outcome = '${{ steps.build.outcome }}' }
+            uiEvidenceManifest = 'artifacts/ui-evidence/ui-evidence-manifest.json'
+          }
+          $summary | ConvertTo-Json -Depth 5 | Set-Content 'artifacts/ui-evidence/ci-summary.json' -Encoding utf8
+          Get-Content 'artifacts/ui-evidence/ci-summary.json' | Write-Host
+
+      - name: Upload UI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-UI-Product-Closure-Evidence
+          path: |
+            artifacts/ui-evidence
+            artifacts/test-results
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce acceptance result
+        if: always()
+        shell: pwsh
+        run: |
+          if ('${{ steps.tests.outcome }}' -ne 'success') { throw 'UI/runtime regression suite failed.' }
+          if ('${{ steps.build.outcome }}' -ne 'success') { throw 'Release x64 build failed.' }
+          if (-not (Test-Path 'artifacts/ui-evidence/ui-evidence-manifest.json')) { throw 'Rendered UI evidence manifest was not produced.' }
+          $manifest = Get-Content 'artifacts/ui-evidence/ui-evidence-manifest.json' -Raw | ConvertFrom-Json
+          foreach ($gate in @('QA-UI-001','1366x768','1600x900','1920x1080','125%-DPI','single-surface','multiline-interaction','Projects','Development Messages','GitHub/Git','design-parity')) {
+            if ($manifest.checks.$gate.status -ne 'PASS') { throw "UI evidence gate '$gate' is not PASS." }
+          }
