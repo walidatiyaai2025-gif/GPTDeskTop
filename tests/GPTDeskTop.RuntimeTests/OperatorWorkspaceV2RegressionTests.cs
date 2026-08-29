@@ -12,20 +12,23 @@ public sealed class OperatorWorkspaceV2RegressionTests
     }
 
     [Fact]
-    public void MainWorkspacePrioritizesOpenTabsAndMonitorsWhileDiagnosticsAreOnDemand()
+    public void MainWorkspacePrioritizesOpenTabsAndKeepsDiagnosticsInsideMainFormOnDemand()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "OperatorWorkspaceV2Experience.cs");
 
         Assert.Contains("root.RowStyles[2].Height = 100F", source, StringComparison.Ordinal);
         Assert.Contains("root.RowStyles[3].Height = 0F", source, StringComparison.Ordinal);
-        Assert.Contains("Live Monitor & History", source, StringComparison.Ordinal);
+        Assert.Contains("diagnostics.Visible = false", source, StringComparison.Ordinal);
+        Assert.Contains("_diagnostics.Visible = true", source, StringComparison.Ordinal);
         Assert.Contains("development.Visible = false", source, StringComparison.Ordinal);
         Assert.Contains("Development controls and sent-message catalog are available from ☰ Commands", source, StringComparison.Ordinal);
         Assert.Contains("BuildDevelopmentFooterText", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new Form", source, StringComparison.Ordinal);
+        Assert.DoesNotContain(".Hide();", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void WorkspaceActivationUsesCanonicalMainFormHistoryAndHasNoEagerHistoryPrerequisite()
+    public void WorkspaceActivationUsesCanonicalMainFormHistoryWithoutCreatingTabOrWindowCopies()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "OperatorWorkspaceV2Experience.cs");
         var main = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
@@ -33,9 +36,9 @@ public sealed class OperatorWorkspaceV2RegressionTests
 
         Assert.DoesNotContain("OfType<HistoryWorkspaceControl>()", source, StringComparison.Ordinal);
         Assert.DoesNotContain("PrepareHistoryForOnDemand", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("new TabPage(\"Stored History\")", source, StringComparison.Ordinal);
-        Assert.Contains("new TabPage(\"Live Monitor & History\")", source, StringComparison.Ordinal);
-        Assert.Contains("livePage.Controls.Add(diagnostics)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new TabPage", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new Form", source, StringComparison.Ordinal);
+        Assert.Contains("root.GetRow(control) == 3", source, StringComparison.Ordinal);
         Assert.Contains("BuildDiagnostics()", main, StringComparison.Ordinal);
         Assert.Contains("CreateSection(\"Live Activity\"", main, StringComparison.Ordinal);
         Assert.Contains("CreateSection(\"Stored History\"", main, StringComparison.Ordinal);
@@ -49,51 +52,43 @@ public sealed class OperatorWorkspaceV2RegressionTests
         var source = ReadSource("src", "GPTDeskTop", "UI", "OperatorWorkspaceV2Experience.cs");
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
 
-        var prerequisiteStart = source.IndexOf("var development = Descendants(form)", StringComparison.Ordinal);
-        var diagnosticsStart = source.IndexOf("// MainForm already owns the canonical diagnostics split", prerequisiteStart, StringComparison.Ordinal);
-        Assert.True(prerequisiteStart >= 0 && diagnosticsStart > prerequisiteStart);
-        var prerequisites = source[prerequisiteStart..diagnosticsStart];
-
-        Assert.Contains("DevelopmentTaskDashboardControl", prerequisites, StringComparison.Ordinal);
-        Assert.Contains("RuntimeHealthControl", prerequisites, StringComparison.Ordinal);
-        Assert.DoesNotContain("SupportDiagnosticsControl", prerequisites, StringComparison.Ordinal);
-        Assert.DoesNotContain("HistoryWorkspaceControl", prerequisites, StringComparison.Ordinal);
+        Assert.Contains("DevelopmentTaskDashboardControl", source, StringComparison.Ordinal);
+        Assert.Contains("RuntimeHealthControl", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SupportDiagnosticsControl", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("HistoryWorkspaceControl", source, StringComparison.Ordinal);
         Assert.Contains("SupportDiagnosticsControl? supportDiagnostics = null;", program, StringComparison.Ordinal);
         Assert.Contains("void EnsureSupportDiagnostics()", program, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void RuntimeHealthRemainsOnDemandWithoutMutatingPersistedExpandedState()
+    public void RuntimeHealthRemainsOwnedByMainFormAndIsNeverReparentedIntoAnotherForm()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "OperatorWorkspaceV2Experience.cs");
-        var prepareStart = source.IndexOf("private static void PrepareRuntimeHealthForOnDemand", StringComparison.Ordinal);
-        var windowStart = source.IndexOf("private static LiveWindowParts BuildLiveMonitorWindow", prepareStart, StringComparison.Ordinal);
-        Assert.True(prepareStart >= 0 && windowStart > prepareStart);
-        var prepare = source[prepareStart..windowStart];
 
-        Assert.Contains("ExpandableWorkspaceLayout.UseHostManagedHeight(runtimeHealth)", prepare, StringComparison.Ordinal);
-        Assert.Contains("runtimeHealth.Parent?.Controls.Remove(runtimeHealth)", prepare, StringComparison.Ordinal);
-        Assert.Contains("runtimeHealth.Dock = DockStyle.Top", prepare, StringComparison.Ordinal);
-        Assert.DoesNotContain("runtimeHealth.IsExpanded =", prepare, StringComparison.Ordinal);
+        Assert.Contains("var runtimeHealth = Descendants(form).OfType<RuntimeHealthControl>().FirstOrDefault()", source, StringComparison.Ordinal);
+        Assert.Contains("Runtime Health and the lazily-created Support Diagnostics remain direct children", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("runtimeHealth.Parent?.Controls.Remove(runtimeHealth)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("PrepareRuntimeHealthForOnDemand", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildLiveMonitorWindow", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("runtimeHealth.IsExpanded =", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void SupportDiagnosticsAttachesOnlyAfterProgramsCanonicalLazyFactoryCreatesIt()
+    public void SupportDiagnosticsRemainsOwnedByProgramsCanonicalLazyFactory()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "OperatorWorkspaceV2Experience.cs");
+        var program = ReadSource("src", "GPTDeskTop", "Program.cs");
 
-        Assert.Contains("BuildSupportPlaceholder(runtimeHealth)", source, StringComparison.Ordinal);
-        Assert.Contains("Load Support Diagnostics", source, StringComparison.Ordinal);
-        Assert.Contains("runtimeHealth.IsExpanded = true", source, StringComparison.Ordinal);
-        Assert.Contains("_owner.ControlAdded += OnOwnerControlAdded", source, StringComparison.Ordinal);
-        Assert.Contains("if (e.Control is SupportDiagnosticsControl)", source, StringComparison.Ordinal);
-        Assert.Contains("_owner.Controls.OfType<SupportDiagnosticsControl>().FirstOrDefault()", source, StringComparison.Ordinal);
-        Assert.Contains("Never create", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildSupportPlaceholder", source, StringComparison.Ordinal);
         Assert.DoesNotContain("new SupportDiagnosticsControl", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_owner.ControlAdded", source, StringComparison.Ordinal);
+        Assert.Contains("SupportDiagnosticsControl? supportDiagnostics = null;", program, StringComparison.Ordinal);
+        Assert.Contains("void EnsureSupportDiagnostics()", program, StringComparison.Ordinal);
+        Assert.Contains("supportDiagnostics ??= new SupportDiagnosticsControl", program, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void CommandsMenuOpensLiveMonitorWindowAndKeepsMessagesOnDemand()
+    public void CommandsMenuOpensLiveMonitorSurfaceInsideMainFormAndKeepsMessagesOnDemand()
     {
         var menu = ReadSource("src", "GPTDeskTop", "UI", "CompactTopCommandMenuExperience.cs");
 
