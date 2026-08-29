@@ -80,7 +80,9 @@ theme.write_text(text, encoding='utf-8', newline='\n')
 
 main = root / 'src/GPTDeskTop/UI/MainForm.cs'
 main_text = main.read_text(encoding='utf-8')
-main_text = main_text.replace('MinimumSize = new Size(980, 680);', 'MinimumSize = new Size(1280, 760);')
+# Keep the established DPI/working-area contract. The premium shell must not raise the
+# application's minimum viewport above the regression-tested operator baseline.
+main_text = main_text.replace('MinimumSize = new Size(1280, 760);', 'MinimumSize = new Size(980, 680);')
 main_text = main_text.replace('Padding = new Padding(16),\n            BackColor = FluentTheme.Background',
                               'Padding = new Padding(10),\n            BackColor = FluentTheme.Background', 1)
 main_text = main_text.replace('root.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));',
