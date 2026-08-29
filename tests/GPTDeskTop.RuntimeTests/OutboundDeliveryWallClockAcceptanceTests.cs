@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.RuntimeTests;
@@ -68,6 +69,30 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
             Assert.Contains("\"NextSendUtc\"", line, StringComparison.Ordinal);
             Assert.Contains("\"MeasuredGapMs\"", line, StringComparison.Ordinal);
         });
+
+        var authorityGap12 = (released[1].SendAuthorityUtc - released[0].SendAuthorityUtc).TotalMilliseconds;
+        var authorityGap23 = (released[2].SendAuthorityUtc - released[1].SendAuthorityUtc).TotalMilliseconds;
+        var minimumAuthorityGap = Math.Min(authorityGap12, authorityGap23);
+        Assert.True(minimumAuthorityGap >= 5000, $"Minimum production send-authority gap was {minimumAuthorityGap:0.###} ms.");
+
+        WriteReceipt("send-gap-receipt.json", new
+        {
+            sourceSha = SourceSha(),
+            operation1Id = released[0].OperationId,
+            operation1MonitorId = released[0].MonitorId,
+            operation1SendAuthorityUtc = released[0].SendAuthorityUtc,
+            operation2Id = released[1].OperationId,
+            operation2MonitorId = released[1].MonitorId,
+            operation2SendAuthorityUtc = released[1].SendAuthorityUtc,
+            operation3Id = released[2].OperationId,
+            operation3MonitorId = released[2].MonitorId,
+            operation3SendAuthorityUtc = released[2].SendAuthorityUtc,
+            gap12Milliseconds = authorityGap12,
+            gap23Milliseconds = authorityGap23,
+            minimumGapMilliseconds = minimumAuthorityGap,
+            requiredMinimumMilliseconds = 5000,
+            passed = true
+        });
     }
 
     [Fact]
@@ -117,6 +142,21 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
             }.OrderBy(path => path, StringComparer.Ordinal).ToArray(),
             directChromeCallers);
     }
+
+    private static void WriteReceipt(string fileName, object receipt)
+    {
+        var directory = Environment.GetEnvironmentVariable("GPTDESKTOP_RUNTIME_CLOSURE_ARTIFACT_DIR");
+        if (string.IsNullOrWhiteSpace(directory))
+            return;
+
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(
+            Path.Combine(directory, fileName),
+            JsonSerializer.Serialize(receipt, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private static string SourceSha()
+        => Environment.GetEnvironmentVariable("GPTDESKTOP_RUNTIME_CLOSURE_SOURCE_SHA") ?? "LOCAL";
 
     private static string ReadSource(params string[] parts)
     {
