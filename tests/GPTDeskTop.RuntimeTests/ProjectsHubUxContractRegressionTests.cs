@@ -3,20 +3,26 @@ namespace GPTDeskTop.RuntimeTests;
 public sealed class ProjectsHubUxContractRegressionTests
 {
     [Fact]
-    public void OneProjectsHubReplacesUserFacingLegacyMonitorCrudNavigation()
+    public void OneEmbeddedProjectsHubReplacesUserFacingLegacyMonitorCrudNavigation()
     {
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
         var hub = ReadSource("src", "GPTDeskTop", "UI", "ProjectMonitorUiBootstrap.cs");
+        var shell = ReadSource("src", "GPTDeskTop", "UI", "PremiumRuntimeShellExperience.cs");
         var dashboard = ReadSource("src", "GPTDeskTop", "UI", "ProjectMonitorDashboardControl.cs");
         var obsoleteConsolidation = RepositoryPath("src", "GPTDeskTop", "UI", "ProjectsHubNavigationConsolidation.cs");
+        var obsoleteForm = RepositoryPath("src", "GPTDeskTop", "UI", "ProjectMonitorDashboardForm.cs");
 
         Assert.False(File.Exists(obsoleteConsolidation));
+        Assert.False(File.Exists(obsoleteForm));
         Assert.Contains("ProjectMonitorUiBootstrap.Install(mainForm);", program, StringComparison.Ordinal);
         Assert.Contains("internal static void Install(MainForm main)", hub, StringComparison.Ordinal);
         Assert.Contains("Text = \"Projects\"", hub, StringComparison.Ordinal);
+        Assert.Contains("CreateEmbeddedProjectsSurface", hub, StringComparison.Ordinal);
+        Assert.Contains("PremiumRuntimeShellExperience.NavigateTo(main, \"Projects\")", hub, StringComparison.Ordinal);
+        Assert.Contains("ProjectMonitorUiBootstrap.CreateEmbeddedProjectsSurface(main)", shell, StringComparison.Ordinal);
         Assert.DoesNotContain("[ModuleInitializer]", hub, StringComparison.Ordinal);
         Assert.DoesNotContain("Application.Idle +=", hub, StringComparison.Ordinal);
-        Assert.Contains("private static ProjectMonitorDashboardForm? _dashboardForm", hub, StringComparison.Ordinal);
+        Assert.DoesNotContain("ProjectMonitorDashboardForm", hub, StringComparison.Ordinal);
         Assert.Contains("Text = \"New Project Monitor\"", dashboard, StringComparison.Ordinal);
     }
 
@@ -25,17 +31,14 @@ public sealed class ProjectsHubUxContractRegressionTests
     {
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
         var hub = ReadSource("src", "GPTDeskTop", "UI", "ProjectMonitorUiBootstrap.cs");
+        var shell = ReadSource("src", "GPTDeskTop", "UI", "PremiumRuntimeShellExperience.cs");
 
-        Assert.DoesNotContain("new ProjectMonitorDashboardForm", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new ProjectMonitorDashboardControl", program, StringComparison.Ordinal);
         Assert.DoesNotContain("new GitHubIntegrationControl", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new GitHubIntegrationControl", hub, StringComparison.Ordinal);
 
-        var showProjectsIndex = hub.IndexOf("private static void ShowProjectsHub", StringComparison.Ordinal);
-        var dashboardCtorIndex = hub.IndexOf("new ProjectMonitorDashboardForm", StringComparison.Ordinal);
-        Assert.True(showProjectsIndex >= 0 && dashboardCtorIndex > showProjectsIndex);
-
-        var showGitIndex = hub.IndexOf("private static void ShowGitSettings", StringComparison.Ordinal);
-        var githubCtorIndex = hub.IndexOf("new GitHubIntegrationControl", StringComparison.Ordinal);
-        Assert.True(showGitIndex >= 0 && githubCtorIndex > showGitIndex);
+        Assert.Contains("GetOrCreate(registration, ProjectsDestination, () => ProjectMonitorUiBootstrap.CreateEmbeddedProjectsSurface(main))", shell, StringComparison.Ordinal);
+        Assert.Contains("GetOrCreate(registration, GitSettingsDestination, () => GitHubIntegrationUiBootstrap.CreateEmbeddedGitSettingsSurface(main))", shell, StringComparison.Ordinal);
     }
 
     [Fact]
