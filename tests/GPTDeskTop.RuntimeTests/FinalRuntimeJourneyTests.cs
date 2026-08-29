@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using GPTDeskTop.Data;
 using GPTDeskTop.Runtime;
 using GPTDeskTop.Services;
@@ -74,13 +75,19 @@ public sealed class FinalRuntimeJourneyTests
 
             Assert.True(await sendA);
             Assert.True(await sendB);
-            Assert.True(breaker.IsActive);
-            Assert.Equal("1", await database.GetSettingAsync(GlobalChatGptRateLimitCircuitBreaker.IsActiveKey));
-            Assert.True((physicalTimes[102] - physicalTimes[101]).TotalMilliseconds >= 5000);
+            var rateLimitDetected = breaker.IsActive;
+            Assert.True(rateLimitDetected);
+            var rateLimitPersisted = string.Equals(
+                "1",
+                await database.GetSettingAsync(GlobalChatGptRateLimitCircuitBreaker.IsActiveKey),
+                StringComparison.Ordinal);
+            Assert.True(rateLimitPersisted);
+            var minimumGapMilliseconds = (physicalTimes[102] - physicalTimes[101]).TotalMilliseconds;
+            Assert.True(minimumGapMilliseconds >= 5000);
 
             await Task.Delay(150);
-            Assert.False(sendCBeforeRestart.IsCompleted);
-            Assert.Equal(0, cPhysicalSends);
+            var queueSerialized = !sendCBeforeRestart.IsCompleted && cPhysicalSends == 0;
+            Assert.True(queueSerialized);
 
             autonomousTask.Transition(AutonomousTaskPhase.WaitingForChatGpt, "global-rate-limit-pause");
             cCancellation.Cancel();
@@ -95,8 +102,8 @@ public sealed class FinalRuntimeJourneyTests
 
             var restoredBreaker = new GlobalChatGptRateLimitCircuitBreaker(clock.Read);
             await restoredBreaker.InitializeAsync(database);
-            Assert.True(restoredBreaker.IsActive);
-            Assert.Equal(breaker.RetryAtUtc, restoredBreaker.RetryAtUtc);
+            var restartRestored = restoredBreaker.IsActive && restoredBreaker.RetryAtUtc == breaker.RetryAtUtc;
+            Assert.True(restartRestored);
 
             clock.UtcNow = restoredBreaker.RetryAtUtc!.Value;
             var probeClears = 0;
@@ -113,7 +120,7 @@ public sealed class FinalRuntimeJourneyTests
                 delayAsync: (_, _) => Task.CompletedTask,
                 interSendGap: TimeSpan.Zero,
                 rateLimit: restoredBreaker);
-            Assert.True(await resumedCoordinator.SendOnceAsync(
+            var resumedAfterClear = await resumedCoordinator.SendOnceAsync(
                 103,
                 "chat-c",
                 "C",
@@ -123,7 +130,8 @@ public sealed class FinalRuntimeJourneyTests
                     return Task.FromResult(true);
                 },
                 null,
-                CancellationToken.None));
+                CancellationToken.None);
+            Assert.True(resumedAfterClear);
             Assert.Equal(1, cPhysicalSends);
 
             var timeoutPhysicalSends = 0;
@@ -167,27 +175,63 @@ public sealed class FinalRuntimeJourneyTests
 
             var taskIdBeforeRollover = restoredTask.Snapshot.TaskId;
             restoredTask.Rollover("chat-rollover-2");
-            Assert.Equal(taskIdBeforeRollover, restoredTask.Snapshot.TaskId);
+            var taskIdAfterRollover = restoredTask.Snapshot.TaskId;
+            Assert.Equal(taskIdBeforeRollover, taskIdAfterRollover);
             Assert.Equal("chat-rollover-2", restoredTask.Snapshot.ConversationKey);
             Assert.Equal(AutonomousTaskPhase.ConversationRollover, restoredTask.Snapshot.Phase);
 
-            Assert.False(restoredTask.TryComplete(
+            var prematureDoneRejected = !restoredTask.TryComplete(
                 true,
-                new(true, true, false, false, true, false, true)));
+                new(true, true, false, false, true, false, true));
+            Assert.True(prematureDoneRejected);
             Assert.Equal(AutonomousTaskPhase.VerifyingCompletion, restoredTask.Snapshot.Phase);
-            Assert.True(restoredTask.TryComplete(
+            var completedAfterEvidence = restoredTask.TryComplete(
                 false,
-                new(true, true, true, true, true, true, true)));
+                new(true, true, true, true, true, true, true));
+            Assert.True(completedAfterEvidence);
             Assert.Equal(AutonomousTaskPhase.Completed, restoredTask.Snapshot.Phase);
 
             await CrashRecoveryStateService.MarkCleanShutdownAsync(database);
             Assert.Equal("1", await database.GetSettingAsync("LastShutdownClean"));
+
+            WriteReceipt("final-runtime-journey-receipt.json", new
+            {
+                sourceSha = SourceSha(),
+                queueSerialized,
+                minimumGapMilliseconds,
+                rateLimitDetected,
+                rateLimitPersisted,
+                restartRestored,
+                probeCount = probeClears,
+                resumedAfterClear,
+                uncertainSendDuplicateCount = duplicatePhysicalSends,
+                taskIdBeforeRollover,
+                taskIdAfterRollover,
+                prematureDoneRejected,
+                completedAfterEvidence,
+                passed = true
+            });
         }
         finally
         {
             DeleteTempRoot(root);
         }
     }
+
+    private static void WriteReceipt(string fileName, object receipt)
+    {
+        var directory = Environment.GetEnvironmentVariable("GPTDESKTOP_RUNTIME_CLOSURE_ARTIFACT_DIR");
+        if (string.IsNullOrWhiteSpace(directory))
+            return;
+
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(
+            Path.Combine(directory, fileName),
+            JsonSerializer.Serialize(receipt, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private static string SourceSha()
+        => Environment.GetEnvironmentVariable("GPTDESKTOP_RUNTIME_CLOSURE_SOURCE_SHA") ?? "LOCAL";
 
     private sealed class MutableClock
     {
