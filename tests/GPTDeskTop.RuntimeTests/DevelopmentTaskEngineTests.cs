@@ -47,7 +47,7 @@ public sealed class DevelopmentTaskEngineTests
             Assert.Equal(coolingStartedAt, resumed.State.CoolingStartedAt);
             Assert.Equal(1, resumed.State.CurrentMessageIndex);
             Assert.Equal(1, resumed.State.CompletedMessages);
-            Assert.Equal(7, resumed.State.Revision);
+            Assert.Equal(8, resumed.State.Revision);
         }
         finally
         {
