@@ -1,5 +1,6 @@
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
+using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
@@ -14,6 +15,7 @@ public sealed class DevelopmentTaskMonitorTargetFactory
     private readonly LocalDatabase _database;
     private readonly SavedMonitorTabResolver _resolver;
     private readonly ChromeDevToolsService _chrome;
+    private readonly OutboundDeliveryCoordinator _outboundDelivery = new();
 
     public DevelopmentTaskMonitorTargetFactory(
         LocalDatabase database,
@@ -66,8 +68,6 @@ public sealed class DevelopmentTaskMonitorTargetFactory
             var monitorId = monitor.Id.ToString();
             var tab = resolution.Tab;
 
-            // Persist a recreated Chrome target only after exact conversation-URL
-            // rebinding succeeds. Never use a title as an identity fallback.
             if (string.Equals(resolution.MatchType, "PersistedConversationUrl", StringComparison.Ordinal)
                 && !string.Equals(monitor.TabId, tab.Id, StringComparison.Ordinal))
             {
@@ -84,7 +84,7 @@ public sealed class DevelopmentTaskMonitorTargetFactory
             recipients.Add(new DevelopmentTaskMonitorRecipient(
                 monitorId,
                 tab.Id,
-                message => SendVerifiedAsync(tab, message)));
+                message => SendVerifiedAsync(monitor.Id, tab, message)));
 
             await _database.AddLogAsync(
                 "System", resolution.MatchType, tab.Url,
@@ -95,12 +95,19 @@ public sealed class DevelopmentTaskMonitorTargetFactory
         return recipients;
     }
 
-    private async Task<bool> SendVerifiedAsync(ChromeTab tab, string message)
+    private async Task<bool> SendVerifiedAsync(long monitorId, ChromeTab tab, string message)
     {
         var state = await _chrome.GetChatStateAsync(tab).ConfigureAwait(false);
         if (state.IsGenerating || !string.IsNullOrWhiteSpace(state.ErrorText))
             return false;
-        return await _chrome.SendChatMessageVerifiedAsync(tab, message).ConfigureAwait(false);
+
+        return await _outboundDelivery.SendOnceAsync(
+            monitorId,
+            string.IsNullOrWhiteSpace(tab.Url) ? tab.Id : tab.Url,
+            message,
+            () => _chrome.SendChatMessageVerifiedAsync(tab, message),
+            null,
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     private static bool IsOptedIn(string? value)
