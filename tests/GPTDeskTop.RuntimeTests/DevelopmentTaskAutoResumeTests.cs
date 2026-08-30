@@ -28,8 +28,9 @@ public sealed class DevelopmentTaskAutoResumeTests
                     "monitor-1",
                     "tab-1",
                     DevelopmentTaskDeliveryCoordinator.Fingerprint(deliveredMessage));
-                await first.AdvanceAsync();
-                Assert.Equal(1, first.State.CurrentMessageIndex);
+                await first.MarkAwaitingAssistantResponseAsync(["monitor-1"]);
+                Assert.True(first.State.AwaitingAssistantResponse);
+                Assert.Equal(0, first.State.CurrentMessageIndex);
                 Assert.Equal(DevelopmentTaskEngineStatus.Working, first.State.Status);
             }
 
@@ -45,8 +46,13 @@ public sealed class DevelopmentTaskAutoResumeTests
                 await Task.Delay(500);
 
                 Assert.Equal(DevelopmentTaskEngineStatus.Working, restarted.State.Status);
-                Assert.Equal(1, restarted.State.CurrentMessageIndex);
+                Assert.True(restarted.State.AwaitingAssistantResponse);
+                Assert.Equal(0, restarted.State.CurrentMessageIndex);
                 Assert.Equal(0, Volatile.Read(ref restartedEmissions));
+
+                Assert.True(await restarted.HandleAssistantResponseAsync(
+                    "monitor-1", "completed after restart", isError: false));
+                Assert.Equal(1, restarted.State.CurrentMessageIndex);
             }
         }
         finally { DeleteRoot(root); }
