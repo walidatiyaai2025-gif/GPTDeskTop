@@ -443,8 +443,8 @@ public sealed class DevelopmentTaskEngine : IAsyncDisposable
     private void ReloadScheduleSettings()
     {
         var settings = _scheduleStore.Load();
-        if (!_workWindowOverridden) _workWindow = TimeSpan.FromMinutes(configured: settings.WorkMinutes);
-        if (!_coolingWindowOverridden) _coolingWindow = TimeSpan.FromMinutes(configured: settings.CoolingMinutes);
+        if (!_workWindowOverridden) _workWindow = TimeSpan.FromMinutes(settings.WorkMinutes);
+        if (!_coolingWindowOverridden) _coolingWindow = TimeSpan.FromMinutes(settings.CoolingMinutes);
     }
 
     private async Task RestartWorkerAsync(CancellationToken cancellationToken)
