@@ -6,7 +6,7 @@
   "TARGET_SCOPE": "PROJECT",
   "TARGET_VARIANT": null,
   "SEVERITY": "P1",
-  "STATE": "PERMANENT_FIX_IN_PROGRESS",
+  "STATE": "READY_FOR_QA",
   "PRODUCTION_BASE_SHA": "UNKNOWN-USER-REPORTED-LIVE-RUNTIME",
   "AFFECTED_PRODUCTION_VERSION": null,
   "DISCOVERED_AT": "2026-08-30T00:00:00+03:00",
@@ -23,10 +23,12 @@
   "PERMANENT_FIX_REQUIRED": true,
   "PERMANENT_FIX_TASK_ID": "GPTDESKTOP-MONITOR-GENERATION-RECOVERY-SAFETY-HOTFIX",
   "PERMANENT_FIX_TARGET_VERSION": "NEXT_RELEASE",
-  "PERMANENT_FIX_SHA": null,
+  "PERMANENT_FIX_SHA": "9bfc120accce109f15500557421e5d5bfa7910a2",
   "REGRESSION_TEST_REQUIRED": true,
   "REGRESSION_TEST_EVIDENCE": [
-    "tests/GPTDeskTop.RuntimeTests/GenerationRecoverySafetyHotfixTests.cs"
+    "tests/GPTDeskTop.RuntimeTests/GenerationRecoverySafetyHotfixTests.cs",
+    "dotnet build src\\GPTDeskTop\\GPTDeskTop.csproj --configuration Release -p:Platform=x64 --no-restore: PASS (0 errors)",
+    "dotnet test tests\\GPTDeskTop.RuntimeTests\\GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity minimal: PASS (809 passed, 0 failed, 0 skipped)"
   ],
   "CARRY_FORWARD_TO_FUTURE_RELEASES": true,
   "RELEASE_GATE_STATE": "OPEN",
