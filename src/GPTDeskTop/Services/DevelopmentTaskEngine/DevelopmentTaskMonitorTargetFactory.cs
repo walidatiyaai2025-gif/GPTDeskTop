@@ -6,25 +6,27 @@ namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
 /// <summary>
 /// Builds live development-plan recipients from the persisted monitor registry.
-/// Resolution happens at the beginning of a delivery window, so the same logical
-/// conversation is reused after Cooling or process restart whenever its saved URL
-/// is still open in Chrome.
+/// Opted-in enabled monitors are started on demand when a live conversation target
+/// is available, so Development Messages Start is a real one-click execution path.
 /// </summary>
 public sealed class DevelopmentTaskMonitorTargetFactory
 {
     private readonly LocalDatabase _database;
     private readonly SavedMonitorTabResolver _resolver;
     private readonly ChromeDevToolsService _chrome;
+    private readonly ChatGptMonitorService? _monitorService;
     private readonly OutboundDeliveryCoordinator _outboundDelivery = new();
 
     public DevelopmentTaskMonitorTargetFactory(
         LocalDatabase database,
         SavedMonitorTabResolver resolver,
-        ChromeDevToolsService chrome)
+        ChromeDevToolsService chrome,
+        ChatGptMonitorService? monitorService = null)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
         _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
         _chrome = chrome ?? throw new ArgumentNullException(nameof(chrome));
+        _monitorService = monitorService;
         DevelopmentPlanMonitorSettings.ConfigureDatabase(_database);
     }
 
@@ -80,6 +82,20 @@ public sealed class DevelopmentTaskMonitorTargetFactory
                     "System", "PersistedConversationUrl", tab.Url,
                     "DevelopmentMonitorTargetIdUpdated", monitor.Id,
                     tab.Id, monitor.Title, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (_monitorService is not null && !_monitorService.IsMonitorRunning(monitor.Id))
+            {
+                await _monitorService.StartMonitorAsync(monitor, tab).ConfigureAwait(false);
+                if (!_monitorService.IsMonitorRunning(monitor.Id))
+                {
+                    await _database.AddLogAsync(
+                        "System", string.Empty,
+                        "The opted-in monitor could not be started, so Development Messages will not send a prompt that cannot receive a stable response event.",
+                        "DevelopmentMonitorStartUnavailable", monitor.Id,
+                        tab.Id, monitor.Title, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
             }
 
             recipients.Add(new DevelopmentTaskMonitorRecipient(
