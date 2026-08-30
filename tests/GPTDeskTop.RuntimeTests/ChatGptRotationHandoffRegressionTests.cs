@@ -57,7 +57,10 @@ public sealed class ChatGptRotationHandoffRegressionTests
 
         var commitFailureBlock = source[commitFailure..commitFailureContinue];
         Assert.DoesNotContain("lastHandledText = string.Empty", commitFailureBlock, StringComparison.Ordinal);
-        Assert.Contains("Automatic re-send is suppressed", commitFailureBlock, StringComparison.Ordinal);
+        Assert.Contains(
+            "persisted reconciliation will continue without another continuation send",
+            commitFailureBlock,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
