@@ -1,0 +1,102 @@
+name: T0004 Candidate Installer Release
+
+on:
+  push:
+    branches:
+      - release/gptdesktop-t0004-candidate
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify source ancestry
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git merge-base --is-ancestor c9346086d0072f43b2549e77ac455c52f3476a38 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'T0004 source commit is not an ancestor of this release head.' }
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        shell: pwsh
+        run: |
+          dotnet restore GPTDeskTop.sln
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Release x64
+        shell: pwsh
+        run: |
+          dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
+          exit $LASTEXITCODE
+
+      - name: Verify installer contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path 'Output/Setup/GPTDeskTop-Setup.exe').Path
+          if ((Get-Item $setup).Length -le 0) { throw 'Installer is empty.' }
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path $setup
+          foreach ($arg in @('--verify-payload','--verify-wizard')) {
+            $p = Start-Process -FilePath $setup -ArgumentList $arg -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "Installer contract $arg failed with exit code $($p.ExitCode)." }
+          }
+
+      - name: Package candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path Dist -Force | Out-Null
+          Copy-Item 'Output/Setup/GPTDeskTop-Setup.exe' 'Dist/GPTDeskTop-Setup-T0004.exe' -Force
+          $hash = (Get-FileHash 'Dist/GPTDeskTop-Setup-T0004.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  GPTDeskTop-Setup-T0004.exe" | Set-Content 'Dist/SHA256SUMS.txt' -Encoding ascii
+
+      - name: Publish GitHub prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "v2.0.0-t0004-candidate.${{ github.run_number }}"
+          $title = "GPTDeskTop T0004 candidate ${{ github.run_number }}"
+          $notes = @"
+          T0004 Development Plan Autonomy candidate build.
+
+          Product source ancestry includes:
+          c9346086d0072f43b2549e77ac455c52f3476a38
+
+          Release workflow head:
+          ${{ github.sha }}
+
+          This is a candidate/prerelease for operator testing while the full PR CI convergence remains in progress.
+          "@
+          gh release create $tag `
+            'Dist/GPTDeskTop-Setup-T0004.exe' `
+            'Dist/SHA256SUMS.txt' `
+            --repo '${{ github.repository }}' `
+            --target '${{ github.sha }}' `
+            --title $title `
+            --notes $notes `
+            --prerelease
+
+      - name: Verify published asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v2.0.0-t0004-candidate.${{ github.run_number }}"
+          $assets = gh release view $tag --repo '${{ github.repository }}' --json assets --jq '.assets[].name'
+          if ($assets -notcontains 'GPTDeskTop-Setup-T0004.exe') { throw 'Published release is missing GPTDeskTop-Setup-T0004.exe.' }
