@@ -40,8 +40,8 @@ public sealed class SavedMonitorLiveGridWiringTests
         var source = ReadSource("src", "GPTDeskTop", "Runtime", "OutboundDeliveryCoordinator.cs");
 
         Assert.Contains("foreach (var subscriber in handlers.GetInvocationList())", source, StringComparison.Ordinal);
-        Assert.Contains("ExceptionLogService.Log(ex, \"OutboundDeliveryCoordinator.StatusChanged\")", source, StringComparison.Ordinal);
-        Assert.Contains("Dashboard/diagnostic observers are never allowed to alter exactly-once delivery.", source, StringComparison.Ordinal);
+        Assert.Contains("try { ((Action<OutboundDeliveryStatus>)subscriber)(status); }", source, StringComparison.Ordinal);
+        Assert.Contains("catch (Exception ex) { ExceptionLogService.Log(ex, \"OutboundDeliveryCoordinator.StatusChanged\"); }", source, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] parts)
