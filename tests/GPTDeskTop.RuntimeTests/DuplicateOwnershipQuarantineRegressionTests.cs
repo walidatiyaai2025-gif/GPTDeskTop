@@ -21,7 +21,7 @@ public sealed class DuplicateOwnershipQuarantineRegressionTests
         var loop = source.IndexOf("foreach (var monitor in monitors.Where(x => x.Enabled))", analyzer, StringComparison.Ordinal);
         var duplicateGuard = source.IndexOf("if (duplicateMonitorIds.Contains(monitor.Id))", loop, StringComparison.Ordinal);
         var diagnostic = source.IndexOf("DevelopmentMonitorDuplicateConversationOwnership", duplicateGuard, StringComparison.Ordinal);
-        var optIn = source.IndexOf("TaskAutomation.Monitor.{monitor.Id}.Enabled", duplicateGuard, StringComparison.Ordinal);
+        var optIn = source.IndexOf("DevelopmentPlanMonitorSettings.IsEnabledAsync", duplicateGuard, StringComparison.Ordinal);
         var resolution = source.IndexOf("SavedMonitorTabResolver.Resolve(monitor, tabs)", duplicateGuard, StringComparison.Ordinal);
 
         Assert.True(analyzer >= 0);
