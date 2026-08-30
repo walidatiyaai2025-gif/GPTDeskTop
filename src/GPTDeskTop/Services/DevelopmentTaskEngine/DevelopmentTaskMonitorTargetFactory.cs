@@ -6,8 +6,9 @@ namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
 /// <summary>
 /// Builds live development-plan recipients from the persisted monitor registry.
-/// Opted-in enabled monitors are started on demand when a live conversation target
-/// is available, so Development Messages Start is a real one-click execution path.
+/// Development Messages owns opted-in conversations exclusively: the legacy monitor
+/// worker is stopped before plan delivery so its single AutoReply cannot race the plan.
+/// Stable assistant responses are observed by DevelopmentTaskResponseWatcher instead.
 /// </summary>
 public sealed class DevelopmentTaskMonitorTargetFactory
 {
@@ -29,6 +30,9 @@ public sealed class DevelopmentTaskMonitorTargetFactory
         _monitorService = monitorService;
         DevelopmentPlanMonitorSettings.ConfigureDatabase(_database);
     }
+
+    internal DevelopmentTaskResponseWatcher CreateResponseWatcher(DevelopmentTaskEngine engine)
+        => new(engine, _database, _resolver, _chrome);
 
     public async Task<IReadOnlyList<DevelopmentTaskMonitorRecipient>> ResolveEnabledRecipientsAsync(
         CancellationToken cancellationToken = default)
@@ -84,24 +88,28 @@ public sealed class DevelopmentTaskMonitorTargetFactory
                     tab.Id, monitor.Title, cancellationToken).ConfigureAwait(false);
             }
 
-            if (_monitorService is not null && !_monitorService.IsMonitorRunning(monitor.Id))
+            // Exclusive ownership is deliberate. A Development Messages plan and the legacy
+            // monitor AutoReply must never both own the same completed assistant turn.
+            if (_monitorService is not null && _monitorService.IsMonitorRunning(monitor.Id))
             {
-                await _monitorService.StartMonitorAsync(monitor, tab).ConfigureAwait(false);
-                if (!_monitorService.IsMonitorRunning(monitor.Id))
-                {
-                    await _database.AddLogAsync(
-                        "System", string.Empty,
-                        "The opted-in monitor could not be started, so Development Messages will not send a prompt that cannot receive a stable response event.",
-                        "DevelopmentMonitorStartUnavailable", monitor.Id,
-                        tab.Id, monitor.Title, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
+                await _monitorService.StopMonitorAsync(monitor.Id).ConfigureAwait(false);
+                await _database.AddLogAsync(
+                    "System", string.Empty,
+                    "Legacy monitor auto-reply worker stopped because Development Messages owns this conversation.",
+                    "DevelopmentMonitorExclusiveOwnership", monitor.Id,
+                    tab.Id, monitor.Title, cancellationToken).ConfigureAwait(false);
             }
+
+            // Prevent LastWorkingState restart recovery from resurrecting the legacy worker
+            // while an opted-in development plan is active.
+            await LastWorkingStateService.SetMonitorDesiredRunningAsync(
+                _database, monitor.Id, false, cancellationToken).ConfigureAwait(false);
 
             recipients.Add(new DevelopmentTaskMonitorRecipient(
                 monitorId,
                 tab.Id,
-                message => SendVerifiedAsync(monitor.Id, tab, message)));
+                message => SendVerifiedAsync(monitor.Id, tab, message),
+                () => _chrome.GetChatStateAsync(tab)));
 
             await _database.AddLogAsync(
                 "System", resolution.MatchType, tab.Url,
