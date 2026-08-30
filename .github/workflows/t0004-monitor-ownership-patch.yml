@@ -1,0 +1,116 @@
+name: T0004 Monitor Ownership Patch
+
+on:
+  push:
+    branches:
+      - automation/t0004-monitor-ownership-patch
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout governed T0004 branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/gptdesktop-development-plan-autonomy
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Apply canonical ownership patch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8-sig')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, found {count}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          service = 'src/GPTDeskTop/Services/ChatGptMonitorService.cs'
+          replace_once(
+              service,
+              'using GPTDeskTop.Runtime;\n',
+              'using GPTDeskTop.Runtime;\nusing GPTDeskTop.Services.DevelopmentTaskEngine;\n')
+
+          replace_once(
+              service,
+              '''        if (persistedMonitor is null)\n        {\n            Activity?.Invoke(monitor.Id, $"Monitor #{monitor.Id} no longer exists in SQLite. Stale Start was ignored.");\n            return;\n        }\n        if (!ChatGptConversationIdentity.IsSame(persistedMonitor.Url, monitor.Url))''',
+              '''        if (persistedMonitor is null)\n        {\n            Activity?.Invoke(monitor.Id, $"Monitor #{monitor.Id} no longer exists in SQLite. Stale Start was ignored.");\n            return;\n        }\n\n        var developmentMessagesOwned = await DevelopmentPlanMonitorSettings.IsEnabledAsync(_database, persistedMonitor).ConfigureAwait(false);\n        if (developmentMessagesOwned)\n        {\n            persistedMonitor.UseDevelopmentMessages = true;\n            const string ownershipMessage = "Development Messages owns this monitor. Legacy single AutoReply start was suppressed; use Development Messages -> Start for the ordered project plan.";\n            await _database.AddLogAsync(\n                "System", string.Empty, ownershipMessage,\n                "DevelopmentMonitorLegacyStartSuppressed", persistedMonitor.Id,\n                persistedMonitor.TabId, persistedMonitor.Title).ConfigureAwait(false);\n            HistoryChanged?.Invoke();\n            Activity?.Invoke(persistedMonitor.Id, ownershipMessage);\n            return;\n        }\n\n        if (!ChatGptConversationIdentity.IsSame(persistedMonitor.Url, monitor.Url))''')
+
+          replace_once(
+              service,
+              '''        return await _database.UpdateMonitorConfigurationAsync(monitor);''',
+              '''        var updated = await _database.UpdateMonitorConfigurationAsync(monitor).ConfigureAwait(false);\n        if (updated)\n            await DevelopmentPlanMonitorSettings.SetEnabledAsync(_database, monitor, monitor.UseDevelopmentMessages).ConfigureAwait(false);\n        return updated;''')
+
+          main = 'src/GPTDeskTop/UI/MainForm.cs'
+          replace_once(
+              main,
+              '''            await _database.SaveMonitorAsync(monitor);\n            lastId = monitor.Id;''',
+              '''            await _database.SaveMonitorAsync(monitor);\n            await DevelopmentPlanMonitorSettings.SetEnabledAsync(_database, monitor, monitor.UseDevelopmentMessages);\n            lastId = monitor.Id;''')
+          '@ | Set-Content -Path $env:RUNNER_TEMP\patch.py -Encoding utf8
+          python $env:RUNNER_TEMP\patch.py
+
+      - name: Add ownership regression contract
+        shell: pwsh
+        run: |
+          @'
+          using GPTDeskTop.Services.DevelopmentTaskEngine;
+
+          namespace GPTDeskTop.RuntimeTests;
+
+          public sealed class DevelopmentPlanMonitorOwnershipRegressionTests
+          {
+              private static string Source(params string[] parts)
+                  => File.ReadAllText(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "GPTDeskTop", Path.Combine(parts))));
+
+              [Fact]
+              public void LegacyMonitorStartIsSuppressedWhenDevelopmentMessagesOwnConversation()
+              {
+                  var source = Source("Services", "ChatGptMonitorService.cs");
+                  Assert.Contains("DevelopmentPlanMonitorSettings.IsEnabledAsync", source, StringComparison.Ordinal);
+                  Assert.Contains("DevelopmentMonitorLegacyStartSuppressed", source, StringComparison.Ordinal);
+                  Assert.Contains("Legacy single AutoReply start was suppressed", source, StringComparison.Ordinal);
+              }
+
+              [Fact]
+              public void MonitorConfigurationSavePersistsDevelopmentOwnership()
+              {
+                  var service = Source("Services", "ChatGptMonitorService.cs");
+                  var main = Source("UI", "MainForm.cs");
+                  Assert.Contains("DevelopmentPlanMonitorSettings.SetEnabledAsync(_database, monitor, monitor.UseDevelopmentMessages)", service, StringComparison.Ordinal);
+                  Assert.Contains("DevelopmentPlanMonitorSettings.SetEnabledAsync(_database, monitor, monitor.UseDevelopmentMessages)", main, StringComparison.Ordinal);
+              }
+          }
+          '@ | Set-Content tests/GPTDeskTop.RuntimeTests/DevelopmentPlanMonitorOwnershipRegressionTests.cs -Encoding utf8
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore and compile patched exact tree
+        shell: pwsh
+        run: |
+          dotnet restore GPTDeskTop.sln
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
+          exit $LASTEXITCODE
+
+      - name: Commit and push governed T0004 patch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/GPTDeskTop/Services/ChatGptMonitorService.cs src/GPTDeskTop/UI/MainForm.cs tests/GPTDeskTop.RuntimeTests/DevelopmentPlanMonitorOwnershipRegressionTests.cs
+          git diff --cached --check
+          git commit -m 'fix: enforce development messages monitor ownership'
+          git push origin HEAD:feature/gptdesktop-development-plan-autonomy
