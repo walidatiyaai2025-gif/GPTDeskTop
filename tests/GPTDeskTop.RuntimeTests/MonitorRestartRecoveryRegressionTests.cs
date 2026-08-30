@@ -41,10 +41,10 @@ public sealed class MonitorRestartRecoveryRegressionTests
         var source = ReadSource("src", "GPTDeskTop", "Services", "MonitorTabRecoveryService.cs");
 
         Assert.Contains("SavedMonitorTabResolver.Resolve(monitor, tabs)", source, StringComparison.Ordinal);
+        Assert.Contains("TryGetTabsWithGracePeriodAsync(chrome, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("if (tabs is not null)", source, StringComparison.Ordinal);
         Assert.Contains("chrome.CreateTabAsync(monitor.Url", source, StringComparison.Ordinal);
         Assert.Contains("chrome.LaunchMonitorChrome(monitor.Url)", source, StringComparison.Ordinal);
-        Assert.Contains("Only a genuinely unavailable CDP endpoint is allowed to restart", source, StringComparison.Ordinal);
         Assert.Contains("WaitForChatReachableAsync(chrome, recoveredTab", source, StringComparison.Ordinal);
         Assert.Contains("PersistRuntimeTargetAsync(database, monitor, recoveredTab", source, StringComparison.Ordinal);
         Assert.Contains("MonitorTabRebound", source, StringComparison.Ordinal);
