@@ -1,4 +1,4 @@
-using System.Text.Json;
+using GPTDeskTop.Services.DevelopmentTaskEngine;
 
 namespace GPTDeskTop.UI;
 
@@ -28,6 +28,9 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
     private readonly Button _remove = new() { Text = "Remove", AutoSize = true };
     private readonly Button _up = new() { Text = "Move Up", AutoSize = true };
     private readonly Button _down = new() { Text = "Move Down", AutoSize = true };
+    private readonly Button _import = new() { Text = "Import File", AutoSize = true };
+    private readonly Button _paste = new() { Text = "Paste Plan", AutoSize = true };
+    private readonly Button _export = new() { Text = "Export", AutoSize = true };
     private readonly Button _save = new() { Text = "Save Catalog", AutoSize = true };
     private readonly Label _count = new() { Dock = DockStyle.Fill, ForeColor = FluentTheme.Muted, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
     private readonly Label _status = new() { Dock = DockStyle.Fill, ForeColor = FluentTheme.Muted, TextAlign = ContentAlignment.MiddleRight, AutoEllipsis = true };
@@ -62,7 +65,7 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
 
         var listTitle = FluentTheme.CreateEyebrowLabel("Message variants");
         listTitle.Dock = DockStyle.Fill;
@@ -84,7 +87,7 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoScroll = true, BackColor = FluentTheme.Surface, Padding = new Padding(0, 5, 0, 0), Margin = Padding.Empty };
-        buttons.Controls.AddRange(new Control[] { _add, _update, _remove, _up, _down, _save });
+        buttons.Controls.AddRange(new Control[] { _add, _update, _remove, _up, _down, _import, _paste, _export, _save });
         var statusHost = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = FluentTheme.Surface, Width = 245, Padding = new Padding(8, 4, 0, 0) };
         statusHost.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         statusHost.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
@@ -112,6 +115,9 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
         FluentTheme.StyleButton(_remove, danger: true);
         FluentTheme.StyleButton(_up);
         FluentTheme.StyleButton(_down);
+        FluentTheme.StyleButton(_import);
+        FluentTheme.StyleButton(_paste);
+        FluentTheme.StyleButton(_export);
         FluentTheme.StyleButton(_save, primary: true);
     }
 
@@ -123,6 +129,9 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
         _remove.Click += (_, _) => RemoveMessage();
         _up.Click += (_, _) => MoveMessage(-1);
         _down.Click += (_, _) => MoveMessage(1);
+        _import.Click += (_, _) => ImportFile();
+        _paste.Click += (_, _) => PastePlan();
+        _export.Click += (_, _) => ExportPlan();
         _save.Click += (_, _) => SaveCatalog();
         _editor.KeyDown += (_, e) =>
         {
@@ -151,10 +160,7 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
                 return;
             }
 
-            using var document = JsonDocument.Parse(File.ReadAllText(_catalogPath));
-            _items = document.RootElement.TryGetProperty("messages", out var messages)
-                ? messages.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(x => !string.IsNullOrWhiteSpace(x)).ToList()
-                : new List<string>();
+            _items = DevelopmentMessagePlanCodec.Parse(File.ReadAllText(_catalogPath)).ToList();
             RefreshList();
             _status.Text = "Loaded from runtime catalog.";
         }
@@ -237,6 +243,68 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
         PersistMutation(previous, target, "Order persisted for runtime.");
     }
 
+    private void ImportFile()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Import Development Messages Plan",
+            Filter = "Development plan (*.json;*.txt)|*.json;*.txt|JSON (*.json)|*.json|Text (*.txt)|*.txt|All files (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(FindForm()) != DialogResult.OK) return;
+        ImportPlanText(File.ReadAllText(dialog.FileName), $"Imported from {Path.GetFileName(dialog.FileName)}.");
+    }
+
+    private void PastePlan()
+    {
+        if (!Clipboard.ContainsText())
+        {
+            MessageBox.Show(FindForm(), "The clipboard does not contain a development plan.", "Paste Plan", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        ImportPlanText(Clipboard.GetText(), "Clipboard plan imported and persisted.");
+    }
+
+    private void ImportPlanText(string text, string successStatus)
+    {
+        var parsed = DevelopmentMessagePlanCodec.Parse(text).ToList();
+        if (parsed.Count == 0)
+        {
+            MessageBox.Show(FindForm(), "No non-empty development messages were found.", "Import Plan", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (_items.Count > 0 && MessageBox.Show(
+                FindForm(),
+                $"Replace the current {_items.Count} message(s) with {parsed.Count} imported message(s)?",
+                "Replace Development Plan",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+            return;
+
+        var previous = _items.ToList();
+        _items = parsed;
+        PersistMutation(previous, 0, successStatus);
+    }
+
+    private void ExportPlan()
+    {
+        if (_items.Count == 0) return;
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export Development Messages Plan",
+            Filter = "JSON development plan (*.json)|*.json|All files (*.*)|*.*",
+            DefaultExt = "json",
+            AddExtension = true,
+            FileName = "development-messages-plan.json"
+        };
+        if (dialog.ShowDialog(FindForm()) != DialogResult.OK) return;
+        File.WriteAllText(dialog.FileName, DevelopmentMessagePlanCodec.Serialize(_items));
+        _status.Text = $"Exported {DateTime.Now:t}.";
+    }
+
     private void SaveCatalog()
     {
         try
@@ -278,8 +346,7 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
 
         var temp = _catalogPath + ".tmp";
-        var json = JsonSerializer.Serialize(new { messages = _items }, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(temp, json);
+        File.WriteAllText(temp, DevelopmentMessagePlanCodec.Serialize(_items));
         File.Move(temp, _catalogPath, true);
     }
 }
