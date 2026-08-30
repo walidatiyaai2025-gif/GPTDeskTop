@@ -37,8 +37,8 @@ public sealed class SingleSurfaceUiRegressionTests
     public void MonitorMessageEditorsRemainTrueMultilineControls()
     {
         var monitorSource = ReadUiSource("MonitorSettingsForm.cs");
-        Assert.Contains("_autoReplyBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false }", monitorSource, StringComparison.Ordinal);
-        Assert.Contains("_newChatMessageBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false }", monitorSource, StringComparison.Ordinal);
+        Assert.Contains("_autoReplyBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false, MinimumSize = new Size(0, 72) }", monitorSource, StringComparison.Ordinal);
+        Assert.Contains("_newChatMessageBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false, MinimumSize = new Size(0, 72) }", monitorSource, StringComparison.Ordinal);
 
         var guardSource = ReadUiSource("MultilineEditorExperience.cs");
         Assert.Contains("textBox.Dock = DockStyle.Fill", guardSource, StringComparison.Ordinal);

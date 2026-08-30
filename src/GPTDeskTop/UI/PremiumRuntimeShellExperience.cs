@@ -6,15 +6,18 @@ using System.Runtime.InteropServices;
 namespace GPTDeskTop.UI;
 
 /// <summary>
-/// Premium operator shell for the existing GPTDeskTop runtime. This layer does not create a
-/// second behavior path: navigation items either focus existing live controls or proxy the
-/// canonical buttons/dialog entry points already owned by MainForm and its UI bootstraps.
+/// Premium operator shell over the existing GPTDeskTop runtime. Owned product destinations are
+/// lazily swapped inside exactly one content host; no alternate monitoring/delivery runtime exists.
 /// </summary>
 internal static class PremiumRuntimeShellExperience
 {
     internal const int NavigationRailWidth = 216;
     internal const int MinimumShellWidth = 1100;
     internal const int MinimumShellHeight = 680;
+    private const string DashboardDestination = "Dashboard";
+    private const string ProjectsDestination = "Projects";
+    private const string DevelopmentMessagesDestination = "Development Messages";
+    private const string GitSettingsDestination = "GitHub / Git Settings";
     private static readonly ConditionalWeakTable<Form, Registration> Registrations = new();
 
     internal static Size CalculateLogicalViewport(Size physicalViewport, int deviceDpi)
@@ -35,6 +38,36 @@ internal static class PremiumRuntimeShellExperience
     internal static void Initialize()
         => Application.Idle += ApplyToOpenForms;
 
+    internal static bool InstallNow(MainForm main)
+    {
+        ArgumentNullException.ThrowIfNull(main);
+        if (main.IsDisposed || main.Disposing) return false;
+        var registration = Registrations.GetValue(main, _ => new Registration());
+        if (!registration.ThemeApplied)
+        {
+            FluentTheme.Apply(main);
+            if (main.IsHandleCreated) TryEnableImmersiveDarkTitleBar(main);
+            registration.ThemeApplied = true;
+        }
+        if (!registration.NavigationInstalled)
+            registration.NavigationInstalled = TryInstallNavigation(main, registration);
+        return registration.NavigationInstalled;
+    }
+
+    internal static bool NavigateTo(MainForm main, string destination)
+    {
+        ArgumentNullException.ThrowIfNull(main);
+        if (string.IsNullOrWhiteSpace(destination) || !InstallNow(main)) return false;
+        var registration = Registrations.GetValue(main, _ => new Registration());
+        return ShowDestination(main, registration, NormalizeDestination(destination));
+    }
+
+    internal static string? CurrentDestination(MainForm main)
+    {
+        if (!Registrations.TryGetValue(main, out var registration)) return null;
+        return registration.CurrentDestination;
+    }
+
     private static void ApplyToOpenForms(object? sender, EventArgs e)
     {
         foreach (Form form in Application.OpenForms.Cast<Form>().ToArray())
@@ -51,14 +84,14 @@ internal static class PremiumRuntimeShellExperience
             }
 
             if (form is MainForm main && !registration.NavigationInstalled)
-                registration.NavigationInstalled = TryInstallNavigation(main);
+                registration.NavigationInstalled = TryInstallNavigation(main, registration);
         }
     }
 
-    private static bool TryInstallNavigation(MainForm main)
+    private static bool TryInstallNavigation(MainForm main, Registration registration)
     {
         if (main.Controls.Find("PremiumShellRoot", searchAllChildren: false).Length != 0)
-            return true;
+            return registration.ContentHost is not null;
 
         if (main.MainMenuStrip is null)
             return false;
@@ -72,13 +105,17 @@ internal static class PremiumRuntimeShellExperience
             ? null
             : Descendants(development).OfType<Button>().FirstOrDefault(button => TextEquals(button, "Messages"));
 
-        if (projects is null || inspector is null || settings is null || messages is null)
+        if (projects is null || inspector is null || settings is null || messages is null || development is null)
             return false;
 
         var existingSurface = main.Controls.Cast<Control>()
             .FirstOrDefault(control => control.Dock == DockStyle.Fill && control is TableLayoutPanel);
         if (existingSurface is null)
             return false;
+
+        registration.Main = main;
+        registration.DashboardSurface = existingSurface;
+        registration.DevelopmentDashboard = development;
 
         var rail = new Panel
         {
@@ -105,7 +142,7 @@ internal static class PremiumRuntimeShellExperience
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
 
         layout.Controls.Add(BuildBrand(), 0, 0);
-        layout.Controls.Add(BuildNavigation(main, projects, inspector, messages, settings), 0, 1);
+        layout.Controls.Add(BuildNavigation(registration, main, projects, inspector, messages, settings), 0, 1);
         layout.Controls.Add(BuildRuntimeFooter(inspector), 0, 2);
         rail.Controls.Add(layout);
 
@@ -116,10 +153,13 @@ internal static class PremiumRuntimeShellExperience
             BackColor = FluentTheme.Background,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
-            AccessibleName = "Current workspace destination"
+            AccessibleName = "Current workspace destination",
+            AccessibleDescription = "Exactly one active premium product destination is rendered here."
         };
         main.Controls.Remove(existingSurface);
         contentHost.Controls.Add(existingSurface);
+        registration.ContentHost = contentHost;
+        registration.CurrentDestination = DashboardDestination;
 
         var shell = new SplitContainer
         {
@@ -141,6 +181,7 @@ internal static class PremiumRuntimeShellExperience
         if (main.Width < MinimumShellWidth || main.Height < MinimumShellHeight)
             main.Size = new Size(Math.Max(main.Width, MinimumShellWidth), Math.Max(main.Height, MinimumShellHeight));
 
+        SetActiveDestination(registration, DashboardDestination);
         return true;
     }
 
@@ -192,7 +233,7 @@ internal static class PremiumRuntimeShellExperience
         return brand;
     }
 
-    private static Control BuildNavigation(MainForm main, Button projects, Button inspector, Button messages, Button settings)
+    private static Control BuildNavigation(Registration registration, MainForm main, Button projects, Button inspector, Button messages, Button settings)
     {
         var nav = new FlowLayoutPanel
         {
@@ -205,27 +246,102 @@ internal static class PremiumRuntimeShellExperience
             Margin = Padding.Empty
         };
 
-        AddNavigationDestination(nav, "▦   Dashboard", () => main.Focus(), active: true);
-        AddNavigationDestination(nav, "▱   Projects", () => InvokeCanonicalButton(projects));
-        AddNavigationDestination(nav, "◌   Open Conversations", () => FocusConversationGrid(main));
-        AddNavigationDestination(nav, "▣   Saved Monitors", () => FocusMonitorGrid(main));
-        AddNavigationDestination(nav, "♢   Recovery / Runtime Inspector", () => InvokeCanonicalButton(inspector));
-        AddNavigationDestination(nav, "</>  Development Messages", () => InvokeCanonicalButton(messages));
-        AddNavigationDestination(nav, "◉   GitHub / Git Settings", () => _ = GitHubIntegrationUiBootstrap.ShowGitSettingsAsync(main));
-        AddNavigationDestination(nav, "⚙   Settings", () => InvokeCanonicalButton(settings));
+        AddNavigationDestination(registration, nav, DashboardDestination, "▦   Dashboard", () => ShowDestination(main, registration, DashboardDestination), active: true);
+        AddNavigationDestination(registration, nav, ProjectsDestination, "▱   Projects", () => ShowDestination(main, registration, ProjectsDestination));
+        AddNavigationDestination(registration, nav, "Open Conversations", "◌   Open Conversations", () => ShowDashboardAndFocus(main, registration, FocusConversationGrid));
+        AddNavigationDestination(registration, nav, "Saved Monitors", "▣   Saved Monitors", () => ShowDashboardAndFocus(main, registration, FocusMonitorGrid));
+        AddNavigationDestination(registration, nav, "Recovery / Runtime Inspector", "♢   Recovery / Runtime Inspector", () => InvokeCanonicalButton(inspector));
+        AddNavigationDestination(registration, nav, DevelopmentMessagesDestination, "</>  Development Messages", () => ShowDestination(main, registration, DevelopmentMessagesDestination));
+        AddNavigationDestination(registration, nav, GitSettingsDestination, "◉   GitHub / Git Settings", () => ShowDestination(main, registration, GitSettingsDestination));
+        AddNavigationDestination(registration, nav, "Settings", "⚙   Settings", () => InvokeCanonicalButton(settings));
         return nav;
     }
 
-    private static void AddNavigationDestination(FlowLayoutPanel navigation, string text, Action action, bool active = false)
+    private static void AddNavigationDestination(Registration registration, FlowLayoutPanel navigation, string destination, string text, Action action, bool active = false)
     {
-        Button? button = null;
-        button = CreateNavButton(text, () =>
+        var button = CreateNavButton(text, destination, () =>
         {
-            foreach (var peer in navigation.Controls.OfType<Button>())
-                SetNavigationState(peer, ReferenceEquals(peer, button));
+            SetActiveDestination(registration, destination);
             action();
         }, active);
+        registration.NavigationButtons[destination] = button;
         navigation.Controls.Add(button);
+    }
+
+    private static void ShowDashboardAndFocus(MainForm main, Registration registration, Action<MainForm> focus)
+    {
+        if (!ShowDestination(main, registration, DashboardDestination)) return;
+        focus(main);
+    }
+
+    private static bool ShowDestination(MainForm main, Registration registration, string destination)
+    {
+        var host = registration.ContentHost;
+        var dashboard = registration.DashboardSurface;
+        if (host is null || dashboard is null || host.IsDisposed) return false;
+
+        Control? surface;
+        switch (destination)
+        {
+            case DashboardDestination:
+                surface = dashboard;
+                break;
+            case ProjectsDestination:
+                surface = GetOrCreate(registration, ProjectsDestination, () => ProjectMonitorUiBootstrap.CreateEmbeddedProjectsSurface(main));
+                break;
+            case DevelopmentMessagesDestination:
+                if (registration.DevelopmentDashboard is null) return false;
+                surface = GetOrCreate(registration, DevelopmentMessagesDestination, () => new DevelopmentMessagesWorkspaceControl(registration.DevelopmentDashboard.RuntimeBinding));
+                break;
+            case GitSettingsDestination:
+                surface = GetOrCreate(registration, GitSettingsDestination, () => GitHubIntegrationUiBootstrap.CreateEmbeddedGitSettingsSurface(main));
+                break;
+            default:
+                return false;
+        }
+
+        if (surface.IsDisposed) return false;
+        host.SuspendLayout();
+        try
+        {
+            if (host.Controls.Count != 1 || !ReferenceEquals(host.Controls[0], surface))
+            {
+                host.Controls.Clear();
+                surface.Dock = DockStyle.Fill;
+                surface.Margin = Padding.Empty;
+                host.Controls.Add(surface);
+            }
+            surface.Visible = true;
+            surface.BringToFront();
+            registration.CurrentDestination = destination;
+            SetActiveDestination(registration, destination);
+            FluentTheme.Apply(main);
+        }
+        finally
+        {
+            host.ResumeLayout(performLayout: true);
+        }
+
+        if (surface is ProjectMonitorDashboardControl projects)
+            _ = projects.RefreshAsync();
+        FocusControl(surface);
+        return host.Controls.Count == 1;
+    }
+
+    private static Control GetOrCreate(Registration registration, string destination, Func<Control> factory)
+    {
+        if (registration.Destinations.TryGetValue(destination, out var existing) && !existing.IsDisposed)
+            return existing;
+        var created = factory();
+        created.Dock = DockStyle.Fill;
+        registration.Destinations[destination] = created;
+        return created;
+    }
+
+    private static void SetActiveDestination(Registration registration, string destination)
+    {
+        foreach (var pair in registration.NavigationButtons)
+            SetNavigationState(pair.Value, string.Equals(pair.Key, destination, StringComparison.OrdinalIgnoreCase));
     }
 
     private static void SetNavigationState(Button button, bool active)
@@ -264,7 +380,7 @@ internal static class PremiumRuntimeShellExperience
             Font = new Font("Segoe UI Variable Text", 8.25F),
             TextAlign = ContentAlignment.MiddleLeft
         }, 0, 1);
-        var open = CreateNavButton("Open Inspector  ›", () => InvokeCanonicalButton(inspector));
+        var open = CreateNavButton("Open Inspector  ›", "Recovery / Runtime Inspector", () => InvokeCanonicalButton(inspector));
         open.Height = 30;
         open.ForeColor = FluentTheme.Accent;
         layout.Controls.Add(open, 0, 2);
@@ -272,18 +388,19 @@ internal static class PremiumRuntimeShellExperience
         return card;
     }
 
-    private static Button CreateNavButton(string text, Action action, bool active = false)
+    private static Button CreateNavButton(string text, string destination, Action action, bool active = false)
     {
         var button = new Button
         {
             Text = text,
+            Tag = destination,
             Width = 184,
             Height = 42,
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
             Margin = new Padding(0, 3, 0, 3),
             Padding = new Padding(12, 0, 8, 0),
-            AccessibleName = text.Replace("▦", string.Empty).Replace("▱", string.Empty).Replace("◌", string.Empty).Replace("▣", string.Empty).Replace("♢", string.Empty).Replace("</>", string.Empty).Replace("◉", string.Empty).Replace("⚙", string.Empty).Trim()
+            AccessibleName = destination
         };
         FluentTheme.StyleButton(button, primary: false);
         button.TextAlign = ContentAlignment.MiddleLeft;
@@ -318,7 +435,7 @@ internal static class PremiumRuntimeShellExperience
     {
         if (control.IsDisposed) return;
         (control.Parent as ScrollableControl)?.ScrollControlIntoView(control);
-        control.Focus();
+        if (control.CanFocus) control.Focus();
     }
 
     private static void InvokeCanonicalButton(Button source)
@@ -335,6 +452,16 @@ internal static class PremiumRuntimeShellExperience
 
     private static bool TextEquals(Button button, string text)
         => string.Equals(button.Text?.Trim(), text, StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeDestination(string destination)
+    {
+        var value = destination.Trim();
+        if (string.Equals(value, ProjectsDestination, StringComparison.OrdinalIgnoreCase)) return ProjectsDestination;
+        if (string.Equals(value, DevelopmentMessagesDestination, StringComparison.OrdinalIgnoreCase)) return DevelopmentMessagesDestination;
+        if (string.Equals(value, GitSettingsDestination, StringComparison.OrdinalIgnoreCase) || string.Equals(value, "Git Settings", StringComparison.OrdinalIgnoreCase)) return GitSettingsDestination;
+        if (string.Equals(value, DashboardDestination, StringComparison.OrdinalIgnoreCase)) return DashboardDestination;
+        return value;
+    }
 
     private static string GetProductVersion()
     {
@@ -377,13 +504,12 @@ internal static class PremiumRuntimeShellExperience
     {
         public bool ThemeApplied { get; set; }
         public bool NavigationInstalled { get; set; }
+        public MainForm? Main { get; set; }
+        public Panel? ContentHost { get; set; }
+        public Control? DashboardSurface { get; set; }
+        public DevelopmentTaskDashboardControl? DevelopmentDashboard { get; set; }
+        public string CurrentDestination { get; set; } = DashboardDestination;
+        public Dictionary<string, Control> Destinations { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, Button> NavigationButtons { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }
-
-
-
-
-
-
-
-
