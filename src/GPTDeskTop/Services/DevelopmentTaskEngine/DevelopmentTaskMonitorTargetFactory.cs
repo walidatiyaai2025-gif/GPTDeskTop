@@ -25,6 +25,7 @@ public sealed class DevelopmentTaskMonitorTargetFactory
         _database = database ?? throw new ArgumentNullException(nameof(database));
         _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
         _chrome = chrome ?? throw new ArgumentNullException(nameof(chrome));
+        DevelopmentPlanMonitorSettings.ConfigureDatabase(_database);
     }
 
     public async Task<IReadOnlyList<DevelopmentTaskMonitorRecipient>> ResolveEnabledRecipientsAsync(
@@ -49,10 +50,10 @@ public sealed class DevelopmentTaskMonitorTargetFactory
                 continue;
             }
 
-            var optedIn = await _database.GetSettingAsync(
-                $"TaskAutomation.Monitor.{monitor.Id}.Enabled",
-                cancellationToken).ConfigureAwait(false);
-            if (!IsOptedIn(optedIn))
+            var optedIn = await DevelopmentPlanMonitorSettings.IsEnabledAsync(
+                _database, monitor, cancellationToken).ConfigureAwait(false);
+            monitor.UseDevelopmentMessages = optedIn;
+            if (!optedIn)
                 continue;
 
             var resolution = SavedMonitorTabResolver.Resolve(monitor, tabs);
@@ -109,8 +110,4 @@ public sealed class DevelopmentTaskMonitorTargetFactory
             null,
             CancellationToken.None).ConfigureAwait(false);
     }
-
-    private static bool IsOptedIn(string? value)
-        => string.Equals(value, "1", StringComparison.OrdinalIgnoreCase)
-           || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
 }
