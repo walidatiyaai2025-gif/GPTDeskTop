@@ -47,9 +47,10 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
 
     internal DevelopmentTaskRuntimeBinding RuntimeBinding => _binding;
 
-    // Schedule editing is hosted in the canonical Development Messages workspace. Keeping
-    // the concrete contract visible here ensures the dashboard Schedule command and the
-    // persisted DevelopmentTaskScheduleSettingsControl remain one product path.
+    // Both concrete editor controls are hosted in the canonical Development Messages
+    // workspace. Keeping these contracts visible on the dashboard makes its Messages and
+    // Schedule commands verifiably resolve to the same persisted product surface.
+    internal static Type MessageCatalogControlType => typeof(DevelopmentMessageCatalogControl);
     internal static Type ScheduleSettingsControlType => typeof(DevelopmentTaskScheduleSettingsControl);
 
     public string FooterSummary
