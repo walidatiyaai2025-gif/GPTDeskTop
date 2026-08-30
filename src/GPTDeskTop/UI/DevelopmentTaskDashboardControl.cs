@@ -47,6 +47,11 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
 
     internal DevelopmentTaskRuntimeBinding RuntimeBinding => _binding;
 
+    // Schedule editing is hosted in the canonical Development Messages workspace. Keeping
+    // the concrete contract visible here ensures the dashboard Schedule command and the
+    // persisted DevelopmentTaskScheduleSettingsControl remain one product path.
+    internal static Type ScheduleSettingsControlType => typeof(DevelopmentTaskScheduleSettingsControl);
+
     public string FooterSummary
     {
         get
@@ -241,23 +246,25 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         ApplyStatusStyle(state.Status);
         _phase.Text = state.Status == DevelopmentTaskEngineStatus.Cooling
             ? "Cooling — no delivery"
-            : state.Status == DevelopmentTaskEngineStatus.Working
-                ? "Working — delivery enabled"
-                : state.Status == DevelopmentTaskEngineStatus.Paused
-                    ? "Paused — checkpoint preserved"
-                    : state.Status.ToString();
+            : state.Status == DevelopmentTaskEngineStatus.Working && state.AwaitingAssistantResponse
+                ? "Waiting for ChatGPT — no next prompt"
+                : state.Status == DevelopmentTaskEngineStatus.Working
+                    ? "Working — delivery enabled"
+                    : state.Status == DevelopmentTaskEngineStatus.Paused
+                        ? "Paused — checkpoint preserved"
+                        : state.Status.ToString();
         _message.Text = $"Message {state.CurrentMessageIndex + 1} / {Math.Max(0, state.TotalMessages)}";
         _recipients.Text = $"Last Chat {state.LastMonitorId ?? "—"}  •  Tab {state.LastTabId ?? "—"}";
         _delivery.Text = $"Verified {(state.LastDeliveredMessageIndex >= 0 ? (state.LastDeliveredMessageIndex + 1).ToString() : "—")}  •  Receipts {state.DeliveryReceipts.Count}  •  Rev {state.Revision}";
 
         var now = DateTimeOffset.UtcNow;
-        var remaining = state.Status == DevelopmentTaskEngineStatus.Working && state.WorkWindowStartedAt.HasValue
+        var remaining = state.Status == DevelopmentTaskEngineStatus.Working && !state.AwaitingAssistantResponse && state.WorkWindowStartedAt.HasValue
             ? _binding.Engine.WorkWindow - (now - state.WorkWindowStartedAt.Value)
             : state.Status == DevelopmentTaskEngineStatus.Cooling && state.CoolingStartedAt.HasValue
                 ? _binding.Engine.CoolingWindow - (now - state.CoolingStartedAt.Value)
                 : TimeSpan.Zero;
         if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
-        _countdown.Text = remaining > TimeSpan.Zero ? remaining.ToString(@"mm\:ss") : "—";
+        _countdown.Text = state.AwaitingAssistantResponse ? "WAITING" : remaining > TimeSpan.Zero ? remaining.ToString(@"mm\:ss") : "—";
 
         _start.Enabled = state.Status is DevelopmentTaskEngineStatus.Stopped or DevelopmentTaskEngineStatus.Paused;
         _pause.Enabled = state.Status == DevelopmentTaskEngineStatus.Working;
