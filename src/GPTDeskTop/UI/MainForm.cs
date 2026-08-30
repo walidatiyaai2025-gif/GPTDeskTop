@@ -1026,6 +1026,7 @@ public sealed class MainForm : Form
             var monitor = new SavedMonitor { TabId = tab.Id, Title = tab.Title, Url = tab.Url, AutoReply = defaultReply, ReplyDelaySeconds = defaultDelay, TimerSeconds = defaultTimer, Enabled = true };
             if (!MonitorSettingsForm.Edit(this, monitor)) continue;
             await _database.SaveMonitorAsync(monitor);
+            await DevelopmentPlanMonitorSettings.SetEnabledAsync(_database, monitor, monitor.UseDevelopmentMessages);
             lastId = monitor.Id;
             AppendActivity($"Added monitor #{monitor.Id}: Delay {monitor.ReplyDelaySeconds}s / Timer {monitor.TimerSeconds}s");
         }

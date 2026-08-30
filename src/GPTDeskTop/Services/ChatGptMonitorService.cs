@@ -3,6 +3,7 @@ using GPTDeskTop.Configuration;
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
 using GPTDeskTop.Runtime;
+using GPTDeskTop.Services.DevelopmentTaskEngine;
 
 namespace GPTDeskTop.Services;
 
@@ -113,6 +114,21 @@ public sealed class ChatGptMonitorService
             Activity?.Invoke(monitor.Id, $"Monitor #{monitor.Id} no longer exists in SQLite. Stale Start was ignored.");
             return;
         }
+
+        var developmentMessagesOwned = await DevelopmentPlanMonitorSettings.IsEnabledAsync(_database, persistedMonitor).ConfigureAwait(false);
+        if (developmentMessagesOwned)
+        {
+            persistedMonitor.UseDevelopmentMessages = true;
+            const string ownershipMessage = "Development Messages owns this monitor. Legacy single AutoReply start was suppressed; use Development Messages -> Start for the ordered project plan.";
+            await _database.AddLogAsync(
+                "System", string.Empty, ownershipMessage,
+                "DevelopmentMonitorLegacyStartSuppressed", persistedMonitor.Id,
+                persistedMonitor.TabId, persistedMonitor.Title).ConfigureAwait(false);
+            HistoryChanged?.Invoke();
+            Activity?.Invoke(persistedMonitor.Id, ownershipMessage);
+            return;
+        }
+
         if (!ChatGptConversationIdentity.IsSame(persistedMonitor.Url, monitor.Url))
         {
             Activity?.Invoke(monitor.Id, $"Monitor #{monitor.Id} conversation identity changed before Start. Refresh the saved monitor before retrying.");
@@ -210,7 +226,10 @@ public sealed class ChatGptMonitorService
             if (_running.ContainsKey(monitor.Id)) return false;
         }
 
-        return await _database.UpdateMonitorConfigurationAsync(monitor);
+        var updated = await _database.UpdateMonitorConfigurationAsync(monitor).ConfigureAwait(false);
+        if (updated)
+            await DevelopmentPlanMonitorSettings.SetEnabledAsync(_database, monitor, monitor.UseDevelopmentMessages).ConfigureAwait(false);
+        return updated;
     }
 
     public async Task StopMonitorAsync(long monitorId)
