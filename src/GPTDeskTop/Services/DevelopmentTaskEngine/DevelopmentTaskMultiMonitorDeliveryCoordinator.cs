@@ -131,4 +131,17 @@ public sealed record DevelopmentTaskMonitorRecipient(
     string MonitorId,
     string TabId,
     Func<string, Task<bool>> SendVerifiedAsync,
-    Func<Task<ChatPageState>> ReadStateAsync);
+    Func<Task<ChatPageState>> ReadStateAsync)
+{
+    public DevelopmentTaskMonitorRecipient(
+        string monitorId,
+        string tabId,
+        Func<string, Task<bool>> sendVerifiedAsync)
+        : this(
+            monitorId,
+            tabId,
+            sendVerifiedAsync,
+            () => Task.FromResult(new ChatPageState(0, string.Empty, false, string.Empty)))
+    {
+    }
+}
