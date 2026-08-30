@@ -1,14 +1,16 @@
 namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
 /// <summary>
-/// Production binding for the development-plan engine: one lifecycle plus
-/// dynamic saved-monitor/chat resolution. The delivery coordinator is attached
-/// before Start/Resume so the first emitted message cannot bypass delivery.
+/// Production binding for the development-plan engine: one lifecycle, dynamic
+/// saved-monitor/chat delivery, and stable assistant-response observation.
+/// Delivery and response observers are attached before Start/Resume so the first
+/// prompt cannot bypass either half of the workflow.
 /// </summary>
 public sealed class DevelopmentTaskRuntimeBinding : IAsyncDisposable
 {
     private readonly DevelopmentTaskRuntimeCoordinator _runtime;
     private readonly DevelopmentTaskDynamicDeliveryCoordinator _delivery;
+    private readonly DevelopmentTaskResponseWatcher _responses;
     private bool _disposed;
 
     public DevelopmentTaskRuntimeBinding(
@@ -21,6 +23,7 @@ public sealed class DevelopmentTaskRuntimeBinding : IAsyncDisposable
         Engine = engine;
         _runtime = new DevelopmentTaskRuntimeCoordinator(engine);
         _delivery = new DevelopmentTaskDynamicDeliveryCoordinator(engine, targetFactory);
+        _responses = targetFactory.CreateResponseWatcher(engine);
     }
 
     public DevelopmentTaskEngine Engine { get; }
@@ -65,6 +68,7 @@ public sealed class DevelopmentTaskRuntimeBinding : IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
         await _delivery.DisposeAsync().ConfigureAwait(false);
+        await _responses.DisposeAsync().ConfigureAwait(false);
         await _runtime.DisposeAsync().ConfigureAwait(false);
     }
 }
