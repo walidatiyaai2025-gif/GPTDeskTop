@@ -1,4 +1,5 @@
 using GPTDeskTop.Models;
+using GPTDeskTop.Services.DevelopmentTaskEngine;
 
 namespace GPTDeskTop.UI;
 
@@ -375,7 +376,12 @@ public sealed class MonitorSettingsForm : Form
     }
 
     public static bool Edit(IWin32Window owner, SavedMonitor monitor)
-        => Edit(owner, monitor, false, out _);
+    {
+        var currentOwnership = DevelopmentPlanMonitorSettings.ReadForDialog(monitor);
+        if (!Edit(owner, monitor, currentOwnership, out var updatedOwnership)) return false;
+        DevelopmentPlanMonitorSettings.PersistFromDialog(monitor, updatedOwnership);
+        return true;
+    }
 
     public static bool Edit(
         IWin32Window owner,
@@ -394,6 +400,7 @@ public sealed class MonitorSettingsForm : Form
         monitor.ReplyDelaySeconds = dialog.ReplyDelaySeconds;
         monitor.TimerSeconds = dialog.TimerSeconds;
         monitor.Enabled = dialog.MonitorEnabled;
+        monitor.UseDevelopmentMessages = dialog.UseDevelopmentMessages;
         monitor.ConversationRotationEnabled = dialog.ConversationRotationEnabled;
         monitor.NewChatStartMessage = dialog.NewChatStartMessage;
         monitor.NewChatDelaySeconds = dialog.NewChatDelaySeconds;
