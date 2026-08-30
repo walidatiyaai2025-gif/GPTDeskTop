@@ -162,7 +162,9 @@ public sealed class MonitorPersistedStartConfigurationTests
 
         Assert.Contains("using var lifecycleLease = await AcquireLifecycleGateAsync(monitor.Id);", update, StringComparison.Ordinal);
         Assert.Contains("_running.ContainsKey(monitor.Id)", update, StringComparison.Ordinal);
-        Assert.Contains("return await _database.UpdateMonitorConfigurationAsync(monitor);", update, StringComparison.Ordinal);
+        Assert.Contains("var updated = await _database.UpdateMonitorConfigurationAsync(monitor)", update, StringComparison.Ordinal);
+        Assert.Contains("DevelopmentPlanMonitorSettings.SetEnabledAsync(_database, monitor, monitor.UseDevelopmentMessages)", update, StringComparison.Ordinal);
+        Assert.Contains("return updated;", update, StringComparison.Ordinal);
 
         Assert.Contains("await _monitor.UpdateMonitorConfigurationAsync(_selectedMonitor)", edit, StringComparison.Ordinal);
         Assert.DoesNotContain("_database.UpdateMonitorConfigurationAsync(_selectedMonitor)", edit, StringComparison.Ordinal);
