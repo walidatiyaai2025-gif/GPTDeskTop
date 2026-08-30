@@ -1,0 +1,100 @@
+name: T0004 Candidate 2 Installer Release
+
+on:
+  push:
+    branches:
+      - release/gptdesktop-t0004-candidate-2
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      SOURCE_SHA: 6428a463857e2ef7a4da22c2d332a2304640ec89
+      TAG: v2.0.0-t0004-candidate.2
+    steps:
+      - name: Checkout exact fixed T0004 source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify exact product source
+        shell: pwsh
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:SOURCE_SHA) { throw "Source mismatch: $actual != $env:SOURCE_SHA" }
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        shell: pwsh
+        run: |
+          dotnet restore GPTDeskTop.sln
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+          exit $LASTEXITCODE
+
+      - name: T0004 start and ownership regressions
+        shell: pwsh
+        run: |
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj `
+            --configuration Release --no-restore -p:EnableWindowsTargeting=true `
+            --filter "FullyQualifiedName~DevelopmentTaskExplicitStartRegressionTests|FullyQualifiedName~DevelopmentPlanMonitorOwnershipRegressionTests|FullyQualifiedName~T0004ExactHeadTriggerTests" `
+            --verbosity normal
+          exit $LASTEXITCODE
+
+      - name: Build Release x64
+        shell: pwsh
+        run: |
+          dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
+          exit $LASTEXITCODE
+
+      - name: Verify installer contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path 'Output/Setup/GPTDeskTop-Setup.exe').Path
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path $setup
+          foreach ($arg in @('--verify-payload','--verify-wizard')) {
+            $p = Start-Process -FilePath $setup -ArgumentList $arg -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "Installer contract $arg failed: $($p.ExitCode)" }
+          }
+
+      - name: Package candidate 2
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path Dist | Out-Null
+          Copy-Item 'Output/Setup/GPTDeskTop-Setup.exe' 'Dist/GPTDeskTop-Setup-T0004.exe' -Force
+          $hash = (Get-FileHash 'Dist/GPTDeskTop-Setup-T0004.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  GPTDeskTop-Setup-T0004.exe" | Set-Content 'Dist/SHA256SUMS.txt' -Encoding ascii
+
+      - name: Publish GitHub prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release create $env:TAG `
+            'Dist/GPTDeskTop-Setup-T0004.exe' `
+            'Dist/SHA256SUMS.txt' `
+            --repo '${{ github.repository }}' `
+            --target $env:SOURCE_SHA `
+            --title 'GPTDeskTop T0004 candidate 2' `
+            --notes "Development Messages ownership/start fix. Exact product source: $env:SOURCE_SHA. Candidate for operator validation while full PR convergence completes." `
+            --prerelease
+
+      - name: Verify published EXE
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = gh release view $env:TAG --repo '${{ github.repository }}' --json assets --jq '.assets[].name'
+          if ($assets -notcontains 'GPTDeskTop-Setup-T0004.exe') { throw 'Published release is missing the EXE.' }
+          if ($assets -notcontains 'SHA256SUMS.txt') { throw 'Published release is missing SHA256SUMS.txt.' }
