@@ -1,3 +1,5 @@
+using GPTDeskTop.Models;
+
 namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
 /// <summary>
@@ -60,6 +62,17 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
                     continue;
                 }
 
+                ChatPageState before;
+                try
+                {
+                    before = await recipient.ReadStateAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    allDelivered = false;
+                    continue;
+                }
+
                 var sent = await recipient.SendVerifiedAsync(message).ConfigureAwait(false);
                 if (!sent)
                 {
@@ -73,6 +86,8 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
                     TabId = recipient.TabId,
                     MessageIndex = messageIndex,
                     Fingerprint = fingerprint,
+                    AssistantCountBeforeDelivery = before.AssistantCount,
+                    AssistantFingerprintBeforeDelivery = DevelopmentTaskDeliveryCoordinator.Fingerprint(before.LastAssistantText ?? string.Empty),
                     DeliveredAt = DateTimeOffset.UtcNow,
                     Revision = _engine.State.Revision + 1
                 };
@@ -115,4 +130,5 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
 public sealed record DevelopmentTaskMonitorRecipient(
     string MonitorId,
     string TabId,
-    Func<string, Task<bool>> SendVerifiedAsync);
+    Func<string, Task<bool>> SendVerifiedAsync,
+    Func<Task<ChatPageState>> ReadStateAsync);
