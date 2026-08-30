@@ -10,8 +10,9 @@ public sealed class GitSettingsIndependentLoadingRegressionTests
 
         Assert.DoesNotContain("GitHubIntegrationControl", settings, StringComparison.Ordinal);
         Assert.DoesNotContain("GitHubApiProbeService", settings, StringComparison.Ordinal);
-        Assert.Contains("dialog.Shown += async", bootstrap, StringComparison.Ordinal);
-        Assert.Contains("await control.LoadAsync()", bootstrap, StringComparison.Ordinal);
+        Assert.Contains("VisibleChanged += async", bootstrap, StringComparison.Ordinal);
+        Assert.Contains("if (Visible) await EnsureLoadedAsync()", bootstrap, StringComparison.Ordinal);
+        Assert.Contains("await _control.LoadAsync()", bootstrap, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] segments)

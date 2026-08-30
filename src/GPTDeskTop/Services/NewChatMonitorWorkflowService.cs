@@ -1,5 +1,6 @@
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
+using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.Services;
 
@@ -8,6 +9,9 @@ public sealed record NewChatMonitorWorkflowResult(SavedMonitor Monitor, ChromeTa
 public sealed class NewChatMonitorWorkflowService
 {
     private sealed record FreshChatContext(ChromeTab OpenedTab, HashSet<string> PreexistingTargetIds);
+
+    private static readonly OutboundDeliveryCoordinator _outboundDelivery = new();
+    private static long _bootstrapSendSequence;
 
     private readonly ChromeDevToolsService _chrome;
     private readonly ChatGptMonitorService _monitor;
@@ -198,10 +202,16 @@ public sealed class NewChatMonitorWorkflowService
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            // Exactly one logical verified-send operation owns bootstrap delivery. If the target
-            // navigates while the receipt is being observed, ExecuteAsync resolves the fresh stable
-            // conversation and performs read-only reconciliation instead of starting another send.
-            return await _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken).ConfigureAwait(false);
+            // Bootstrap sends have no persisted monitor id yet, so each logical operation gets a unique
+            // negative runtime id while still entering the same process-wide FIFO send authority.
+            var bootstrapMonitorId = -Interlocked.Increment(ref _bootstrapSendSequence);
+            return await _outboundDelivery.SendOnceAsync(
+                bootstrapMonitorId,
+                tab.Url,
+                message,
+                () => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken),
+                null,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException && ChromeTransportFailureClassifier.IsTransient(ex))
         {

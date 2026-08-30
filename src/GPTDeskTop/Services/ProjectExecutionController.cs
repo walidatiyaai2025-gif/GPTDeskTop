@@ -1,5 +1,6 @@
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
+using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.Services;
 
@@ -7,6 +8,8 @@ public sealed record ProjectExecutionResult(bool Success, string Message);
 
 public sealed class ProjectExecutionController
 {
+    private static readonly OutboundDeliveryCoordinator _outboundDelivery = new();
+
     private readonly ProjectStateStore _store;
     private readonly LocalDatabase _database;
     private readonly ChatGptMonitorService _monitorService;
@@ -92,7 +95,13 @@ public sealed class ProjectExecutionController
             return new(false, state.NextAction);
         }
         var message = string.IsNullOrWhiteSpace(monitor.AutoReply) ? "كمل" : monitor.AutoReply.Trim();
-        var sent = await _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken);
+        var sent = await _outboundDelivery.SendOnceAsync(
+            monitor.Id,
+            tab.Url,
+            message,
+            () => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken),
+            null,
+            cancellationToken).ConfigureAwait(false);
         if (!sent)
         {
             await _monitorService.StopMonitorAsync(monitor.Id);
