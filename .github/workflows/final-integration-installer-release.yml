@@ -1,0 +1,291 @@
+name: Final Integration Installer Release
+
+on:
+  push:
+    branches:
+      - integration/gptdesktop-final-100-closure
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  final-integration-installer:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      BASE_SHA: 2a7246e6d5da498a9c35abf2c20ce971df7bc7cc
+      UI_SHA: afece8655c27b1710f06dc00e3a6a6d4b45600ae
+      RUNTIME_SHA: 6023ead16cb9a626198aa8a219d88aee263c5cd9
+
+    steps:
+      - name: Checkout exact integration candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact head and dual-line provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne '${{ github.sha }}') { throw "Exact-head mismatch: $actual != ${{ github.sha }}" }
+          foreach ($ancestor in @($env:BASE_SHA, $env:UI_SHA, $env:RUNTIME_SHA)) {
+            git merge-base --is-ancestor $ancestor HEAD
+            if ($LASTEXITCODE -ne 0) { throw "Required source $ancestor is not an ancestor of integration head $actual." }
+          }
+          New-Item -ItemType Directory -Path artifacts/runtime-closure -Force | Out-Null
+          New-Item -ItemType Directory -Path artifacts/test-results -Force | Out-Null
+          New-Item -ItemType Directory -Path artifacts/ui-evidence -Force | Out-Null
+          New-Item -ItemType Directory -Path artifacts/final-integration -Force | Out-Null
+          "GPTDESKTOP_RUNTIME_CLOSURE_ARTIFACT_DIR=$((Resolve-Path 'artifacts/runtime-closure').Path)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "GPTDESKTOP_RUNTIME_CLOSURE_SOURCE_SHA=$actual" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "UI_EVIDENCE_SOURCE_SHA=$actual" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        shell: pwsh
+        run: |
+          dotnet restore GPTDeskTop.sln
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Complete integrated runtime and UI regression suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj `
+            --configuration Release `
+            --no-restore `
+            -p:EnableWindowsTargeting=true `
+            --logger "trx;LogFileName=final-integration.trx" `
+            --results-directory artifacts/test-results `
+            --verbosity normal 2>&1 | Tee-Object -FilePath artifacts/test-results/final-integration.log
+          exit $LASTEXITCODE
+
+      - name: Enforce runtime and rendered UI acceptance evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtimeReceipts = @(
+            'artifacts/runtime-closure/send-gap-receipt.json',
+            'artifacts/runtime-closure/rate-limit-restart-receipt.json',
+            'artifacts/runtime-closure/final-runtime-journey-receipt.json'
+          )
+          foreach ($path in $runtimeReceipts) {
+            if (-not (Test-Path $path)) { throw "Missing runtime acceptance evidence: $path" }
+            $receipt = Get-Content $path -Raw | ConvertFrom-Json
+            if ($receipt.sourceSha -ne '${{ github.sha }}') { throw "Runtime evidence source mismatch: $path" }
+            if (-not $receipt.passed) { throw "Runtime evidence did not pass: $path" }
+          }
+          $send = Get-Content 'artifacts/runtime-closure/send-gap-receipt.json' -Raw | ConvertFrom-Json
+          if ([double]$send.minimumGapMilliseconds -lt 5000) { throw "Physical-send serialization below 5000ms: $($send.minimumGapMilliseconds)" }
+          $rate = Get-Content 'artifacts/runtime-closure/rate-limit-restart-receipt.json' -Raw | ConvertFrom-Json
+          if (-not $rate.persistedActive -or -not $rate.restoredActive -or [int]$rate.probeCountAfterExpiry -ne 1) { throw 'Durable global rate-limit restart contract failed.' }
+          $journey = Get-Content 'artifacts/runtime-closure/final-runtime-journey-receipt.json' -Raw | ConvertFrom-Json
+          foreach ($field in @('queueSerialized','rateLimitDetected','rateLimitPersisted','restartRestored','resumedAfterClear','prematureDoneRejected','completedAfterEvidence','passed')) {
+            if (-not $journey.$field) { throw "Integrated runtime journey field '$field' failed." }
+          }
+          if ([int]$journey.uncertainSendDuplicateCount -ne 0) { throw 'Exactly-once/uncertain-send reconciliation failed.' }
+          if ($journey.taskIdBeforeRollover -ne $journey.taskIdAfterRollover) { throw 'Fresh-chat handoff continuity failed.' }
+
+          $manifestPath = 'artifacts/ui-evidence/ui-evidence-manifest.json'
+          if (-not (Test-Path $manifestPath)) { throw 'Rendered production UI evidence manifest was not produced.' }
+          $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          foreach ($gate in @('QA-UI-001','1366x768','1600x900','1920x1080','125%-DPI','single-surface','multiline-interaction','Projects','Development Messages','GitHub/Git','design-parity')) {
+            $property = $manifest.checks.PSObject.Properties[$gate]
+            if ($null -eq $property -or $property.Value.Status -ne 'PASS') { throw "Rendered UI gate '$gate' is not PASS." }
+          }
+
+      - name: Release x64 exact-head build
+        shell: pwsh
+        run: |
+          dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
+          exit $LASTEXITCODE
+
+      - name: Verify binary and installer contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path 'Output/Setup/GPTDeskTop-Setup.exe').Path
+          $app = (Resolve-Path 'Output/Publish/GPTDeskTop.exe').Path
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path $setup
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path $app
+          foreach ($arg in @('--verify-payload','--verify-wizard')) {
+            $p = Start-Process -FilePath $setup -ArgumentList $arg -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "Installer contract '$arg' failed with exit code $($p.ExitCode)." }
+          }
+          if ((Get-Item $setup).Length -le 0 -or (Get-Item $app).Length -le 0) { throw 'Release binary is empty.' }
+
+      - name: Clean install, launch, reinstall, preserve data, uninstall, reinstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path 'Output/Setup/GPTDeskTop-Setup.exe').Path
+          $publishedApp = (Resolve-Path 'Output/Publish/GPTDeskTop.exe').Path
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\GPTDeskTop'
+          $installedApp = Join-Path $installDir 'GPTDeskTop.exe'
+          $installedSetup = Join-Path $installDir 'GPTDeskTop-Setup.exe'
+          $db = Join-Path $installDir 'appdata.db'
+          $startMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) 'GPTDeskTop'
+          $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GPTDeskTop'
+          $probeRoot = Join-Path $env:RUNNER_TEMP "gptdesktop-t0003-${{ github.run_id }}"
+          New-Item -ItemType Directory -Path $probeRoot -Force | Out-Null
+
+          function Invoke-Setup([string]$path, [string]$argument) {
+            $p = Start-Process -FilePath $path -ArgumentList $argument -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "Setup $argument failed with exit code $($p.ExitCode)." }
+          }
+          function Invoke-ManagedProbe([string]$exe, [string]$databasePath, [string]$receiptName) {
+            $receipt = Join-Path $probeRoot $receiptName
+            $p = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe -Parent) -ArgumentList @('--qa-crash-probe-verify', $databasePath, $receipt) -Wait -PassThru
+            if ($p.ExitCode -ne 0 -or -not (Test-Path $receipt)) { throw "Managed startup probe failed: $receiptName (exit $($p.ExitCode))." }
+            $json = Get-Content $receipt -Raw | ConvertFrom-Json
+            if ([int]$json.ProcessId -le 0) { throw 'Managed startup probe returned an invalid process id.' }
+          }
+
+          Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item $startMenuDir -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item $uninstallKey -Recurse -Force -ErrorAction SilentlyContinue
+
+          Invoke-Setup $setup '--qa-install'
+          if (-not (Test-Path $installedApp) -or -not (Test-Path $installedSetup)) { throw 'Clean install did not place required application/setup binaries.' }
+          if (-not (Test-Path (Join-Path $startMenuDir 'GPTDeskTop.lnk'))) { throw 'Clean install did not create Start Menu application shortcut.' }
+          if (-not (Test-Path (Join-Path $startMenuDir 'Uninstall GPTDeskTop.lnk'))) { throw 'Clean install did not create Start Menu uninstall shortcut.' }
+          if (-not (Test-Path $uninstallKey)) { throw 'Clean install did not register uninstall metadata.' }
+          $installedHash = (Get-FileHash $installedApp -Algorithm SHA256).Hash
+          $publishedHash = (Get-FileHash $publishedApp -Algorithm SHA256).Hash
+          if ($installedHash -ne $publishedHash) { throw 'Installed application binary does not match exact-head published payload.' }
+          Invoke-ManagedProbe $installedApp $db 'fresh-install-launch.json'
+          if (-not (Test-Path $db)) { throw 'Representative persistent application database was not created.' }
+          $dbHashBefore = (Get-FileHash $db -Algorithm SHA256).Hash
+
+          Invoke-Setup $setup '--qa-install'
+          if (-not (Test-Path $installedApp)) { throw 'Reinstall removed the installed application.' }
+          if ((Get-FileHash $installedApp -Algorithm SHA256).Hash -ne $publishedHash) { throw 'Reinstall did not retain the current exact-head binary.' }
+          if (-not (Test-Path $db)) { throw 'Reinstall lost persistent application data.' }
+          if ((Get-FileHash $db -Algorithm SHA256).Hash -ne $dbHashBefore) { throw 'Reinstall modified persistent database unexpectedly.' }
+          Invoke-ManagedProbe $installedApp (Join-Path $probeRoot 'reinstall-probe.db') 'reinstall-launch.json'
+
+          Invoke-Setup $installedSetup '--qa-uninstall'
+          $deadline = (Get-Date).AddSeconds(15)
+          while ((Test-Path $installedSetup) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          if (Test-Path $installedApp) { throw 'Uninstall left the application executable behind.' }
+          if (Test-Path $installedSetup) { throw 'Uninstall left the installed setup executable behind.' }
+          if (Test-Path (Join-Path $installDir 'appsettings.json')) { throw 'Uninstall left the application configuration payload behind.' }
+          if (Test-Path $startMenuDir) { throw 'Uninstall left Start Menu executable shortcuts behind.' }
+          if (Test-Path $uninstallKey) { throw 'Uninstall registration was not removed.' }
+          if (-not (Test-Path $db)) { throw 'Uninstall did not preserve intended local database data.' }
+          if ((Get-FileHash $db -Algorithm SHA256).Hash -ne $dbHashBefore) { throw 'Uninstall changed persistent database data.' }
+
+          Invoke-Setup $setup '--qa-install'
+          if (-not (Test-Path $installedApp)) { throw 'Reinstall after uninstall did not restore the application.' }
+          if (-not (Test-Path $db)) { throw 'Reinstall after uninstall lost persistent application data.' }
+          if ((Get-FileHash $db -Algorithm SHA256).Hash -ne $dbHashBefore) { throw 'Reinstall after uninstall changed persistent database data.' }
+          Invoke-ManagedProbe $installedApp (Join-Path $probeRoot 'post-uninstall-reinstall.db') 'post-uninstall-reinstall-launch.json'
+
+          [ordered]@{
+            freshInstall = 'PASS'
+            launch = 'PASS'
+            reinstall = 'PASS'
+            dataPreservation = 'PASS'
+            uninstall = 'PASS'
+            reinstallAfterUninstall = 'PASS'
+          } | ConvertTo-Json | Set-Content 'artifacts/final-integration/lifecycle.json' -Encoding utf8
+
+      - name: Package exact-head release and acceptance evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path Dist -Force | Out-Null
+          Copy-Item 'Output/Setup/GPTDeskTop-Setup.exe' 'Dist/GPTDeskTop-Setup.exe' -Force
+          Compress-Archive -Path 'Output/Publish/*' -DestinationPath 'Dist/GPTDeskTop-Windows-x64.zip' -Force
+          $setupHash = (Get-FileHash 'Dist/GPTDeskTop-Setup.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $zipHash = (Get-FileHash 'Dist/GPTDeskTop-Windows-x64.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+          @("$setupHash  GPTDeskTop-Setup.exe", "$zipHash  GPTDeskTop-Windows-x64.zip") | Set-Content 'Dist/SHA256SUMS.txt' -Encoding ascii
+          $lifecycle = Get-Content 'artifacts/final-integration/lifecycle.json' -Raw | ConvertFrom-Json
+          $acceptance = [ordered]@{
+            project = 'GPTDESKTOP'
+            task = 'GPTDESKTOP-T0003-FINAL-INTEGRATION'
+            requestedTaskAlias = 'GPTDESKTOP-T0003-INTEGRATION-INSTALLER'
+            baseSha = $env:BASE_SHA
+            uiSha = $env:UI_SHA
+            runtimeSha = $env:RUNTIME_SHA
+            integrationSha = '${{ github.sha }}'
+            testRunIds = @(33295424190, 33295581082, [int64]'${{ github.run_id }}')
+            installerRunId = '${{ github.run_id }}'
+            installer = 'GPTDeskTop-Setup.exe'
+            sha256 = $setupHash
+            lifecycle = $lifecycle
+          }
+          $acceptance | ConvertTo-Json -Depth 6 | Set-Content 'Dist/acceptance.json' -Encoding utf8
+          Copy-Item 'Dist/acceptance.json' 'artifacts/final-integration/acceptance.json' -Force
+
+      - name: Upload final integration evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-T0003-Final-Integration-Evidence
+          path: |
+            artifacts/runtime-closure
+            artifacts/ui-evidence
+            artifacts/test-results
+            artifacts/final-integration
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload final release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-T0003-Release
+          path: Dist/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish new exact-head GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "v2.0.0-t0003.${{ github.run_number }}"
+          $title = "GPTDeskTop final integrated build ${{ github.run_number }}"
+          $notes = @"
+          Final governed GPTDESKTOP integration candidate.
+
+          Source: ${{ github.sha }}
+          UI closure: $env:UI_SHA
+          Runtime closure: $env:RUNTIME_SHA
+          Workflow: ${{ github.run_id }}
+
+          This is a new integrated build containing the final UI and Runtime closure. It is not v2.0.0-build.217.
+          "@
+          gh release create $tag `
+            'Dist/GPTDeskTop-Setup.exe' `
+            'Dist/GPTDeskTop-Windows-x64.zip' `
+            'Dist/SHA256SUMS.txt' `
+            'Dist/acceptance.json' `
+            --repo '${{ github.repository }}' `
+            --target '${{ github.sha }}' `
+            --title $title `
+            --notes $notes `
+            --latest
+          "FINAL_RELEASE_TAG=$tag" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Independently verify published Setup hash
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $download = Join-Path $env:RUNNER_TEMP 'published-gptdesktop-setup'
+          New-Item -ItemType Directory -Path $download -Force | Out-Null
+          gh release download $env:FINAL_RELEASE_TAG --repo '${{ github.repository }}' --pattern 'GPTDeskTop-Setup.exe' --dir $download
+          $localHash = (Get-FileHash 'Dist/GPTDeskTop-Setup.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $publishedHash = (Get-FileHash (Join-Path $download 'GPTDeskTop-Setup.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($localHash -ne $publishedHash) { throw "Published Setup hash mismatch: $publishedHash != $localHash" }
+          Write-Host "PUBLISHED_SETUP_SHA256=$publishedHash"
