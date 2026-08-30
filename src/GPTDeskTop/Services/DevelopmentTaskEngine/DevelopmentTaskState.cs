@@ -49,6 +49,13 @@ public sealed class DevelopmentTaskDeliveryReceipt
     public string TabId { get; set; } = string.Empty;
     public int MessageIndex { get; set; } = -1;
     public string Fingerprint { get; set; } = string.Empty;
+
+    // Captured immediately before the verified composer send. Response watchers must
+    // observe a later assistant turn, not simply rediscover the response that existed
+    // before the development-plan prompt was delivered.
+    public int AssistantCountBeforeDelivery { get; set; }
+    public string AssistantFingerprintBeforeDelivery { get; set; } = string.Empty;
+
     public DateTimeOffset DeliveredAt { get; set; }
     public long Revision { get; set; }
 }
