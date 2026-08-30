@@ -4,7 +4,8 @@ namespace GPTDeskTop.UI;
 
 /// <summary>
 /// Premium editable catalog for the exact development-plan message variants consumed by
-/// DevelopmentTaskEngine. Persistence remains atomic and no delivery behavior is implemented here.
+/// DevelopmentTaskEngine. Mutations are persisted atomically before the UI reports success so
+/// the runtime and the catalog always observe the same canonical message set.
 /// </summary>
 public sealed class DevelopmentMessageCatalogControl : UserControl
 {
@@ -197,9 +198,9 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
     {
         var text = _editor.Text.Trim();
         if (text.Length == 0) return;
+        var previous = _items.ToList();
         _items.Add(text);
-        RefreshList(_items.Count - 1);
-        _status.Text = "Added — save catalog to persist.";
+        PersistMutation(previous, _items.Count - 1, "Added and persisted for runtime.");
     }
 
     private void UpdateMessage()
@@ -207,9 +208,9 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
         var index = _messages.SelectedIndex;
         var text = _editor.Text.Trim();
         if (index < 0 || index >= _items.Count || text.Length == 0) return;
+        var previous = _items.ToList();
         _items[index] = text;
-        RefreshList(index);
-        _status.Text = "Updated — save catalog to persist.";
+        PersistMutation(previous, index, "Updated and persisted for runtime.");
     }
 
     private void RemoveMessage()
@@ -221,9 +222,9 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
         }
         var index = _messages.SelectedIndex;
         if (index < 0) return;
+        var previous = _items.ToList();
         _items.RemoveAt(index);
-        RefreshList(Math.Max(0, index - 1));
-        _status.Text = "Removed — save catalog to persist.";
+        PersistMutation(previous, Math.Max(0, index - 1), "Removed and persisted for runtime.");
     }
 
     private void MoveMessage(int delta)
@@ -231,25 +232,17 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
         var index = _messages.SelectedIndex;
         var target = index + delta;
         if (index < 0 || target < 0 || target >= _items.Count) return;
+        var previous = _items.ToList();
         (_items[index], _items[target]) = (_items[target], _items[index]);
-        RefreshList(target);
-        _status.Text = "Order changed — save catalog to persist.";
+        PersistMutation(previous, target, "Order persisted for runtime.");
     }
 
     private void SaveCatalog()
     {
         try
         {
-            if (_items.Count == 0) throw new InvalidOperationException("The development message catalog cannot be empty.");
-            if (_items.Any(string.IsNullOrWhiteSpace)) throw new InvalidOperationException("Empty messages are not allowed.");
-
-            var directory = Path.GetDirectoryName(_catalogPath);
-            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-
-            var temp = _catalogPath + ".tmp";
-            var json = JsonSerializer.Serialize(new { messages = _items }, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(temp, json);
-            File.Move(temp, _catalogPath, true);
+            PersistCatalogCore();
+            RefreshList(_messages.SelectedIndex);
             _status.Text = $"Saved {DateTime.Now:t}.";
         }
         catch (Exception ex)
@@ -257,5 +250,36 @@ public sealed class DevelopmentMessageCatalogControl : UserControl
             _status.Text = "Save failed.";
             MessageBox.Show(FindForm(), ex.Message, "Message Catalog", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private void PersistMutation(List<string> previous, int selected, string successStatus)
+    {
+        try
+        {
+            PersistCatalogCore();
+            RefreshList(selected);
+            _status.Text = successStatus;
+        }
+        catch (Exception ex)
+        {
+            _items = previous;
+            RefreshList(Math.Min(Math.Max(0, selected), Math.Max(0, _items.Count - 1)));
+            _status.Text = "Save failed — change rolled back.";
+            MessageBox.Show(FindForm(), ex.Message, "Message Catalog", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void PersistCatalogCore()
+    {
+        if (_items.Count == 0) throw new InvalidOperationException("The development message catalog cannot be empty.");
+        if (_items.Any(string.IsNullOrWhiteSpace)) throw new InvalidOperationException("Empty messages are not allowed.");
+
+        var directory = Path.GetDirectoryName(_catalogPath);
+        if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+
+        var temp = _catalogPath + ".tmp";
+        var json = JsonSerializer.Serialize(new { messages = _items }, new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(temp, json);
+        File.Move(temp, _catalogPath, true);
     }
 }
