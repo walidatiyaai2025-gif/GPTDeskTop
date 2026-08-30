@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
+using GPTDeskTop.Services;
 
 namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
@@ -80,7 +81,16 @@ public static class DevelopmentPlanMonitorSettings
         var value = enabled ? "1" : "0";
         await database.SetSettingAsync(ConversationKey(monitor.Url), value, cancellationToken).ConfigureAwait(false);
         if (monitor.Id > 0)
+        {
             await database.SetSettingAsync(Key(monitor.Id), value, cancellationToken).ConfigureAwait(false);
+            if (enabled)
+            {
+                // Development Messages becomes the only continuation owner for this monitor.
+                // Do not let generic restart recovery resurrect the legacy single AutoReply loop.
+                await LastWorkingStateService.SetMonitorDesiredRunningAsync(
+                    database, monitor.Id, false, cancellationToken).ConfigureAwait(false);
+            }
+        }
         monitor.UseDevelopmentMessages = enabled;
     }
 
