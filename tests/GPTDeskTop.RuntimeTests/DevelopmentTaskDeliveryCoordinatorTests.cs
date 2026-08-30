@@ -25,12 +25,13 @@ public sealed class DevelopmentTaskDeliveryCoordinatorTests
             await engine.StartAsync("p", "Plan");
             await WaitForAsync(() => delivered.Task.IsCompleted);
             Assert.Equal(0, engine.State.CurrentMessageIndex);
+            Assert.False(engine.State.AwaitingAssistantResponse);
         }
         finally { TryDelete(root); }
     }
 
     [Fact]
-    public async Task SuccessfulDeliveryAdvancesExactlyOnce()
+    public async Task SuccessfulDeliveryWaitsForAssistantAndThenAdvancesExactlyOnce()
     {
         var root = CreateRoot();
         try
@@ -41,19 +42,34 @@ public sealed class DevelopmentTaskDeliveryCoordinatorTests
             await using var engine = new DevelopmentTaskEngine(TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(5), statePath, messagesPath);
 
             var sendCount = 0;
-            var advanced = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            await using var coordinator = new DevelopmentTaskDeliveryCoordinator(engine, (_, _) =>
-            {
-                Interlocked.Increment(ref sendCount);
-                advanced.TrySetResult(true);
-                return Task.FromResult(true);
-            });
+            var delivered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var coordinator = new DevelopmentTaskDeliveryCoordinator(
+                engine,
+                (_, _) =>
+                {
+                    Interlocked.Increment(ref sendCount);
+                    delivered.TrySetResult(true);
+                    return Task.FromResult(true);
+                },
+                responseMonitorId: "17");
 
             await engine.StartAsync("p", "Plan");
-            await WaitForAsync(() => advanced.Task.IsCompleted);
-            await Task.Delay(350);
+            await WaitForAsync(() => delivered.Task.IsCompleted && engine.State.AwaitingAssistantResponse);
+            await Task.Delay(150);
 
+            Assert.Equal(0, engine.State.CurrentMessageIndex);
+            Assert.Equal(0, engine.State.CompletedMessages);
+            Assert.Equal(1, sendCount);
+            Assert.True(engine.State.AwaitingAssistantResponse);
+            Assert.Contains("17", engine.State.AwaitingResponseMonitorIds);
+
+            var advanced = await engine.HandleAssistantResponseAsync("17", "stable completed response", isError: false);
+            Assert.True(advanced);
             Assert.Equal(1, engine.State.CurrentMessageIndex);
+            Assert.Equal(1, engine.State.CompletedMessages);
+            Assert.False(engine.State.AwaitingAssistantResponse);
+
+            await Task.Delay(200);
             Assert.Equal(1, sendCount);
         }
         finally { TryDelete(root); }
