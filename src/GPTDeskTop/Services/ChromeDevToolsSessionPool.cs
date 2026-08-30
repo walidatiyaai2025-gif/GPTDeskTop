@@ -102,6 +102,11 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
 
     public void Clear()
     {
+        if (GenerationRecoveryInterlock.Shared.HasAnyActiveLease)
+        {
+            RuntimeFlightRecorder.Record("Monitor", "RecoverySuppressed", "suppressed", "active-generation:session-pool-clear");
+            return;
+        }
         List<DevToolsSession> sessions;
         lock (_sync)
         {

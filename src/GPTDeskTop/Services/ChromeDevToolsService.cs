@@ -36,7 +36,7 @@ public sealed class ChromeDevToolsService
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
   const errorPattern = /message delivery timed out|something went wrong|there was an error|network error|failed to (generate|load)|unable to (generate|load)|error generating|حدث خطأ|خطأ في الشبكة|تعذر/i;
-  const globalRateLimitPattern = /too many requests|making requests too quickly|temporarily limited access(?: to your conversations)?|please wait a few minutes before trying again/i;
+  const globalRateLimitPattern = /too many requests|making requests too quickly|temporarily limited access(?: to your conversations)?|please wait a few minutes before trying again|(?:http|error|status)\s*429/i;
   const findGlobalRateLimitText = () => {
     const selectors = ['[role="dialog"]', '[aria-modal="true"]', '[role="alert"]'];
     for (const selector of selectors) {
@@ -308,11 +308,24 @@ public sealed class ChromeDevToolsService
         _monitorChromeProcess = Process.Start(new ProcessStartInfo { FileName = chromePath, Arguments = arguments, UseShellExecute = true }) ?? throw new InvalidOperationException("Chrome could not be started.");
         return _monitorChromeProcess;
     }
-    public async Task<ChromeTab> CreateTabAsync(string url, CancellationToken cancellationToken = default) { var existing = await GetTabsAsync(cancellationToken); var controlTab = existing.FirstOrDefault() ?? throw new InvalidOperationException("Monitor Chrome has no controllable page."); var result = await SendCommandAsync(controlTab, "Target.createTarget", new { url }, cancellationToken); var targetId = result.TryGetProperty("targetId", out var id) ? id.GetString() : null; if (string.IsNullOrWhiteSpace(targetId)) throw new InvalidOperationException("Chrome did not return a target ID for the new tab."); for (var attempt = 0; attempt < 40; attempt++) { cancellationToken.ThrowIfCancellationRequested(); await Task.Delay(250, cancellationToken); var tabs = await GetTabsAsync(cancellationToken); var created = tabs.FirstOrDefault(t => string.Equals(t.Id, targetId, StringComparison.Ordinal)); if (created is not null) return created; } throw new TimeoutException("The new Chrome tab did not become ready in time."); }
+    public async Task<ChromeTab> CreateTabAsync(string url, CancellationToken cancellationToken = default)
+    {
+        if (GenerationRecoveryInterlock.Shared.HasAnyActiveLease)
+        {
+            RuntimeFlightRecorder.Record("Monitor", "RecoverySuppressed", "suppressed", "active-generation:create-target");
+            throw new InvalidOperationException("Creating a Chrome target is forbidden while an authoritative generation lease is active.");
+        }
+        var existing = await GetTabsAsync(cancellationToken); var controlTab = existing.FirstOrDefault() ?? throw new InvalidOperationException("Monitor Chrome has no controllable page."); var result = await SendCommandAsync(controlTab, "Target.createTarget", new { url }, cancellationToken); var targetId = result.TryGetProperty("targetId", out var id) ? id.GetString() : null; if (string.IsNullOrWhiteSpace(targetId)) throw new InvalidOperationException("Chrome did not return a target ID for the new tab."); for (var attempt = 0; attempt < 40; attempt++) { cancellationToken.ThrowIfCancellationRequested(); await Task.Delay(250, cancellationToken); var tabs = await GetTabsAsync(cancellationToken); var created = tabs.FirstOrDefault(t => string.Equals(t.Id, targetId, StringComparison.Ordinal)); if (created is not null) return created; } throw new TimeoutException("The new Chrome tab did not become ready in time.");
+    }
     public Task<ChromeTab> CreateNewChatTabAsync(CancellationToken cancellationToken = default) => CreateTabAsync(_config.StartUrl, cancellationToken);
-    public async Task<bool> CloseTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) { try { using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/close/{Uri.EscapeDataString(tab.Id)}", cancellationToken); return response.IsSuccessStatusCode; } catch { return false; } finally { _sessionPool.Invalidate(tab.Id); lock (_autoFollowSync) _autoFollowSequences.Remove(tab.Id); } }
+    public async Task<bool> CloseTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) { if (GenerationRecoveryInterlock.Shared.IsActive(tab)) { GenerationRecoveryInterlock.Shared.RecordSuppressed(0, tab, "close-target"); return false; } try { using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/close/{Uri.EscapeDataString(tab.Id)}", cancellationToken); return response.IsSuccessStatusCode; } catch { return false; } finally { _sessionPool.Invalidate(tab.Id); lock (_autoFollowSync) _autoFollowSequences.Remove(tab.Id); } }
     public async Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken = default)
     {
+        if (GenerationRecoveryInterlock.Shared.HasAnyActiveLease)
+        {
+            RuntimeFlightRecorder.Record("Monitor", "RecoverySuppressed", "suppressed", "active-generation:browser-close");
+            return;
+        }
         var trackedProcess = _monitorChromeProcess;
         var browserCloseRequested = false;
 
@@ -454,6 +467,11 @@ public sealed class ChromeDevToolsService
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
         {
             var failureCount = IncrementChatStateTransportFailures(tab);
+            if (GenerationRecoveryInterlock.Shared.IsActive(tab))
+            {
+                RuntimeFlightRecorder.Record("Monitor", "TransportReconnectDeferred", "active-generation", ex.GetType().Name, tabId: tab.Id, conversationRef: tab.Url);
+                return await RetrySameTargetGenerationObservationAsync(tab, failureCount, cancellationToken).ConfigureAwait(false);
+            }
             if (failureCount < MonitorRecoveryFailureThreshold)
                 throw;
 
@@ -463,6 +481,57 @@ public sealed class ChromeDevToolsService
             ResetChatStateTransportFailures(tab);
             return await ReadChatStateCoreAsync(tab, cancellationToken);
         }
+    }
+
+    public async Task<ChatPageState?> TryGetChatStatePassiveAsync(ChromeTab tab, CancellationToken cancellationToken = default)
+    {
+        try { return await ReadChatStateCoreAsync(tab, cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+        {
+            RuntimeFlightRecorder.Record("Monitor", "TransportReconnectDeferred", "passive-observation", ex.GetType().Name, tabId: tab.Id, conversationRef: tab.Url);
+            return null;
+        }
+    }
+
+    private async Task<ChatPageState> RetrySameTargetGenerationObservationAsync(ChromeTab tab, int failureCount, CancellationToken cancellationToken)
+    {
+        Exception? last = null;
+        var authoritativeMissingTargetObservations = 0;
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var baseDelay = Math.Min(8000, 250 * (1 << Math.Min(attempt + Math.Max(0, failureCount - 1), 5)));
+            await Task.Delay(baseDelay + Random.Shared.Next(0, 151), cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var targetId = tab.Id;
+                _sessionPool.Invalidate(targetId);
+                var tabs = await GetTabsAsync(cancellationToken).ConfigureAwait(false);
+                var sameTarget = tabs.FirstOrDefault(candidate => string.Equals(candidate.Id, targetId, StringComparison.Ordinal));
+                if (sameTarget is null)
+                {
+                    authoritativeMissingTargetObservations++;
+                    if (authoritativeMissingTargetObservations >= 3)
+                    {
+                        GenerationRecoveryInterlock.Shared.ConfirmTargetDestroyed(tab);
+                        throw new IOException("The generating target was positively confirmed destroyed after three successful target enumerations.");
+                    }
+                    throw new IOException("The generating target is not currently observable; destructive replacement remains forbidden.");
+                }
+                authoritativeMissingTargetObservations = 0;
+                RebindTab(tab, sameTarget);
+                var state = await ReadChatStateCoreAsync(tab, cancellationToken).ConfigureAwait(false);
+                ResetChatStateTransportFailures(tab);
+                return state;
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+            {
+                last = ex;
+                RuntimeFlightRecorder.Record("Monitor", "TransportReconnectDeferred", "active-generation", $"same-target-attempt-{attempt + 1}", tabId: tab.Id, conversationRef: tab.Url);
+            }
+        }
+        throw last ?? new WebSocketException("Same-target generation observation remains unavailable.");
     }
     private string BuildChatStateInstallExpression()
     {
@@ -527,6 +596,12 @@ public sealed class ChromeDevToolsService
     {
         if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
             return false;
+
+        if (GenerationRecoveryInterlock.Shared.IsActive(tab))
+        {
+            GenerationRecoveryInterlock.Shared.RecordSuppressed(0, tab, "transport-recovery");
+            return false;
+        }
 
         await _monitorBrowserRecoveryGate.WaitAsync(cancellationToken);
         try
@@ -1376,7 +1451,15 @@ public sealed class ChromeDevToolsService
         }
     }
     private async Task<(int Count, string LastText)> GetUserMessageSnapshotAsync(ChromeTab tab, CancellationToken cancellationToken) { const string expression = """ (() => { const messages = [...document.querySelectorAll('[data-message-author-role="user"]')]; const last = messages.length ? (messages[messages.length - 1].innerText || messages[messages.length - 1].textContent || '').trim() : ''; return { count: messages.length, lastText: last }; })() """; var value = await EvaluateAsync(tab, expression, cancellationToken, false); var count = value.TryGetProperty("count", out var c) ? c.GetInt32() : 0; var last = value.TryGetProperty("lastText", out var t) ? t.GetString() ?? string.Empty : string.Empty; return (count, last); }
-    public async Task ReloadTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) => await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
+    public async Task ReloadTabAsync(ChromeTab tab, CancellationToken cancellationToken = default)
+    {
+        if (GenerationRecoveryInterlock.Shared.IsActive(tab))
+        {
+            GenerationRecoveryInterlock.Shared.RecordSuppressed(0, tab, "page-reload");
+            return;
+        }
+        await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
+    }
     private async Task<ChromeTab?> TryGetBrowserTargetAsync(CancellationToken cancellationToken)
     {
         try

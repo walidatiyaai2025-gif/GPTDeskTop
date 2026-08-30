@@ -1,0 +1,34 @@
+{
+  "SCHEMA_VERSION": "1.0.0",
+  "INCIDENT_ID": "INC-GPTDESKTOP-2026-0001",
+  "PROJECT_ID": "GPTDESKTOP",
+  "REPOSITORY": "walidatiyaai2025-gif/GPTDeskTop",
+  "TARGET_SCOPE": "PROJECT",
+  "TARGET_VARIANT": null,
+  "SEVERITY": "P1",
+  "STATE": "PERMANENT_FIX_IN_PROGRESS",
+  "PRODUCTION_BASE_SHA": "UNKNOWN-USER-REPORTED-LIVE-RUNTIME",
+  "AFFECTED_PRODUCTION_VERSION": null,
+  "DISCOVERED_AT": "2026-08-30T00:00:00+03:00",
+  "TEMPORARY_MITIGATION": {
+    "APPLIED": false,
+    "TASK_ID": null,
+    "BRANCH": null,
+    "SHA": null,
+    "DEPLOYMENT_EVIDENCE": [],
+    "ROLLBACK_PLAN": null
+  },
+  "ROOT_CAUSE_STATUS": "CONFIRMED",
+  "ROOT_CAUSE_SUMMARY": "Recoverable CDP/WebSocket failures escalated after a fixed failure count into reload, target reopening, browser close, and target recreation without honoring the last authoritative IsGenerating state.",
+  "PERMANENT_FIX_REQUIRED": true,
+  "PERMANENT_FIX_TASK_ID": "GPTDESKTOP-MONITOR-GENERATION-RECOVERY-SAFETY-HOTFIX",
+  "PERMANENT_FIX_TARGET_VERSION": "NEXT_RELEASE",
+  "PERMANENT_FIX_SHA": null,
+  "REGRESSION_TEST_REQUIRED": true,
+  "REGRESSION_TEST_EVIDENCE": [
+    "tests/GPTDeskTop.RuntimeTests/GenerationRecoverySafetyHotfixTests.cs"
+  ],
+  "CARRY_FORWARD_TO_FUTURE_RELEASES": true,
+  "RELEASE_GATE_STATE": "OPEN",
+  "NOTES": "Owner supplied live Runtime Inspector evidence without an immutable production SHA/version. Permanent closure requires exact production-base reconciliation and accepted release/deployment evidence."
+}
