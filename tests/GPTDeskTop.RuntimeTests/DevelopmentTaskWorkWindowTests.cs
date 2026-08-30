@@ -16,17 +16,25 @@ public sealed class DevelopmentTaskWorkWindowTests
             await File.WriteAllTextAsync(messages, "{\"Messages\":[\"one\",\"two\",\"three\"]}");
             await using var engine = new DevelopmentTaskEngine(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1), state, messages);
             var sent = 0;
-            await using var coordinator = new DevelopmentTaskDeliveryCoordinator(engine, (_, _) =>
-            {
-                Interlocked.Increment(ref sent);
-                return Task.FromResult(true);
-            });
+            var delivered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var coordinator = new DevelopmentTaskDeliveryCoordinator(
+                engine,
+                (_, _) =>
+                {
+                    Interlocked.Increment(ref sent);
+                    delivered.TrySetResult(true);
+                    return Task.FromResult(true);
+                },
+                responseMonitorId: "monitor-1");
 
             await engine.StartAsync("p", "plan");
+            await delivered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await WaitUntilAsync(() => engine.State.AwaitingAssistantResponse, TimeSpan.FromSeconds(3));
             await Task.Delay(800);
 
-            Assert.Equal(1, sent);
-            Assert.Equal(1, engine.State.CurrentMessageIndex);
+            Assert.Equal(1, Volatile.Read(ref sent));
+            Assert.Equal(0, engine.State.CurrentMessageIndex);
+            Assert.True(engine.State.AwaitingAssistantResponse);
             Assert.Equal(DevelopmentTaskEngineStatus.Working, engine.State.Status);
         }
         finally
@@ -50,5 +58,16 @@ public sealed class DevelopmentTaskWorkWindowTests
                                        !string.IsNullOrWhiteSpace(state.LastDeliveredMessageFingerprint);
 
         Assert.True(alreadyDeliveredInWindow);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!condition())
+        {
+            if (DateTimeOffset.UtcNow >= deadline)
+                throw new TimeoutException("Condition was not reached in time.");
+            await Task.Delay(20);
+        }
     }
 }
