@@ -26,6 +26,19 @@ public sealed class DevelopmentTaskState : EventArgs
     public int LastDeliveredMessageIndex { get; set; } = -1;
     public string? LastDeliveredMessageFingerprint { get; set; }
     public Dictionary<string, DevelopmentTaskDeliveryReceipt> DeliveryReceipts { get; set; } = new(StringComparer.Ordinal);
+
+    // Delivery is not completion. After every recipient has a verified outbound receipt,
+    // the exact message position is held here until the monitor reports a stable,
+    // non-generating assistant response. These fields are persisted so restart cannot
+    // duplicate the prompt or skip ahead.
+    public bool AwaitingAssistantResponse { get; set; }
+    public int AwaitingResponseMessageIndex { get; set; } = -1;
+    public DateTimeOffset? AwaitingResponseSince { get; set; }
+    public List<string> AwaitingResponseMonitorIds { get; set; } = [];
+    public List<string> CompletedResponseMonitorIds { get; set; } = [];
+    public string? LastAssistantResponseFingerprint { get; set; }
+    public DateTimeOffset? LastAssistantResponseAt { get; set; }
+
     public string? LastError { get; set; }
     public long Revision { get; set; }
 }
