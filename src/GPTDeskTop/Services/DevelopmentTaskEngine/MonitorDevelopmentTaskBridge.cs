@@ -5,7 +5,8 @@ namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
 /// <summary>
 /// Connects the development-plan engine to a specific saved Monitor/Chrome tab.
-/// The engine can advance only after the monitor is running and CDP verifies receipt.
+/// The engine can advance only after the monitor is running, CDP verifies receipt,
+/// and that monitor later emits a stable assistant response.
 /// </summary>
 public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
 {
@@ -41,7 +42,8 @@ public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
         _coordinator ??= new DevelopmentTaskDeliveryCoordinator(
             _engine,
             SendVerifiedAsync,
-            CheckpointDeliveredAsync);
+            CheckpointDeliveredAsync,
+            MonitorId);
     }
 
     private Task<bool> SendVerifiedAsync(string message, CancellationToken cancellationToken)
