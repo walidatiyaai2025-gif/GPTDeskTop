@@ -23,6 +23,11 @@ public sealed class ChromeRecoveryService
         string reason,
         CancellationToken cancellationToken = default)
     {
+        if (GenerationRecoveryInterlock.Shared.HasAnyActiveLease)
+        {
+            RuntimeFlightRecorder.Record("Monitor", "RecoverySuppressed", "suppressed", "active-generation:browser-recovery");
+            return new Dictionary<long, ChromeTab>();
+        }
         await Gate.WaitAsync(cancellationToken);
         try
         {
