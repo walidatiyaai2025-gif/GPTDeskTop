@@ -35,12 +35,14 @@ public sealed class DevelopmentTaskRestartReconciliationTests
                             "tab-1",
                             DevelopmentTaskDeliveryCoordinator.Fingerprint(message),
                             cancellationToken);
-                    });
+                    },
+                    responseMonitorId: "monitor-1");
                 coordinator.DeliverySucceeded += _ => deliveryCompleted.TrySetResult();
 
                 await first.StartAsync("plan-1", "Plan One");
                 await deliveryCompleted.Task.WaitAsync(TimeSpan.FromSeconds(3));
-                await WaitUntilAsync(() => first.State.CurrentMessageIndex == 1, TimeSpan.FromSeconds(3));
+                await WaitUntilAsync(() => first.State.AwaitingAssistantResponse, TimeSpan.FromSeconds(3));
+                Assert.Equal(0, first.State.CurrentMessageIndex);
             }
 
             await using (var restarted = new DevelopmentTaskEngine(
@@ -54,7 +56,8 @@ public sealed class DevelopmentTaskRestartReconciliationTests
                 await Task.Delay(600);
 
                 Assert.Equal(DevelopmentTaskEngineStatus.Working, restarted.State.Status);
-                Assert.Equal(1, restarted.State.CurrentMessageIndex);
+                Assert.True(restarted.State.AwaitingAssistantResponse);
+                Assert.Equal(0, restarted.State.CurrentMessageIndex);
                 Assert.Equal(1, Volatile.Read(ref emissions));
             }
         }
