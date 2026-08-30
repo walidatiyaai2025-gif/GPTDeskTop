@@ -45,6 +45,14 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
 
     public event EventHandler? ExpandedChanged;
 
+    internal DevelopmentTaskRuntimeBinding RuntimeBinding => _binding;
+
+    // Both concrete editor controls are hosted in the canonical Development Messages
+    // workspace. Keeping these contracts visible on the dashboard makes its Messages and
+    // Schedule commands verifiably resolve to the same persisted product surface.
+    internal static Type MessageCatalogControlType => typeof(DevelopmentMessageCatalogControl);
+    internal static Type ScheduleSettingsControlType => typeof(DevelopmentTaskScheduleSettingsControl);
+
     public string FooterSummary
     {
         get
@@ -179,6 +187,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
 
         FluentTheme.StyleButton(_start, primary: true);
         FluentTheme.StyleButton(_stop, danger: true);
+        FluentTheme.StyleButton(_messagesButton);
         FluentTheme.StyleButton(_settingsButton);
         FluentTheme.StyleButton(_toggle);
     }
@@ -189,8 +198,8 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         _pause.Click += async (_, _) => await RunAsync(() => _binding.PauseAsync());
         _resume.Click += async (_, _) => await RunAsync(() => _binding.ResumeAsync());
         _stop.Click += async (_, _) => await RunAsync(() => _binding.StopAsync());
-        _messagesButton.Click += (_, _) => OpenMessageCatalog();
-        _settingsButton.Click += (_, _) => OpenScheduleSettings();
+        _messagesButton.Click += (_, _) => NavigateToDevelopmentMessages();
+        _settingsButton.Click += (_, _) => NavigateToDevelopmentMessages();
         _toggle.Click += (_, _) => ToggleExpanded();
         VisibleChanged += (_, _) => Render();
         _binding.Engine.StateChanged += OnStateChanged;
@@ -210,32 +219,13 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         Render();
     }
 
-    private void OpenMessageCatalog()
+    private void NavigateToDevelopmentMessages()
     {
-        using var dialog = new Form
-        {
-            Text = "Development Message Catalog",
-            StartPosition = FormStartPosition.CenterParent,
-            MinimumSize = new Size(900, 600),
-            Size = new Size(1100, 720),
-            AutoScaleMode = AutoScaleMode.Dpi
-        };
-        dialog.Controls.Add(new DevelopmentMessageCatalogControl { Dock = DockStyle.Fill });
-        dialog.ShowDialog(FindForm());
-    }
+        var main = FindForm() as MainForm;
+        if (main is not null && PremiumRuntimeShellExperience.NavigateTo(main, "Development Messages"))
+            return;
 
-    private void OpenScheduleSettings()
-    {
-        using var dialog = new Form
-        {
-            Text = "Development Schedule",
-            StartPosition = FormStartPosition.CenterParent,
-            MinimumSize = new Size(560, 260),
-            Size = new Size(620, 300),
-            AutoScaleMode = AutoScaleMode.Dpi
-        };
-        dialog.Controls.Add(new DevelopmentTaskScheduleSettingsControl { Dock = DockStyle.Fill });
-        dialog.ShowDialog(FindForm());
+        MessageBox.Show(FindForm(), "The premium Development Messages workspace is not available yet.", "Development Messages", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void OnStateChanged(object? sender, DevelopmentTaskState e) => Ui(Render);
@@ -257,25 +247,26 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         ApplyStatusStyle(state.Status);
         _phase.Text = state.Status == DevelopmentTaskEngineStatus.Cooling
             ? "Cooling — no delivery"
-            : state.Status == DevelopmentTaskEngineStatus.Working
-                ? "Working — delivery enabled"
-                : state.Status == DevelopmentTaskEngineStatus.Paused
-                    ? "Paused — checkpoint preserved"
-                    : state.Status.ToString();
+            : state.Status == DevelopmentTaskEngineStatus.Working && state.AwaitingAssistantResponse
+                ? "Waiting for ChatGPT — no next prompt"
+                : state.Status == DevelopmentTaskEngineStatus.Working
+                    ? "Working — delivery enabled"
+                    : state.Status == DevelopmentTaskEngineStatus.Paused
+                        ? "Paused — checkpoint preserved"
+                        : state.Status.ToString();
         _message.Text = $"Message {state.CurrentMessageIndex + 1} / {Math.Max(0, state.TotalMessages)}";
         _recipients.Text = $"Last Chat {state.LastMonitorId ?? "—"}  •  Tab {state.LastTabId ?? "—"}";
         _delivery.Text = $"Verified {(state.LastDeliveredMessageIndex >= 0 ? (state.LastDeliveredMessageIndex + 1).ToString() : "—")}  •  Receipts {state.DeliveryReceipts.Count}  •  Rev {state.Revision}";
 
         var now = DateTimeOffset.UtcNow;
-        var remaining = state.Status == DevelopmentTaskEngineStatus.Working && state.WorkWindowStartedAt.HasValue
+        var remaining = state.Status == DevelopmentTaskEngineStatus.Working && !state.AwaitingAssistantResponse && state.WorkWindowStartedAt.HasValue
             ? _binding.Engine.WorkWindow - (now - state.WorkWindowStartedAt.Value)
             : state.Status == DevelopmentTaskEngineStatus.Cooling && state.CoolingStartedAt.HasValue
                 ? _binding.Engine.CoolingWindow - (now - state.CoolingStartedAt.Value)
                 : TimeSpan.Zero;
         if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
-        _countdown.Text = remaining > TimeSpan.Zero ? remaining.ToString(@"mm\:ss") : "—";
+        _countdown.Text = state.AwaitingAssistantResponse ? "WAITING" : remaining > TimeSpan.Zero ? remaining.ToString(@"mm\:ss") : "—";
 
-        // Keep the established lifecycle action contract unchanged.
         _start.Enabled = state.Status is DevelopmentTaskEngineStatus.Stopped or DevelopmentTaskEngineStatus.Paused;
         _pause.Enabled = state.Status == DevelopmentTaskEngineStatus.Working;
         _resume.Enabled = state.Status is DevelopmentTaskEngineStatus.Paused or DevelopmentTaskEngineStatus.Stopped;
@@ -306,6 +297,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
             DevelopmentTaskEngineStatus.Working => (FluentTheme.Success, FluentTheme.SuccessSubtle),
             DevelopmentTaskEngineStatus.Cooling => (FluentTheme.Warning, FluentTheme.WarningSubtle),
             DevelopmentTaskEngineStatus.Paused => (FluentTheme.Warning, FluentTheme.WarningSubtle),
+            DevelopmentTaskEngineStatus.Faulted => (FluentTheme.Danger, FluentTheme.DangerSubtle),
             DevelopmentTaskEngineStatus.Completed => (FluentTheme.Accent, FluentTheme.AccentSubtle),
             _ => (FluentTheme.Muted, FluentTheme.SurfaceAlt)
         };

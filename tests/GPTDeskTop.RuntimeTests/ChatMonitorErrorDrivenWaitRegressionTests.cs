@@ -27,7 +27,7 @@ public sealed class ChatMonitorErrorDrivenWaitRegressionTests
         var source = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
 
-        var structuredErrorIndex = source.IndexOf("var isError = !string.IsNullOrWhiteSpace(state.ErrorText)", StringComparison.Ordinal);
+        var structuredErrorIndex = source.IndexOf("var isError = !state.IsGenerating && !string.IsNullOrWhiteSpace(state.ErrorText)", StringComparison.Ordinal);
         var passiveWaitIndex = source.IndexOf("if (!isError && (state.IsGenerating || string.IsNullOrWhiteSpace(text)", StringComparison.Ordinal);
         Assert.True(structuredErrorIndex >= 0);
         Assert.True(passiveWaitIndex > structuredErrorIndex);
@@ -48,11 +48,13 @@ public sealed class ChatMonitorErrorDrivenWaitRegressionTests
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
         Assert.Contains("const visible = element =>", source, StringComparison.Ordinal);
+        Assert.Contains("const isCurrentTurnElement = element =>", source, StringComparison.Ordinal);
         Assert.Contains("[role=\"alert\"]", source, StringComparison.Ordinal);
         Assert.Contains("[aria-live=\"assertive\"]", source, StringComparison.Ordinal);
         Assert.Contains("[data-testid*=\"error\"]", source, StringComparison.Ordinal);
-        Assert.Contains("if (!visible(element)) continue;", source, StringComparison.Ordinal);
+        Assert.Contains("if (!visible(element) || !isCurrentTurnElement(element)) continue;", source, StringComparison.Ordinal);
         Assert.Contains("const isGenerating = !!stopButton;", source, StringComparison.Ordinal);
+        Assert.Contains("const errorText = isGenerating ? '' : findErrorText();", source, StringComparison.Ordinal);
         Assert.DoesNotContain("const isGenerating = !!stopButton || streamingSignal;", source, StringComparison.Ordinal);
         Assert.DoesNotContain("[class*=\"error\"]", source, StringComparison.Ordinal);
         Assert.DoesNotContain("document.body?.innerText", source, StringComparison.Ordinal);

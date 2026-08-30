@@ -244,8 +244,10 @@ internal static class NoResponseWatchdogProcessProbe
 <html>
 <head><meta charset="utf-8"><title>QA slow thinking monitor</title></head>
 <body>
+  <div id="historical-timeout-card" role="alert">Message delivery timed out</div>
+  <button aria-label="Retry">Retry</button>
+  <div data-message-author-role="user">Current request sent after an older timeout card.</div>
   <main data-message-author-role="assistant"></main>
-  <div data-message-author-role="user">Historical quote only: Something went wrong yesterday, but it is not a current error.</div>
   <button data-testid="stop-button" aria-label="Stop generating" style="width:140px;height:32px">Stop</button>
   <script>
     const key = 'gptdesktop-passive-wait-slow-load-count';

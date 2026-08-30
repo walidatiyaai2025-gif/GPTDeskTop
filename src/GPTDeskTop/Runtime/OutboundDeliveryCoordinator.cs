@@ -1,11 +1,12 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using GPTDeskTop.Services;
 
 namespace GPTDeskTop.Runtime;
 
-internal enum OutboundDeliveryPhase
+public enum OutboundDeliveryPhase
 {
     Queued,
     Sending,
@@ -14,7 +15,7 @@ internal enum OutboundDeliveryPhase
     Completed
 }
 
-internal sealed record OutboundDeliverySnapshot(
+public sealed record OutboundDeliverySnapshot(
     long MonitorId,
     string ConversationKey,
     string MessageFingerprint,
@@ -23,23 +24,84 @@ internal sealed record OutboundDeliverySnapshot(
     DateTimeOffset UpdatedUtc,
     string Reason);
 
-/// <summary>
-/// Privacy-safe delivery state for operator UI. Conversation keys, tab keys, message text and
-/// fingerprints are intentionally excluded.
-/// </summary>
-internal sealed record OutboundDeliveryStatus(
+public sealed record OutboundDeliveryStatus(
     long MonitorId,
     OutboundDeliveryPhase Phase,
     int PhysicalSendCount,
     DateTimeOffset UpdatedUtc);
 
-internal sealed class OutboundDeliveryCoordinator
+public sealed record OutboundQueueStatus(
+    int QueuedCount,
+    long? ActiveMonitorId,
+    DateTimeOffset UpdatedUtc,
+    bool IsCooldown = false);
+
+public sealed record OutboundDeliveryReceipt(
+    string OperationId,
+    long MonitorId,
+    DateTimeOffset EnqueueUtc,
+    DateTimeOffset SendAuthorityUtc,
+    DateTimeOffset ReleaseUtc,
+    DateTimeOffset NextSendUtc,
+    long MeasuredGapMs);
+
+public sealed class OutboundDeliveryCoordinator
 {
     private static readonly TimeSpan DuplicateWindow = TimeSpan.FromMinutes(2);
-    private readonly ConcurrentDictionary<long, SemaphoreSlim> _gates = new();
-    private readonly ConcurrentDictionary<long, OutboundDeliverySnapshot> _snapshots = new();
+    private static readonly TimeSpan DefaultInterSendGap = TimeSpan.FromSeconds(5);
+    private static readonly GlobalFifoSendAuthority GlobalAuthority = new();
+    private static readonly object GlobalGapSync = new();
+    private static DateTimeOffset? _lastGlobalSendAuthorityUtc;
 
-    internal event Action<OutboundDeliveryStatus>? StatusChanged;
+    private readonly ConcurrentDictionary<long, OutboundDeliverySnapshot> _snapshots = new();
+    private readonly object _queueSync = new();
+    private readonly Queue<QueueEntry> _queue = new();
+    private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
+    private readonly TimeSpan _interSendGap;
+    private readonly GlobalChatGptRateLimitCircuitBreaker _rateLimit;
+    private QueueEntry? _active;
+    private bool _isCooldown;
+    private long _sequence;
+
+    public OutboundDeliveryCoordinator()
+        : this(null, null, null)
+    {
+    }
+
+    public OutboundDeliveryCoordinator(
+        Func<TimeSpan, CancellationToken, Task>? delayAsync,
+        TimeSpan? interSendGap = null,
+        GlobalChatGptRateLimitCircuitBreaker? rateLimit = null)
+    {
+        _delayAsync = delayAsync ?? Task.Delay;
+        _interSendGap = interSendGap ?? DefaultInterSendGap;
+        if (_interSendGap < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(interSendGap), "Inter-send gap cannot be negative.");
+        _rateLimit = rateLimit ?? GlobalChatGptRateLimitCircuitBreaker.Shared;
+    }
+
+    public event Action<OutboundDeliveryStatus>? StatusChanged;
+    public event Action<OutboundQueueStatus>? QueueStatusChanged;
+    public event Action<OutboundDeliveryReceipt>? ReceiptReleased;
+
+    public int QueuedCount => GlobalAuthority.QueuedCount;
+    public long? ActiveMonitorId => GlobalAuthority.ActiveMonitorId;
+    public bool IsCooldown { get { lock (_queueSync) return _isCooldown; } }
+
+    public string DisplayStatus
+    {
+        get
+        {
+            var queued = GlobalAuthority.QueuedCount;
+            var activeMonitorId = GlobalAuthority.ActiveMonitorId;
+            lock (_queueSync)
+            {
+                return activeMonitorId is null
+                    ? queued == 0 ? "IDLE" : $"WAITING {queued}"
+                    : _isCooldown ? $"M{activeMonitorId} COOLDOWN" : queued == 0 ? $"M{activeMonitorId} SENDING" : $"M{activeMonitorId} +{queued}";
+            }
+        }
+    }
 
     public async Task<bool> SendOnceAsync(
         long monitorId,
@@ -49,14 +111,25 @@ internal sealed class OutboundDeliveryCoordinator
         Action<string>? activity,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(physicalSend);
         using var flightScope = RuntimeFlightRecorder.BeginScope(monitorId, conversationKey);
-        RuntimeFlightRecorder.Record("Delivery", "OperationRequested", reason: "logical-send");
+        RuntimeFlightRecorder.Record("Delivery", "OperationRequested", reason: "global-serialized-logical-send");
+
+        // Every automated send path, including callers using distinct coordinator instances,
+        // enters this one process-wide FIFO authority before it can reach a physical composer mutation.
+        using var globalLease = await GlobalAuthority.AcquireAsync(monitorId, cancellationToken).ConfigureAwait(false);
 
         var fingerprint = Fingerprint(message);
-        var gate = _gates.GetOrAdd(monitorId, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var logicalId = $"{monitorId}:{conversationKey}:{fingerprint}";
+        var queueLease = await AcquireQueueLeaseAsync(monitorId, logicalId, cancellationToken).ConfigureAwait(false);
+        var physicalSendAttempted = false;
+        DateTimeOffset? sendAuthorityUtc = null;
+        DateTimeOffset? nextSendUtc = null;
+        long measuredGapMs = 0;
         try
         {
+            await _rateLimit.WaitUntilAllowedAsync(cancellationToken).ConfigureAwait(false);
+
             if (_snapshots.TryGetValue(monitorId, out var previous)
                 && IsDuplicateInFlight(previous, conversationKey, fingerprint))
             {
@@ -72,13 +145,26 @@ internal sealed class OutboundDeliveryCoordinator
                 OutboundDeliveryPhase.Sending,
                 1,
                 DateTimeOffset.UtcNow,
-                "persisted-before-physical-send");
+                "global-queue-authority-persisted-before-physical-send");
             SetSnapshot(sending);
-            RuntimeFlightRecorder.Record("Delivery", "PhysicalSubmitRequested", "started", "persisted-before-send");
+            RuntimeFlightRecorder.Record("Delivery", "PhysicalSubmitRequested", "started", "global-queue-authority");
 
             bool accepted;
             try
             {
+                sendAuthorityUtc = DateTimeOffset.UtcNow;
+                lock (GlobalGapSync)
+                {
+                    if (_lastGlobalSendAuthorityUtc.HasValue)
+                    {
+                        measuredGapMs = Math.Max(
+                            0,
+                            (long)Math.Floor((sendAuthorityUtc.Value - _lastGlobalSendAuthorityUtc.Value).TotalMilliseconds));
+                    }
+                    _lastGlobalSendAuthorityUtc = sendAuthorityUtc;
+                }
+
+                physicalSendAttempted = true;
                 accepted = await physicalSend().ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -110,11 +196,44 @@ internal sealed class OutboundDeliveryCoordinator
         }
         finally
         {
-            gate.Release();
+            if (physicalSendAttempted)
+            {
+                lock (_queueSync) { _isCooldown = true; PublishQueueStatusLocked(); }
+                var cooldownStartedUtc = DateTimeOffset.UtcNow;
+                nextSendUtc = cooldownStartedUtc + _interSendGap;
+                activity?.Invoke($"Global send queue: enforcing {_interSendGap.TotalSeconds:0}-second inter-send cooldown.");
+                RuntimeFlightRecorder.Record("Delivery", "GlobalInterSendCooldown", "started", $"{_interSendGap.TotalSeconds:0}s", monitorId);
+                try
+                {
+                    await _delayAsync(_interSendGap, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    ExceptionLogService.Log(ex, "OutboundDeliveryCoordinator.InterSendCooldown");
+                }
+                finally { lock (_queueSync) { _isCooldown = false; PublishQueueStatusLocked(); } }
+            }
+
+            var releaseUtc = DateTimeOffset.UtcNow;
+            queueLease.Dispose();
+
+            if (physicalSendAttempted && sendAuthorityUtc.HasValue && nextSendUtc.HasValue)
+            {
+                var receipt = new OutboundDeliveryReceipt(
+                    globalLease.OperationId,
+                    monitorId,
+                    globalLease.EnqueueUtc,
+                    sendAuthorityUtc.Value,
+                    releaseUtc,
+                    nextSendUtc.Value,
+                    measuredGapMs);
+                PublishReceipt(receipt, activity);
+            }
         }
     }
 
-    public IReadOnlyList<OutboundDeliverySnapshot> Snapshot() => _snapshots.Values.OrderBy(x => x.MonitorId).ToArray();
+    public IReadOnlyList<OutboundDeliverySnapshot> Snapshot()
+        => _snapshots.Values.OrderBy(x => x.MonitorId).ToArray();
 
     public void MarkCompleted(long monitorId)
     {
@@ -134,6 +253,114 @@ internal sealed class OutboundDeliveryCoordinator
         RuntimeFlightRecorder.Record("Delivery", "OperationCompleted", "completed", reason, monitorId);
     }
 
+    public void CancelMonitor(long monitorId)
+    {
+        GlobalAuthority.CancelMonitor(monitorId);
+        lock (_queueSync)
+        {
+            foreach (var entry in _queue.Where(entry => entry.MonitorId == monitorId))
+                entry.Cancel();
+            PruneCancelledHeadLocked();
+            PublishQueueStatusLocked();
+        }
+    }
+
+    private async Task<QueueLease> AcquireQueueLeaseAsync(long monitorId, string logicalId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        QueueEntry entry;
+        lock (_queueSync)
+        {
+            entry = new QueueEntry(++_sequence, monitorId, logicalId, cancellationToken, DateTimeOffset.UtcNow);
+            _queue.Enqueue(entry);
+            entry.CancellationRegistration = cancellationToken.Register(() => CancelQueuedEntry(entry));
+            RuntimeFlightRecorder.Record("Delivery", "CoordinatorQueueEnqueued", "queued", $"sequence={entry.Sequence}", monitorId);
+            GrantNextLocked();
+            PublishQueueStatusLocked();
+        }
+
+        try
+        {
+            return await entry.Completion.Task.ConfigureAwait(false);
+        }
+        catch
+        {
+            entry.CancellationRegistration.Dispose();
+            throw;
+        }
+    }
+
+    private void CancelQueuedEntry(QueueEntry entry)
+    {
+        lock (_queueSync)
+        {
+            if (ReferenceEquals(_active, entry))
+                return;
+            entry.Cancel();
+            PruneCancelledHeadLocked();
+            GrantNextLocked();
+            PublishQueueStatusLocked();
+        }
+    }
+
+    private void Release(QueueEntry entry)
+    {
+        lock (_queueSync)
+        {
+            if (!ReferenceEquals(_active, entry))
+                return;
+            _active = null;
+            _isCooldown = false;
+            entry.CancellationRegistration.Dispose();
+            RuntimeFlightRecorder.Record("Delivery", "CoordinatorQueueReleased", "released", $"sequence={entry.Sequence}", entry.MonitorId);
+            PruneCancelledHeadLocked();
+            GrantNextLocked();
+            PublishQueueStatusLocked();
+        }
+    }
+
+    private void GrantNextLocked()
+    {
+        if (_active is not null)
+            return;
+
+        PruneCancelledHeadLocked();
+        while (_queue.Count > 0)
+        {
+            var next = _queue.Dequeue();
+            if (next.Cancelled)
+                continue;
+            _active = next;
+            var lease = new QueueLease(this, next);
+            if (next.Completion.TrySetResult(lease))
+                break;
+            _active = null;
+        }
+    }
+
+    private void PruneCancelledHeadLocked()
+    {
+        while (_queue.Count > 0 && _queue.Peek().Cancelled)
+            _queue.Dequeue();
+    }
+
+    private void PublishQueueStatusLocked()
+    {
+        var handlers = QueueStatusChanged;
+        if (handlers is null)
+            return;
+        var status = new OutboundQueueStatus(
+            GlobalAuthority.QueuedCount,
+            GlobalAuthority.ActiveMonitorId,
+            DateTimeOffset.UtcNow,
+            _isCooldown);
+        foreach (var subscriber in handlers.GetInvocationList())
+        {
+            try { ((Action<OutboundQueueStatus>)subscriber)(status); }
+            catch (Exception ex) { ExceptionLogService.Log(ex, "OutboundDeliveryCoordinator.QueueStatusChanged"); }
+        }
+    }
+
     private void SetSnapshot(OutboundDeliverySnapshot snapshot)
     {
         _snapshots[snapshot.MonitorId] = snapshot;
@@ -149,18 +376,26 @@ internal sealed class OutboundDeliveryCoordinator
         var handlers = StatusChanged;
         if (handlers is null)
             return;
-
         foreach (var subscriber in handlers.GetInvocationList())
         {
-            try
-            {
-                ((Action<OutboundDeliveryStatus>)subscriber)(status);
-            }
-            catch (Exception ex)
-            {
-                // Dashboard/diagnostic observers are never allowed to alter exactly-once delivery.
-                ExceptionLogService.Log(ex, "OutboundDeliveryCoordinator.StatusChanged");
-            }
+            try { ((Action<OutboundDeliveryStatus>)subscriber)(status); }
+            catch (Exception ex) { ExceptionLogService.Log(ex, "OutboundDeliveryCoordinator.StatusChanged"); }
+        }
+    }
+
+    private void PublishReceipt(OutboundDeliveryReceipt receipt, Action<string>? activity)
+    {
+        var json = JsonSerializer.Serialize(receipt);
+        RuntimeFlightRecorder.Record("Delivery", "GlobalSendReceipt", "released", json, receipt.MonitorId);
+        activity?.Invoke($"GlobalSendReceipt|{json}");
+
+        var handlers = ReceiptReleased;
+        if (handlers is null)
+            return;
+        foreach (var subscriber in handlers.GetInvocationList())
+        {
+            try { ((Action<OutboundDeliveryReceipt>)subscriber)(receipt); }
+            catch (Exception ex) { ExceptionLogService.Log(ex, "OutboundDeliveryCoordinator.ReceiptReleased"); }
         }
     }
 
@@ -170,9 +405,224 @@ internal sealed class OutboundDeliveryCoordinator
            && previous.Phase is OutboundDeliveryPhase.Sending or OutboundDeliveryPhase.ReconcileRequired
            && DateTimeOffset.UtcNow - previous.UpdatedUtc < DuplicateWindow;
 
-    internal static string Fingerprint(string text)
+    public static string Fingerprint(string text)
     {
         var normalized = string.Join(' ', (text ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized))).ToLowerInvariant();
+    }
+
+    private sealed class QueueEntry
+    {
+        public QueueEntry(
+            long sequence,
+            long monitorId,
+            string logicalId,
+            CancellationToken cancellationToken,
+            DateTimeOffset enqueueUtc)
+        {
+            Sequence = sequence;
+            MonitorId = monitorId;
+            LogicalId = logicalId;
+            CancellationToken = cancellationToken;
+            EnqueueUtc = enqueueUtc;
+            OperationId = $"local-send-{sequence:D8}";
+            Completion = new TaskCompletionSource<QueueLease>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        public long Sequence { get; }
+        public long MonitorId { get; }
+        public string LogicalId { get; }
+        public string OperationId { get; }
+        public DateTimeOffset EnqueueUtc { get; }
+        public CancellationToken CancellationToken { get; }
+        public TaskCompletionSource<QueueLease> Completion { get; }
+        public CancellationTokenRegistration CancellationRegistration { get; set; }
+        public bool Cancelled { get; private set; }
+
+        public void Cancel()
+        {
+            if (Cancelled) return;
+            Cancelled = true;
+            Completion.TrySetCanceled(CancellationToken);
+        }
+    }
+
+    private sealed class QueueLease : IDisposable
+    {
+        private readonly OutboundDeliveryCoordinator _owner;
+        private readonly QueueEntry _entry;
+        private int _disposed;
+
+        public QueueLease(OutboundDeliveryCoordinator owner, QueueEntry entry)
+        {
+            _owner = owner;
+            _entry = entry;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+            _owner.Release(_entry);
+        }
+    }
+
+    private sealed class GlobalFifoSendAuthority
+    {
+        private readonly object _sync = new();
+        private readonly Queue<GlobalEntry> _queue = new();
+        private GlobalEntry? _active;
+        private long _sequence;
+
+        public int QueuedCount
+        {
+            get { lock (_sync) return _queue.Count(entry => !entry.Cancelled); }
+        }
+
+        public long? ActiveMonitorId
+        {
+            get { lock (_sync) return _active?.MonitorId; }
+        }
+
+        public async Task<GlobalLease> AcquireAsync(long monitorId, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            GlobalEntry entry;
+            lock (_sync)
+            {
+                entry = new GlobalEntry(++_sequence, monitorId, cancellationToken, DateTimeOffset.UtcNow);
+                _queue.Enqueue(entry);
+                entry.CancellationRegistration = cancellationToken.Register(() => Cancel(entry));
+                RuntimeFlightRecorder.Record("Delivery", "GlobalQueueEnqueued", "queued", $"sequence={entry.Sequence}", monitorId);
+                GrantNextLocked();
+            }
+
+            try
+            {
+                return await entry.Completion.Task.ConfigureAwait(false);
+            }
+            catch
+            {
+                entry.CancellationRegistration.Dispose();
+                throw;
+            }
+        }
+
+        public void CancelMonitor(long monitorId)
+        {
+            lock (_sync)
+            {
+                foreach (var entry in _queue.Where(entry => entry.MonitorId == monitorId))
+                    entry.Cancel();
+                PruneCancelledHeadLocked();
+                GrantNextLocked();
+            }
+        }
+
+        private void Cancel(GlobalEntry entry)
+        {
+            lock (_sync)
+            {
+                if (ReferenceEquals(_active, entry))
+                    return;
+                entry.Cancel();
+                PruneCancelledHeadLocked();
+                GrantNextLocked();
+            }
+        }
+
+        private void Release(GlobalEntry entry)
+        {
+            lock (_sync)
+            {
+                if (!ReferenceEquals(_active, entry))
+                    return;
+                _active = null;
+                entry.CancellationRegistration.Dispose();
+                RuntimeFlightRecorder.Record("Delivery", "GlobalQueueReleased", "released", $"sequence={entry.Sequence}", entry.MonitorId);
+                PruneCancelledHeadLocked();
+                GrantNextLocked();
+            }
+        }
+
+        private void GrantNextLocked()
+        {
+            if (_active is not null)
+                return;
+
+            PruneCancelledHeadLocked();
+            while (_queue.Count > 0)
+            {
+                var next = _queue.Dequeue();
+                if (next.Cancelled)
+                    continue;
+                _active = next;
+                var lease = new GlobalLease(this, next);
+                if (next.Completion.TrySetResult(lease))
+                {
+                    RuntimeFlightRecorder.Record("Delivery", "GlobalQueueAuthorityGranted", "granted", $"sequence={next.Sequence}", next.MonitorId);
+                    break;
+                }
+                _active = null;
+            }
+        }
+
+        private void PruneCancelledHeadLocked()
+        {
+            while (_queue.Count > 0 && _queue.Peek().Cancelled)
+                _queue.Dequeue();
+        }
+
+        public sealed class GlobalEntry
+        {
+            public GlobalEntry(long sequence, long monitorId, CancellationToken cancellationToken, DateTimeOffset enqueueUtc)
+            {
+                Sequence = sequence;
+                MonitorId = monitorId;
+                CancellationToken = cancellationToken;
+                EnqueueUtc = enqueueUtc;
+                OperationId = $"send-{sequence:D8}-{Guid.NewGuid():N}";
+                Completion = new TaskCompletionSource<GlobalLease>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            public long Sequence { get; }
+            public long MonitorId { get; }
+            public string OperationId { get; }
+            public DateTimeOffset EnqueueUtc { get; }
+            public CancellationToken CancellationToken { get; }
+            public TaskCompletionSource<GlobalLease> Completion { get; }
+            public CancellationTokenRegistration CancellationRegistration { get; set; }
+            public bool Cancelled { get; private set; }
+
+            public void Cancel()
+            {
+                if (Cancelled) return;
+                Cancelled = true;
+                Completion.TrySetCanceled(CancellationToken);
+            }
+        }
+
+        public sealed class GlobalLease : IDisposable
+        {
+            private readonly GlobalFifoSendAuthority _owner;
+            private readonly GlobalEntry _entry;
+            private int _disposed;
+
+            public GlobalLease(GlobalFifoSendAuthority owner, GlobalEntry entry)
+            {
+                _owner = owner;
+                _entry = entry;
+            }
+
+            public string OperationId => _entry.OperationId;
+            public DateTimeOffset EnqueueUtc => _entry.EnqueueUtc;
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                    return;
+                _owner.Release(_entry);
+            }
+        }
     }
 }

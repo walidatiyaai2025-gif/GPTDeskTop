@@ -13,7 +13,8 @@ public sealed record ChatPageState(
     int AssistantCount,
     string LastAssistantText,
     bool IsGenerating,
-    string ErrorText);
+    string ErrorText,
+    string GlobalRateLimitText = "");
 
 public sealed class SavedMonitor
 {
@@ -27,6 +28,7 @@ public sealed class SavedMonitor
     public int ReplyDelaySeconds { get; set; } = 3;
     public int TimerSeconds { get; set; } = 1;
     public bool Enabled { get; set; } = true;
+    public bool UseDevelopmentMessages { get; set; }
     public bool ConversationRotationEnabled { get; set; } = true;
     public string NewChatStartMessage { get; set; } = "كمل";
     public int NewChatDelaySeconds { get; set; } = 30;

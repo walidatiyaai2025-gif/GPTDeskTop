@@ -38,6 +38,9 @@ public sealed class MainForm : Form
     private readonly Label _tabsMetricValue = CreateMetricValue("0");
     private readonly Label _monitorsMetricValue = CreateMetricValue("0");
     private readonly Label _runningMetricValue = CreateMetricValue("0");
+    private readonly Label _sendQueueMetricValue = CreateMetricValue("IDLE");
+    private readonly Label _rateLimitMetricValue = CreateMetricValue("READY");
+    private readonly System.Windows.Forms.Timer _safetyStatusTimer = new() { Interval = 1000 };
     private readonly Label _versionLabel = new() { Text = $"GPTDeskTop v{GetAppVersion()}  •  .NET 8  •  Chrome CDP", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold), ForeColor = FluentTheme.Muted };
     private readonly Font _monitorStatusFont = new("Segoe UI Variable Text", 9F, FontStyle.Bold);
     private readonly ToolTip _toolTip = new() { AutoPopDelay = 8000, InitialDelay = 450, ReshowDelay = 100 };
@@ -76,6 +79,10 @@ public sealed class MainForm : Form
         BuildUi();
         BuildContextMenus();
         WireEvents();
+        _safetyStatusTimer.Tick += (_, _) => UpdateGlobalSafetyMetrics();
+        FormClosed += (_, _) => { _safetyStatusTimer.Stop(); _safetyStatusTimer.Dispose(); };
+        _safetyStatusTimer.Start();
+        UpdateGlobalSafetyMetrics();
         ConfigureTooltips();
         FluentTheme.Apply(this);
         FluentTheme.StyleButton(_launchChromeButton, primary: true);
@@ -109,10 +116,10 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             RowCount = 5,
-            Padding = new Padding(16),
+            Padding = new Padding(10),
             BackColor = FluentTheme.Background
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 53));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 47));
@@ -142,15 +149,15 @@ public sealed class MainForm : Form
         };
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = FluentTheme.Surface };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70));
 
         var titleBlock = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = FluentTheme.Surface };
         titleBlock.RowStyles.Add(new RowStyle(SizeType.Percent, 58));
         titleBlock.RowStyles.Add(new RowStyle(SizeType.Percent, 42));
         titleBlock.Controls.Add(new Label
         {
-            Text = "GPTDeskTop",
+            Text = "Dashboard",
             Dock = DockStyle.Fill,
             Font = new Font("Segoe UI Variable Display", 18F, FontStyle.Bold),
             ForeColor = FluentTheme.Text,
@@ -172,6 +179,8 @@ public sealed class MainForm : Form
             BackColor = FluentTheme.Surface,
             Padding = new Padding(0, 2, 0, 0)
         };
+        metrics.Controls.Add(CreateMetricChip("Rate Limit", _rateLimitMetricValue));
+        metrics.Controls.Add(CreateMetricChip("Global Send", _sendQueueMetricValue));
         metrics.Controls.Add(CreateMetricChip("Running", _runningMetricValue));
         metrics.Controls.Add(CreateMetricChip("Monitors", _monitorsMetricValue));
         metrics.Controls.Add(CreateMetricChip("Conversation tabs", _tabsMetricValue));
@@ -342,7 +351,7 @@ public sealed class MainForm : Form
     {
         var panel = new Panel
         {
-            Width = 118,
+            Width = 96,
             Height = 54,
             BackColor = FluentTheme.SurfaceAlt,
             BorderStyle = BorderStyle.FixedSingle,
@@ -685,7 +694,33 @@ public sealed class MainForm : Form
     }
 
     private void OnMonitorActivity(long id, string message)
-        => Ui(() => AppendActivity($"M{id}: {message}"));
+        => Ui(() =>
+        {
+            UpdateGlobalSafetyMetrics();
+            AppendActivity(id > 0 ? $"M{id}: {message}" : message);
+        });
+
+    private void UpdateGlobalSafetyMetrics()
+    {
+        var snapshot = _monitor.GetRuntimeSnapshot();
+        _sendQueueMetricValue.Text = $"{snapshot.GlobalSendState} · Q{snapshot.QueuedCount}";
+        _sendQueueMetricValue.AccessibleDescription = snapshot.CurrentMonitorId is long monitorId
+            ? $"Current monitor {snapshot.CurrentMonitorName ?? $"#{monitorId}"}; task {snapshot.CurrentTaskState?.ToString() ?? "none"}."
+            : $"No active monitor; task {snapshot.CurrentTaskState?.ToString() ?? "none"}.";
+        _toolTip.SetToolTip(_sendQueueMetricValue, _sendQueueMetricValue.AccessibleDescription);
+        _rateLimitMetricValue.Text = snapshot.RateLimitActive
+            ? $"WAIT {Math.Ceiling(snapshot.RateLimitRemaining.TotalMinutes):0}m"
+            : snapshot.ChatGptState.ToString().ToUpperInvariant();
+        _rateLimitMetricValue.AccessibleDescription = snapshot.NextProbeUtc is DateTimeOffset nextProbe
+            ? $"Next probe at {nextProbe.ToLocalTime():t}."
+            : "No rate-limit probe scheduled.";
+        _toolTip.SetToolTip(_rateLimitMetricValue, _rateLimitMetricValue.AccessibleDescription);
+        _rateLimitMetricValue.ForeColor = snapshot.RateLimitActive ? FluentTheme.Danger : FluentTheme.Success;
+        var baseTitle = $"GPTDeskTop v{GetAppVersion()}";
+        Text = snapshot.RateLimitActive
+            ? $"{baseTitle} — CHATGPT RATE LIMITED — ALL AUTOMATED SENDS PAUSED"
+            : baseTitle;
+    }
 
     private void OnMonitorHistoryChanged()
         => Ui(async () => await RefreshHistoryAsync());
@@ -991,6 +1026,7 @@ public sealed class MainForm : Form
             var monitor = new SavedMonitor { TabId = tab.Id, Title = tab.Title, Url = tab.Url, AutoReply = defaultReply, ReplyDelaySeconds = defaultDelay, TimerSeconds = defaultTimer, Enabled = true };
             if (!MonitorSettingsForm.Edit(this, monitor)) continue;
             await _database.SaveMonitorAsync(monitor);
+            await DevelopmentPlanMonitorSettings.SetEnabledAsync(_database, monitor, monitor.UseDevelopmentMessages);
             lastId = monitor.Id;
             AppendActivity($"Added monitor #{monitor.Id}: Delay {monitor.ReplyDelaySeconds}s / Timer {monitor.TimerSeconds}s");
         }

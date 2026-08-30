@@ -3,6 +3,12 @@ using GPTDeskTop.Services;
 
 namespace GPTDeskTop.RuntimeTests;
 
+// RuntimeFlightRecorder is intentionally process-wide. Keep its direct buffer-contract tests
+// isolated from other test collections that may legitimately emit flight events in parallel.
+[CollectionDefinition("RuntimeFlightRecorder exclusive", DisableParallelization = true)]
+public sealed class RuntimeFlightRecorderExclusiveCollectionDefinition;
+
+[Collection("RuntimeFlightRecorder exclusive")]
 public sealed class RuntimeFlightRecorderTests
 {
     [Fact]

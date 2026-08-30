@@ -44,7 +44,8 @@ public sealed class DevelopmentTaskRuntimeCoordinatorTests
 
         await using var restored = new DevelopmentTaskEngine(TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(5), state, messages);
         await using var coordinator = new DevelopmentTaskRuntimeCoordinator(restored);
-        Assert.True(await coordinator.StartAsync("plan-1", "Plan 1"));
+        await coordinator.ResumeAsync();
+        Assert.True(coordinator.IsStarted);
         Assert.Equal(1, restored.State.CurrentMessageIndex);
         Assert.Equal(1, restored.State.LastDeliveredMessageIndex);
         Assert.Equal("monitor-1", restored.State.LastMonitorId);

@@ -1,10 +1,12 @@
 using GPTDeskTop.Models;
+using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
 /// <summary>
 /// Connects the development-plan engine to a specific saved Monitor/Chrome tab.
-/// The engine can advance only after the monitor is running and CDP verifies receipt.
+/// The engine can advance only after the monitor is running, CDP verifies receipt,
+/// and that monitor later emits a stable assistant response.
 /// </summary>
 public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
 {
@@ -13,6 +15,7 @@ public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
     private readonly ChromeDevToolsService _chrome;
     private readonly SavedMonitor _monitor;
     private readonly ChromeTab _tab;
+    private readonly OutboundDeliveryCoordinator _outboundDelivery = new();
     private DevelopmentTaskDeliveryCoordinator? _coordinator;
     private bool _disposed;
 
@@ -39,13 +42,22 @@ public sealed class MonitorDevelopmentTaskBridge : IAsyncDisposable
         _coordinator ??= new DevelopmentTaskDeliveryCoordinator(
             _engine,
             SendVerifiedAsync,
-            CheckpointDeliveredAsync);
+            CheckpointDeliveredAsync,
+            MonitorId);
     }
 
-    private async Task<bool> SendVerifiedAsync(string message, CancellationToken cancellationToken)
+    private Task<bool> SendVerifiedAsync(string message, CancellationToken cancellationToken)
     {
-        if (_disposed || !_monitorService.IsMonitorRunning(_monitor.Id)) return false;
-        return await _chrome.SendChatMessageVerifiedAsync(_tab, message, cancellationToken).ConfigureAwait(false);
+        if (_disposed || !_monitorService.IsMonitorRunning(_monitor.Id))
+            return Task.FromResult(false);
+
+        return _outboundDelivery.SendOnceAsync(
+            _monitor.Id,
+            string.IsNullOrWhiteSpace(_tab.Url) ? _tab.Id : _tab.Url,
+            message,
+            () => _chrome.SendChatMessageVerifiedAsync(_tab, message, cancellationToken),
+            null,
+            cancellationToken);
     }
 
     private Task CheckpointDeliveredAsync(string message, CancellationToken cancellationToken)

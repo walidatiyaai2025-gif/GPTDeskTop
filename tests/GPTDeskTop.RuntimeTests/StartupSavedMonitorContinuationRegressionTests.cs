@@ -8,7 +8,7 @@ public sealed class StartupSavedMonitorContinuationRegressionTests
         var source = ReadSource("src", "GPTDeskTop", "Services", "LastWorkingStateService.cs");
 
         var recovery = source.IndexOf("MonitorTabRecoveryService.EnsureMonitorTabAsync", StringComparison.Ordinal);
-        var existingBranch = source.IndexOf("if (!recovery.Recreated && !string.IsNullOrWhiteSpace(savedMonitor.AutoReply))", recovery, StringComparison.Ordinal);
+        var existingBranch = source.IndexOf("if (!pendingHandoffCompleted && !recovery.Recreated && !string.IsNullOrWhiteSpace(savedMonitor.AutoReply))", recovery, StringComparison.Ordinal);
         var startupSend = source.IndexOf("SendExistingTabStartupFollowUpAsync(", existingBranch, StringComparison.Ordinal);
         var startWorker = source.IndexOf("monitorService.StartMonitorAsync(savedMonitor, recovery.Tab)", startupSend, StringComparison.Ordinal);
 

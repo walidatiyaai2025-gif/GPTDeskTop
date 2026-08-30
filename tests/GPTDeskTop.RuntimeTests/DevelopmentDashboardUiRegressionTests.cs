@@ -40,16 +40,20 @@ public sealed class DevelopmentDashboardUiRegressionTests
     }
 
     [Fact]
-    public void ExistingLifecycleBindingsRemainPresent()
+    public void ExistingLifecycleBindingsRemainPresentAcrossDashboardAndWorkspace()
     {
-        var source = ReadSource("src", "GPTDeskTop", "UI", "DevelopmentTaskDashboardControl.cs");
+        var dashboard = ReadSource("src", "GPTDeskTop", "UI", "DevelopmentTaskDashboardControl.cs");
+        var workspace = ReadSource("src", "GPTDeskTop", "UI", "DevelopmentMessagesWorkspaceControl.cs");
 
-        Assert.Contains("_binding.StartAsync", source, StringComparison.Ordinal);
-        Assert.Contains("_binding.PauseAsync", source, StringComparison.Ordinal);
-        Assert.Contains("_binding.ResumeAsync", source, StringComparison.Ordinal);
-        Assert.Contains("_binding.StopAsync", source, StringComparison.Ordinal);
-        Assert.Contains("DevelopmentMessageCatalogControl", source, StringComparison.Ordinal);
-        Assert.Contains("DevelopmentTaskScheduleSettingsControl", source, StringComparison.Ordinal);
+        Assert.Contains("_binding.StartAsync", dashboard, StringComparison.Ordinal);
+        Assert.Contains("_binding.PauseAsync", dashboard, StringComparison.Ordinal);
+        Assert.Contains("_binding.ResumeAsync", dashboard, StringComparison.Ordinal);
+        Assert.Contains("_binding.StopAsync", dashboard, StringComparison.Ordinal);
+        Assert.Contains("internal DevelopmentTaskRuntimeBinding RuntimeBinding", dashboard, StringComparison.Ordinal);
+        Assert.Contains("NavigateTo(main, \"Development Messages\")", dashboard, StringComparison.Ordinal);
+        Assert.Contains("DevelopmentMessageCatalogControl", workspace, StringComparison.Ordinal);
+        Assert.Contains("DevelopmentTaskScheduleSettingsControl", workspace, StringComparison.Ordinal);
+        Assert.Contains("state.DeliveryReceipts.Values", workspace, StringComparison.Ordinal);
     }
 
     [Fact]

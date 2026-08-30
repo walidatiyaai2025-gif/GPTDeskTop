@@ -1,0 +1,200 @@
+name: Premium Runtime UI Build
+
+on:
+  push:
+    branches:
+      - ui/premium-real-runtime-v1
+
+permissions:
+  contents: read
+
+jobs:
+  validate-package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout premium branch
+        uses: actions/checkout@v4
+        with:
+          ref: ui/premium-real-runtime-v1
+          fetch-depth: 0
+
+      - name: Apply final runtime and UI closure idempotently
+        if: ${{ false }} # Historical bootstrap only; exact checked-in source is now authoritative.
+        shell: pwsh
+        run: |
+          python scripts/apply_premium_ui.py
+
+          function Write-Utf8Stable([string]$Path, [string]$Content) {
+            $normalized = $Content.TrimEnd([char[]]"`r`n") + "`n"
+            [System.IO.File]::WriteAllText($Path, $normalized, [System.Text.UTF8Encoding]::new($false))
+          }
+
+          $queuePath = 'src/GPTDeskTop/Runtime/OutboundDeliveryCoordinator.cs'
+          $queue = Get-Content $queuePath -Raw
+          $queue = $queue.Replace('public sealed class QueueLease', 'private sealed class QueueLease')
+          $queue = $queue.Replace('private QueueLease(OutboundDeliveryCoordinator owner, QueueEntry entry)', 'public QueueLease(OutboundDeliveryCoordinator owner, QueueEntry entry)')
+
+          $ctorPattern = 'public OutboundDeliveryCoordinator\(\s*Func<TimeSpan, CancellationToken, Task>\? delayAsync = null,\s*TimeSpan\? interSendGap = null\)'
+          $ctorReplacement = @'
+          public OutboundDeliveryCoordinator()
+              : this(null, null)
+          {
+          }
+
+          public OutboundDeliveryCoordinator(
+              Func<TimeSpan, CancellationToken, Task>? delayAsync,
+              TimeSpan? interSendGap = null)
+          '@
+          $queue = [regex]::Replace($queue, $ctorPattern, $ctorReplacement, 1)
+          if ($queue -notmatch 'public OutboundDeliveryCoordinator\(\)') { throw 'Explicit parameterless delivery coordinator constructor was not installed.' }
+
+          $observerGuard = '        // Dashboard/diagnostic observers are never allowed to alter exactly-once delivery.'
+          if ($queue -notmatch [regex]::Escape($observerGuard)) {
+            $queue = $queue.Replace('        foreach (var subscriber in handlers.GetInvocationList())', "$observerGuard`n        foreach (var subscriber in handlers.GetInvocationList())")
+          }
+          Write-Utf8Stable $queuePath $queue
+
+          $monitorPath = 'src/GPTDeskTop/Services/ChatGptMonitorService.cs'
+          $monitor = Get-Content $monitorPath -Raw
+          $duplicateRateGuard = '(?m)(^\s*if \(_globalRateLimit\.IsActive\)\r?\n\s*return null;\r?\n)(?:\s*if \(_globalRateLimit\.IsActive\)\r?\n\s*return null;\r?\n)+'
+          $monitor = [regex]::Replace($monitor, $duplicateRateGuard, '$1')
+          Write-Utf8Stable $monitorPath $monitor
+
+          $cacheContractTests = @(
+            'tests/GPTDeskTop.RuntimeTests/MonitorHotLoopPerformanceRegressionTests.cs',
+            'tests/GPTDeskTop.RuntimeTests/ChatStateGeneratingSignalRegressionTests.cs',
+            'tests/GPTDeskTop.RuntimeTests/ChatStateCompletionRegressionTests.cs',
+            'tests/GPTDeskTop.RuntimeTests/SmartChatAutoFollowTests.cs',
+            'tests/GPTDeskTop.RuntimeTests/FieldDeliveryTimeoutRecoveryRegressionTests.cs'
+          )
+          foreach ($testPath in $cacheContractTests) {
+            $test = Get-Content $testPath -Raw
+            $test = $test.Replace('__gptDesktopChatStateCache?.version === 7', '__gptDesktopChatStateCache?.version === 8')
+            $test = $test.Replace('version === 7', 'version === 8')
+            $test = $test.Replace('const version = 7;', 'const version = 8;')
+            $test = $test.Replace('const version = 7', 'const version = 8')
+            Write-Utf8Stable $testPath $test
+          }
+
+          $hotLoopPath = 'tests/GPTDeskTop.RuntimeTests/MonitorHotLoopPerformanceRegressionTests.cs'
+          $hotLoop = Get-Content $hotLoopPath -Raw
+          $hotLoop = $hotLoop.Replace('state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, autoFollow:', 'state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, globalRateLimitText, autoFollow:')
+          Write-Utf8Stable $hotLoopPath $hotLoop
+
+          $singleSurfacePath = 'tests/GPTDeskTop.RuntimeTests/SingleSurfaceUiRegressionTests.cs'
+          $singleSurface = Get-Content $singleSurfacePath -Raw
+          $singleSurface = $singleSurface.Replace('ScrollBars = ScrollBars.Vertical, WordWrap = true }', 'ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false }')
+          Write-Utf8Stable $singleSurfacePath $singleSurface
+
+      - name: Persist exact tested source
+        if: ${{ false }} # CI validates immutable source and must never rewrite the candidate branch.
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if (-not (git diff --cached --quiet)) {
+            git commit -m "fix(runtime): normalize final safety regression contracts"
+            git push origin HEAD:ui/premium-real-runtime-v1
+          } else {
+            Write-Host 'Final runtime/UI source closure already persisted.'
+          }
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        shell: pwsh
+        run: |
+          dotnet restore GPTDeskTop.sln
+          dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+
+      - name: Runtime tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts/test-results -Force | Out-Null
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore -p:EnableWindowsTargeting=true --logger "trx;LogFileName=runtime-tests.trx" --results-directory artifacts/test-results --verbosity normal 2>&1 | Tee-Object -FilePath artifacts/test-results/runtime-tests.log
+          exit $LASTEXITCODE
+
+      - name: Verify final runtime and UI contracts
+        shell: pwsh
+        run: |
+          $queue = Get-Content src/GPTDeskTop/Runtime/OutboundDeliveryCoordinator.cs -Raw
+          $breaker = Get-Content src/GPTDeskTop/Runtime/GlobalChatGptRateLimitCircuitBreaker.cs -Raw
+          $chrome = Get-Content src/GPTDeskTop/Services/ChromeDevToolsService.cs -Raw
+          $monitor = Get-Content src/GPTDeskTop/Services/ChatGptMonitorService.cs -Raw
+          $main = Get-Content src/GPTDeskTop/UI/MainForm.cs -Raw
+          $shell = Get-Content src/GPTDeskTop/UI/PremiumRuntimeShellExperience.cs -Raw
+          $theme = Get-Content src/GPTDeskTop/UI/FluentTheme.cs -Raw
+          $settings = Get-Content src/GPTDeskTop/UI/SettingsForm.cs -Raw
+          $monitorSettings = Get-Content src/GPTDeskTop/UI/MonitorSettingsForm.cs -Raw
+          if ($queue -notmatch 'TimeSpan.FromSeconds\(5\)') { throw 'Global 5-second send gap is missing.' }
+          if ($queue -notmatch 'Queue<QueueEntry>') { throw 'Canonical FIFO send queue is missing.' }
+          if ($queue -notmatch 'public OutboundDeliveryCoordinator\(\)') { throw 'Parameterless coordinator compatibility constructor is missing.' }
+          foreach ($minutes in @('5','10','15','30')) { if ($breaker -notmatch "TimeSpan.FromMinutes\($minutes\)") { throw "Rate-limit backoff $minutes minutes is missing." } }
+          foreach ($marker in @('too many requests','making requests too quickly','temporarily limited access','please wait a few minutes before trying again')) { if ($chrome.ToLowerInvariant() -notmatch [regex]::Escape($marker)) { throw "Visible global rate-limit marker '$marker' is missing." } }
+          if ($monitor -notmatch 'ObserveVisibleState') { throw 'Monitor runtime is not wired to the global breaker.' }
+          if ($main -notmatch 'Global Send' -or $main -notmatch 'Rate Limit') { throw 'Global safety state is not visible on MainForm.' }
+          if ($theme -notmatch 'Background = Color.FromArgb\(5, 14, 24\)') { throw 'Premium dark palette was not applied.' }
+          if ($shell -notmatch 'PremiumNavigationRail') { throw 'Premium navigation rail is missing.' }
+          if (($settings | Select-String -Pattern 'AutoSize = false' -AllMatches).Matches.Count -lt 4) { throw 'Global Settings message editors are not real multiline controls.' }
+          if (($monitorSettings | Select-String -Pattern 'AutoSize = false' -AllMatches).Matches.Count -lt 2) { throw 'Monitor Settings message editors are not real multiline controls.' }
+          Write-Host 'PASS: final serialized-send, rate-limit, single-surface and multiline contracts.'
+
+      - name: Build Release x64
+        run: dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
+
+      - name: Verify recovery regression behavior
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'src/GPTDeskTop/bin/Release/net8.0-windows/GPTDeskTop.exe').Path
+          $root = Join-Path $env:RUNNER_TEMP "gptdesktop-recovery-$env:GITHUB_RUN_ID"
+          $resultPath = Join-Path $root 'result.json'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $probe = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe -Parent) -ArgumentList @('--qa-no-response-probe', $resultPath) -PassThru
+          $deadline = (Get-Date).AddSeconds(150)
+          while (-not $probe.HasExited) {
+            if ((Get-Date) -ge $deadline) { Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue; throw 'Recovery regression probe exceeded 150 seconds.' }
+            Start-Sleep -Seconds 1
+            $probe.Refresh()
+          }
+          if ($probe.ExitCode -ne 0) { if (Test-Path "$resultPath.error.txt") { Get-Content "$resultPath.error.txt" | Write-Host }; throw "Recovery probe failed: $($probe.ExitCode)" }
+          $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+          if ([int]$result.SlowFalseRecoveryActivityCount -ne 0) { throw "False recovery regressed; count=$($result.SlowFalseRecoveryActivityCount)." }
+          if ($result.SlowText -ne 'slow-complete-load-1') { throw "Slow generating chat was disturbed; final='$($result.SlowText)'." }
+          if ($result.RecoveryText -ne 'recovery-received:qa-error-continuation') { throw "Current error recovery regressed; final='$($result.RecoveryText)'." }
+
+      - name: Verify Setup EXE and SHA-256
+        shell: pwsh
+        run: |
+          $setup = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (-not (Test-Path $setup)) { throw 'GPTDeskTop-Setup.exe was not produced.' }
+          & ./scripts/Test-WindowsX64Pe.ps1 -Path $setup
+          $verify = Start-Process -FilePath (Resolve-Path $setup).Path -ArgumentList '--verify-payload' -Wait -PassThru
+          if ($verify.ExitCode -ne 0) { throw "Setup payload verification failed: $($verify.ExitCode)" }
+          $wizard = Start-Process -FilePath (Resolve-Path $setup).Path -ArgumentList '--verify-wizard' -Wait -PassThru
+          if ($wizard.ExitCode -ne 0) { throw "Setup wizard verification failed: $($wizard.ExitCode)" }
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content 'Output/Setup/GPTDeskTop-Setup.sha256.txt' "$hash  GPTDeskTop-Setup.exe" -Encoding ascii
+          Write-Host "SETUP_SHA256=$hash"
+
+      - name: Upload verified Setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-2.0.0-Final-Setup
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/GPTDeskTop-Setup.sha256.txt
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-2.0.0-Final-Test-Evidence
+          path: artifacts/test-results
+          if-no-files-found: warn

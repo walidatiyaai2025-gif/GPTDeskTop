@@ -1,5 +1,6 @@
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
+using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.Services;
 
@@ -136,9 +137,6 @@ public static class LastWorkingStateService
             resumable.Add(savedMonitor);
         }
 
-        // Invalid/deleted/disabled monitors are intentionally pruned. Valid desired monitors remain
-        // persisted even when Chrome is currently closed; each one below can recreate its exact
-        // conversation tab and continue after an application restart.
         await ReplaceDesiredMonitorIdsAsync(
             database,
             resumable.Select(saved => saved.Id),
@@ -155,21 +153,24 @@ public static class LastWorkingStateService
                     continue;
                 }
 
-                var recovery = await MonitorTabRecoveryService.EnsureMonitorTabAsync(
+                var pendingHandoffTab = await ConversationHandoffCheckpointStore.TryCompleteAcceptedAsync(
                     chrome,
                     database,
                     savedMonitor,
-                    sendFollowUpWhenRecreated: true,
                     cancellationToken).ConfigureAwait(false);
+                var pendingHandoffCompleted = pendingHandoffTab is not null;
+                var recovery = pendingHandoffCompleted
+                    ? new MonitorTabRecoveryResult(pendingHandoffTab!, Recreated: false, BrowserRestarted: false, FollowUpSent: false)
+                    : await MonitorTabRecoveryService.EnsureMonitorTabAsync(
+                        chrome,
+                        database,
+                        savedMonitor,
+                        sendFollowUpWhenRecreated: true,
+                        cancellationToken).ConfigureAwait(false);
 
-                // A recovered tab already receives one follow-up inside MonitorTabRecoveryService.
-                // The historical gap was the exact opposite path: when the saved conversation was
-                // already open, recovery returned it immediately and startup never issued the first
-                // continuation. Send exactly one verified NEW turn before starting the worker so a
-                // repeated tail such as "كمل" cannot be mistaken for a fresh receipt.
-                var startupFollowUpAttempted = recovery.Recreated || !string.IsNullOrWhiteSpace(savedMonitor.AutoReply);
+                var startupFollowUpAttempted = !pendingHandoffCompleted && (recovery.Recreated || !string.IsNullOrWhiteSpace(savedMonitor.AutoReply));
                 var startupFollowUpSent = recovery.FollowUpSent;
-                if (!recovery.Recreated && !string.IsNullOrWhiteSpace(savedMonitor.AutoReply))
+                if (!pendingHandoffCompleted && !recovery.Recreated && !string.IsNullOrWhiteSpace(savedMonitor.AutoReply))
                 {
                     startupFollowUpSent = await SendExistingTabStartupFollowUpAsync(
                         chrome,
@@ -179,13 +180,12 @@ public static class LastWorkingStateService
                         cancellationToken).ConfigureAwait(false);
                 }
 
-                // Delivery failure/uncertainty must not prevent the monitor worker from resuming.
-                // If ChatGPT was still generating, the normal monitor loop observes the completed
-                // response later and continues from that fresh response without a blind resend.
                 await monitorService.StartMonitorAsync(savedMonitor, recovery.Tab).ConfigureAwait(false);
                 if (monitorService.IsMonitorRunning(savedMonitor.Id))
                 {
-                    var reason = recovery.Recreated
+                    var reason = pendingHandoffCompleted
+                        ? "PendingHandoffRecoveredWithoutDuplicateFollowUp"
+                        : recovery.Recreated
                         ? startupFollowUpSent
                             ? "RecreatedTabAndFollowUpSent"
                             : "RecreatedTabFollowUpFailed"
@@ -238,11 +238,18 @@ public static class LastWorkingStateService
         using var flightScope = RuntimeFlightRecorder.BeginScope(monitor.Id, tab.Id, tab.Url);
         try
         {
-            var sent = await chrome.SendChatMessageVerifiedAsync(
-                tab,
+            var outboundDelivery = new OutboundDeliveryCoordinator();
+            var sent = await outboundDelivery.SendOnceAsync(
+                monitor.Id,
+                string.IsNullOrWhiteSpace(tab.Url) ? tab.Id : tab.Url,
                 followUp,
-                cancellationToken,
-                requireNewTurn: true).ConfigureAwait(false);
+                () => chrome.SendChatMessageVerifiedAsync(
+                    tab,
+                    followUp,
+                    cancellationToken,
+                    requireNewTurn: true),
+                null,
+                cancellationToken).ConfigureAwait(false);
 
             await database.AddLogAsync(
                 "Outbound",

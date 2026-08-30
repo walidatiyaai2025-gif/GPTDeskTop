@@ -1,29 +1,38 @@
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
+using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
 /// <summary>
 /// Builds live development-plan recipients from the persisted monitor registry.
-/// Resolution happens at the beginning of a delivery window, so the same logical
-/// conversation is reused after Cooling or process restart whenever its saved URL
-/// is still open in Chrome.
+/// Development Messages owns opted-in conversations exclusively: the legacy monitor
+/// worker is stopped before plan delivery so its single AutoReply cannot race the plan.
+/// Stable assistant responses are observed by DevelopmentTaskResponseWatcher instead.
 /// </summary>
 public sealed class DevelopmentTaskMonitorTargetFactory
 {
     private readonly LocalDatabase _database;
     private readonly SavedMonitorTabResolver _resolver;
     private readonly ChromeDevToolsService _chrome;
+    private readonly ChatGptMonitorService? _monitorService;
+    private readonly OutboundDeliveryCoordinator _outboundDelivery = new();
 
     public DevelopmentTaskMonitorTargetFactory(
         LocalDatabase database,
         SavedMonitorTabResolver resolver,
-        ChromeDevToolsService chrome)
+        ChromeDevToolsService chrome,
+        ChatGptMonitorService? monitorService = null)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
         _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
         _chrome = chrome ?? throw new ArgumentNullException(nameof(chrome));
+        _monitorService = monitorService;
+        DevelopmentPlanMonitorSettings.ConfigureDatabase(_database);
     }
+
+    internal DevelopmentTaskResponseWatcher CreateResponseWatcher(DevelopmentTaskEngine engine)
+        => new(engine, _database, _resolver, _chrome);
 
     public async Task<IReadOnlyList<DevelopmentTaskMonitorRecipient>> ResolveEnabledRecipientsAsync(
         CancellationToken cancellationToken = default)
@@ -47,10 +56,10 @@ public sealed class DevelopmentTaskMonitorTargetFactory
                 continue;
             }
 
-            var optedIn = await _database.GetSettingAsync(
-                $"TaskAutomation.Monitor.{monitor.Id}.Enabled",
-                cancellationToken).ConfigureAwait(false);
-            if (!IsOptedIn(optedIn))
+            var optedIn = await DevelopmentPlanMonitorSettings.IsEnabledAsync(
+                _database, monitor, cancellationToken).ConfigureAwait(false);
+            monitor.UseDevelopmentMessages = optedIn;
+            if (!optedIn)
                 continue;
 
             var resolution = SavedMonitorTabResolver.Resolve(monitor, tabs);
@@ -66,8 +75,6 @@ public sealed class DevelopmentTaskMonitorTargetFactory
             var monitorId = monitor.Id.ToString();
             var tab = resolution.Tab;
 
-            // Persist a recreated Chrome target only after exact conversation-URL
-            // rebinding succeeds. Never use a title as an identity fallback.
             if (string.Equals(resolution.MatchType, "PersistedConversationUrl", StringComparison.Ordinal)
                 && !string.Equals(monitor.TabId, tab.Id, StringComparison.Ordinal))
             {
@@ -81,10 +88,28 @@ public sealed class DevelopmentTaskMonitorTargetFactory
                     tab.Id, monitor.Title, cancellationToken).ConfigureAwait(false);
             }
 
+            // Exclusive ownership is deliberate. A Development Messages plan and the legacy
+            // monitor AutoReply must never both own the same completed assistant turn.
+            if (_monitorService is not null && _monitorService.IsMonitorRunning(monitor.Id))
+            {
+                await _monitorService.StopMonitorAsync(monitor.Id).ConfigureAwait(false);
+                await _database.AddLogAsync(
+                    "System", string.Empty,
+                    "Legacy monitor auto-reply worker stopped because Development Messages owns this conversation.",
+                    "DevelopmentMonitorExclusiveOwnership", monitor.Id,
+                    tab.Id, monitor.Title, cancellationToken).ConfigureAwait(false);
+            }
+
+            // Prevent LastWorkingState restart recovery from resurrecting the legacy worker
+            // while an opted-in development plan is active.
+            await LastWorkingStateService.SetMonitorDesiredRunningAsync(
+                _database, monitor.Id, false, cancellationToken).ConfigureAwait(false);
+
             recipients.Add(new DevelopmentTaskMonitorRecipient(
                 monitorId,
                 tab.Id,
-                message => SendVerifiedAsync(tab, message)));
+                message => SendVerifiedAsync(monitor.Id, tab, message),
+                () => _chrome.GetChatStateAsync(tab)));
 
             await _database.AddLogAsync(
                 "System", resolution.MatchType, tab.Url,
@@ -95,15 +120,18 @@ public sealed class DevelopmentTaskMonitorTargetFactory
         return recipients;
     }
 
-    private async Task<bool> SendVerifiedAsync(ChromeTab tab, string message)
+    private async Task<bool> SendVerifiedAsync(long monitorId, ChromeTab tab, string message)
     {
         var state = await _chrome.GetChatStateAsync(tab).ConfigureAwait(false);
         if (state.IsGenerating || !string.IsNullOrWhiteSpace(state.ErrorText))
             return false;
-        return await _chrome.SendChatMessageVerifiedAsync(tab, message).ConfigureAwait(false);
-    }
 
-    private static bool IsOptedIn(string? value)
-        => string.Equals(value, "1", StringComparison.OrdinalIgnoreCase)
-           || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
+        return await _outboundDelivery.SendOnceAsync(
+            monitorId,
+            string.IsNullOrWhiteSpace(tab.Url) ? tab.Id : tab.Url,
+            message,
+            () => _chrome.SendChatMessageVerifiedAsync(tab, message),
+            null,
+            CancellationToken.None).ConfigureAwait(false);
+    }
 }
