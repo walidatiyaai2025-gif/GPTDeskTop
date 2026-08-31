@@ -6,86 +6,52 @@ on:
       - hotfix/v204-native-physical-submit
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-validate-package:
+  validate-package:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - name: Checkout hotfix branch
+      - name: Checkout exact hotfix head
         uses: actions/checkout@v4
         with:
           ref: hotfix/v204-native-physical-submit
           fetch-depth: 0
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Apply v2.0.4 hotfix
-        shell: pwsh
-        run: python tools/apply_v204_native_submit_fix.py
-
-      - name: Commit patched source when needed
-        id: patch
-        shell: pwsh
-        run: |
-          git config user.name "gptdesktop-runtime-worker"
-          git config user.email "actions@users.noreply.github.com"
-          if (git status --porcelain) {
-            git add src tests
-            git commit -m "fix(runtime): use native CDP submit fallback after rejected DOM click"
-            git push origin HEAD:hotfix/v204-native-physical-submit
-            "changed=true" >> $env:GITHUB_OUTPUT
-          } else {
-            "changed=false" >> $env:GITHUB_OUTPUT
-          }
-
-      - name: Defer validation to exact patched head
-        if: steps.patch.outputs.changed == 'true'
-        shell: pwsh
-        run: Write-Host 'Patched source pushed. Exact-head follow-up run will validate and package v2.0.4.'
-
       - name: Setup .NET 8
-        if: steps.patch.outputs.changed == 'false'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
 
       - name: Restore
-        if: steps.patch.outputs.changed == 'false'
         shell: pwsh
         run: dotnet restore GPTDeskTop.sln
 
       - name: Focused physical-submit regression tests
-        if: steps.patch.outputs.changed == 'false'
         shell: pwsh
         run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --filter "FullyQualifiedName~PhysicalSubmitAcceptanceRegressionTests|FullyQualifiedName~VerifiedSendTransportRecoveryRegressionTests|FullyQualifiedName~VerifiedSendTaskCancellationSelfHealRegressionTests" --logger "trx;LogFileName=v204-physical-submit.trx"
 
       - name: Full runtime and product suite
-        if: steps.patch.outputs.changed == 'false'
         shell: pwsh
         run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --logger "trx;LogFileName=v204-full-runtime.trx"
 
       - name: Release x64 build
-        if: steps.patch.outputs.changed == 'false'
         shell: pwsh
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release -r win-x64
 
       - name: Build final Setup EXE
-        if: steps.patch.outputs.changed == 'false'
         shell: pwsh
         run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -c Release -p:RunPackagingTargets=true
 
       - name: Verify exact head and package source
-        if: steps.patch.outputs.changed == 'false'
         shell: pwsh
         run: |
           $head = (git rev-parse HEAD).Trim()
           git merge-base --is-ancestor 1cca71d2c99c772b355528a2023e40c75b14b711 HEAD
           if ($LASTEXITCODE -ne 0) { throw 'v2.0.4 source does not contain the final v2.0.3 convergence head.' }
+          $version = (Select-String -Path src/GPTDeskTop/GPTDeskTop.csproj -Pattern '<Version>2.0.4</Version>')
+          if (-not $version) { throw 'Application version is not v2.0.4.' }
           $exe = 'Output/Setup/GPTDeskTop-Setup.exe'
           if (!(Test-Path $exe)) { throw 'Setup EXE missing.' }
           $setupSha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -98,7 +64,6 @@ jobs:
           Write-Host "SOURCE_ZIP_SHA256=$sourceSha"
 
       - name: Upload v2.0.4 final source
-        if: steps.patch.outputs.changed == 'false'
         uses: actions/upload-artifact@v4
         with:
           name: GPTDeskTop-v2.0.4-FINAL-SOURCE
@@ -109,7 +74,6 @@ jobs:
           retention-days: 30
 
       - name: Upload v2.0.4 final setup
-        if: steps.patch.outputs.changed == 'false'
         uses: actions/upload-artifact@v4
         with:
           name: GPTDeskTop-v2.0.4-FINAL-SETUP
