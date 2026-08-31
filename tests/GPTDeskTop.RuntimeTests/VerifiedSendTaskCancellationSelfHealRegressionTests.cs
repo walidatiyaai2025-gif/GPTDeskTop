@@ -51,7 +51,10 @@ public sealed class VerifiedSendTaskCancellationSelfHealRegressionTests
         Assert.Contains("DateTimeOffset.UtcNow - unacknowledgedSubmitSinceUtc.Value < maxUnacknowledgedReconciliation", method, StringComparison.Ordinal);
         Assert.Contains("post-submit-reconciliation-time-budget-exhausted", method, StringComparison.Ordinal);
         Assert.Contains("reconciliationCts.CancelAfter(reconciliationRemaining)", method, StringComparison.Ordinal);
-        Assert.Contains("current.Count != before.Count && unacknowledgedSubmitSinceUtc is null", method, StringComparison.Ordinal);
+        Assert.Contains("current.Count < before.Count", method, StringComparison.Ordinal);
+        Assert.Contains("pre-submit-hydration-observed", method, StringComparison.Ordinal);
+        Assert.Contains("current.Count > before.Count", method, StringComparison.Ordinal);
+        Assert.Contains("preSubmitConflictStableReads < 3", method, StringComparison.Ordinal);
         Assert.Contains("UnacknowledgedSubmitReconciliationResult.TransientInterruption", method, StringComparison.Ordinal);
         Assert.Contains("\"Reconciling\", \"transient-transport-recovery\"", method, StringComparison.Ordinal);
         Assert.Contains("await TryRefreshTabBindingAsync(tab, cancellationToken)", method, StringComparison.Ordinal);
@@ -73,6 +76,9 @@ public sealed class VerifiedSendTaskCancellationSelfHealRegressionTests
         Assert.Contains("return UnacknowledgedSubmitReconciliationResult.TransientInterruption", method, StringComparison.Ordinal);
         Assert.Contains("PostRefreshUserTurnObservation.Hydrating", method, StringComparison.Ordinal);
         Assert.Contains("stableUnexpectedReads >= 2", method, StringComparison.Ordinal);
+        Assert.Contains("stableAbsenceReads >= 4", method, StringComparison.Ordinal);
+        Assert.Contains("PostSubmitReloadSuppressed", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("RefreshStuckComposerAsync", method, StringComparison.Ordinal);
         Assert.DoesNotContain("if (receiptBeforeRefresh.Count != baselineUserTurnCount)", method, StringComparison.Ordinal);
         Assert.Contains("return UnacknowledgedSubmitReconciliationResult.Ambiguous", method, StringComparison.Ordinal);
         Assert.Contains("if (readiness.IsGenerating)", method, StringComparison.Ordinal);
