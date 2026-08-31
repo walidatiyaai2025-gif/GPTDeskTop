@@ -1,6 +1,5 @@
 name: GPTDeskTop v2.0.5 Verified Turn Submit
 
-# Exact-head validation for the committed verified-turn submit source.
 on:
   push:
     branches:
@@ -25,23 +24,32 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Apply one-shot v2.0.5 source hotfix
+      - name: Apply and prove v2.0.5 source hotfix
         id: patch
         shell: pwsh
         run: |
-          if (Test-Path 'tools/apply_v205_verified_turn_submit.py') {
-            python tools/apply_v205_verified_turn_submit.py
+          if (Test-Path 'tools/apply_v205_verified_submit_fix2.py') {
+            python tools/apply_v205_verified_submit_fix2.py
+            $app = Get-Content 'src/GPTDeskTop/GPTDeskTop.csproj' -Raw
+            $chrome = Get-Content 'src/GPTDeskTop/Services/ChromeDevToolsService.cs' -Raw
+            if (!$app.Contains('<Version>2.0.5</Version>')) { throw 'Patch did not write v2.0.5 application identity.' }
+            if (!$chrome.Contains('composer-cleared-without-user-turn')) { throw 'Patch did not write empty-composer field guard.' }
+            $sendStart = $chrome.IndexOf('public async Task<bool> SendChatMessageAsync')
+            $sendEnd = $chrome.IndexOf('public async Task<bool> SendChatMessageVerifiedAsync', $sendStart)
+            if ($sendStart -lt 0 -or $sendEnd -le $sendStart) { throw 'Cannot locate verified physical-send source.' }
+            $sendSource = $chrome.Substring($sendStart, $sendEnd - $sendStart)
+            if ($sendSource.Contains('sendButton.click();')) { throw 'Synthetic DOM click still exists in physical submit path.' }
+            if (!$sendSource.Contains('TryDispatchNativeSendClickAsync(tab, cancellationToken)')) { throw 'Native CDP pointer submit is not wired.' }
             git config user.name "gptdesktop-runtime-worker"
             git config user.email "actions@users.noreply.github.com"
-            git rm tools/apply_v205_verified_turn_submit.py
-            git add src tests tools
-            if (git status --porcelain) {
-              git commit -m "fix(runtime): require verified user-turn acceptance for physical submit"
-              git push origin HEAD:hotfix/v205-verified-turn-submit
-              "changed=true" >> $env:GITHUB_OUTPUT
-            } else {
-              "changed=false" >> $env:GITHUB_OUTPUT
-            }
+            git rm tools/apply_v205_verified_submit_fix2.py
+            git add -A
+            git status --short
+            if (!(git diff --cached --name-only | Select-String -SimpleMatch 'src/GPTDeskTop/Services/ChromeDevToolsService.cs')) { throw 'ChromeDevToolsService mutation was not staged.' }
+            if (!(git diff --cached --name-only | Select-String -SimpleMatch 'src/GPTDeskTop/GPTDeskTop.csproj')) { throw 'v2.0.5 identity mutation was not staged.' }
+            git commit -m "fix(runtime): verify user-turn creation after native physical submit"
+            git push origin HEAD:hotfix/v205-verified-turn-submit
+            "changed=true" >> $env:GITHUB_OUTPUT
           } else {
             "changed=false" >> $env:GITHUB_OUTPUT
           }
@@ -49,7 +57,7 @@ jobs:
       - name: Defer validation to exact committed source
         if: steps.patch.outputs.changed == 'true'
         shell: pwsh
-        run: Write-Host 'v2.0.5 source committed. Push-triggered exact-head run will validate and package.'
+        run: Write-Host 'Field fix committed with staged-source proof. Follow-up exact-head run will validate and package.'
 
       - name: Setup .NET 8
         if: steps.patch.outputs.changed == 'false'
@@ -90,7 +98,13 @@ jobs:
           git merge-base --is-ancestor c36c1aab246ffb6c91646555063a249fc16baa8a HEAD
           if ($LASTEXITCODE -ne 0) { throw 'v2.0.5 source lost v2.0.4 convergence ancestry.' }
           $app = Get-Content 'src/GPTDeskTop/GPTDeskTop.csproj' -Raw
+          $chrome = Get-Content 'src/GPTDeskTop/Services/ChromeDevToolsService.cs' -Raw
           if (!$app.Contains('<Version>2.0.5</Version>')) { throw 'Application version is not 2.0.5.' }
+          if (!$chrome.Contains('composer-cleared-without-user-turn')) { throw 'Field fix missing from exact head.' }
+          $sendStart = $chrome.IndexOf('public async Task<bool> SendChatMessageAsync')
+          $sendEnd = $chrome.IndexOf('public async Task<bool> SendChatMessageVerifiedAsync', $sendStart)
+          $sendSource = $chrome.Substring($sendStart, $sendEnd - $sendStart)
+          if ($sendSource.Contains('sendButton.click();')) { throw 'Synthetic DOM click survived exact-head validation.' }
           $exe = 'Output/Setup/GPTDeskTop-Setup.exe'
           if (!(Test-Path $exe)) { throw 'Setup EXE missing.' }
           $setupSha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
