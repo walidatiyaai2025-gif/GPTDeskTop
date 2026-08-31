@@ -402,8 +402,9 @@ public sealed class OutboundDeliveryCoordinator
     private static bool IsDuplicateInFlight(OutboundDeliverySnapshot previous, string conversationKey, string fingerprint)
         => previous.ConversationKey == conversationKey
            && previous.MessageFingerprint == fingerprint
-           && previous.Phase is OutboundDeliveryPhase.Sending or OutboundDeliveryPhase.ReconcileRequired
-           && DateTimeOffset.UtcNow - previous.UpdatedUtc < DuplicateWindow;
+           && (previous.Phase == OutboundDeliveryPhase.ReconcileRequired
+               || (previous.Phase == OutboundDeliveryPhase.Sending
+                   && DateTimeOffset.UtcNow - previous.UpdatedUtc < DuplicateWindow));
 
     public static string Fingerprint(string text)
     {
