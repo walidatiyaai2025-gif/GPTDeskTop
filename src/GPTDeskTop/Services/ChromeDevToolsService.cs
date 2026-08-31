@@ -771,7 +771,8 @@ public sealed class ChromeDevToolsService
             EditorEnabled: readiness.TryGetProperty("editorEnabled", out var editorEnabledElement) && editorEnabledElement.GetBoolean(),
             SendButtonPresent: readiness.TryGetProperty("sendButtonPresent", out var sendPresentElement) && sendPresentElement.GetBoolean(),
             SendButtonEnabled: readiness.TryGetProperty("sendButtonEnabled", out var sendEnabledElement) && sendEnabledElement.GetBoolean(),
-            HasRenderedError: !string.IsNullOrWhiteSpace(chatState.ErrorText));
+            HasRenderedError: !string.IsNullOrWhiteSpace(chatState.ErrorText)
+                || !string.IsNullOrWhiteSpace(chatState.GlobalRateLimitText));
     }
 
     private async Task<ComposerAutomationDecision> ReadComposerDecisionAsync(
@@ -814,6 +815,88 @@ public sealed class ChromeDevToolsService
         """;
         var value = await EvaluateAsync(tab, expression, cancellationToken, false);
         return value.ValueKind == JsonValueKind.True;
+    }
+
+    private enum ImmediatePhysicalSubmitObservation
+    {
+        ReceiptConfirmed,
+        AcceptedTransition,
+        ClickNotAccepted,
+        Ambiguous
+    }
+
+    private async Task<(bool Present, string Text)> ReadComposerTextAsync(
+        ChromeTab tab,
+        CancellationToken cancellationToken)
+    {
+        const string expression = """
+        (() => {
+          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
+          if (!editor) return { present: false, text: '' };
+          const text = editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
+            ? editor.value
+            : (editor.innerText || editor.textContent || '');
+          return { present: true, text: (text || '').trim() };
+        })()
+        """;
+        var value = await EvaluateAsync(tab, expression, cancellationToken, false);
+        return (
+            value.TryGetProperty("present", out var present) && present.GetBoolean(),
+            value.TryGetProperty("text", out var text) ? text.GetString() ?? string.Empty : string.Empty);
+    }
+
+    private async Task<ImmediatePhysicalSubmitObservation> ObserveImmediatePhysicalSubmitAsync(
+        ChromeTab tab,
+        string expected,
+        int baselineUserTurnCount,
+        CancellationToken cancellationToken)
+    {
+        var observationDeadline = DateTimeOffset.UtcNow.AddSeconds(2);
+        var stableStillReadyReads = 0;
+
+        while (DateTimeOffset.UtcNow < observationDeadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var snapshot = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+            if (snapshot.Success
+                && snapshot.Count > baselineUserTurnCount
+                && string.Equals(snapshot.LastText, expected, StringComparison.Ordinal))
+                return ImmediatePhysicalSubmitObservation.ReceiptConfirmed;
+
+            var readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+            if (readiness.HasRenderedError)
+                return ImmediatePhysicalSubmitObservation.Ambiguous;
+            if (readiness.IsGenerating)
+                return ImmediatePhysicalSubmitObservation.ReceiptConfirmed;
+
+            var composer = await ReadComposerTextAsync(tab, cancellationToken);
+            if (!composer.Present)
+                return ImmediatePhysicalSubmitObservation.Ambiguous;
+
+            if (composer.Text.Length == 0)
+                return ImmediatePhysicalSubmitObservation.AcceptedTransition;
+
+            if (!string.Equals(composer.Text, expected, StringComparison.Ordinal))
+                return ImmediatePhysicalSubmitObservation.Ambiguous;
+
+            if (readiness.SendButtonPresent && readiness.SendButtonEnabled)
+            {
+                stableStillReadyReads++;
+                if (stableStillReadyReads >= 3)
+                    return ImmediatePhysicalSubmitObservation.ClickNotAccepted;
+            }
+            else
+            {
+                stableStillReadyReads = 0;
+            }
+
+            await Task.Delay(200, cancellationToken);
+        }
+
+        return stableStillReadyReads > 0
+            ? ImmediatePhysicalSubmitObservation.ClickNotAccepted
+            : ImmediatePhysicalSubmitObservation.Ambiguous;
     }
 
     private async Task<bool> RefreshStuckComposerAsync(ChromeTab tab, CancellationToken cancellationToken)
@@ -959,6 +1042,7 @@ public sealed class ChromeDevToolsService
         }
 
         const int maxSubmitAttempts = 2;
+        const int maxUnacceptedClickAttempts = 3;
         var receiptGrace = TimeSpan.FromSeconds(3);
         var maxUnacknowledgedReconciliation = TimeSpan.FromSeconds(90);
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
@@ -990,6 +1074,7 @@ public sealed class ChromeDevToolsService
         DateTimeOffset? unacknowledgedSubmitSinceUtc = null;
         var stuckRefreshUsed = false;
         var submitAttempts = 0;
+        var unacceptedClickAttempts = 0;
         var preSubmitConflictStableReads = 0;
         var preSubmitConflictCount = -1;
         var preSubmitConflictLastText = string.Empty;
@@ -1138,6 +1223,7 @@ public sealed class ChromeDevToolsService
 
                     unacknowledgedSubmitSinceUtc = null;
                     sendBlockedSinceUtc = null;
+                    unacceptedClickAttempts = 0;
                     VerifiedSendDiagnostics.Record("RetryAuthorized", "stable-absence-after-rebind", submitAttempts);
                     continue;
                 }
@@ -1248,17 +1334,68 @@ public sealed class ChromeDevToolsService
                 continue;
             }
 
-            submitAttempts++;
-            unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
-            VerifiedSendDiagnostics.Record("AwaitingReceipt", "physical-submit-unacknowledged", submitAttempts);
-
-            await Task.Delay(300, cancellationToken);
-            var after = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
-            if (after.Success && after.Count > before.Count && string.Equals(after.LastText, expected, StringComparison.Ordinal))
+            ImmediatePhysicalSubmitObservation immediateObservation;
+            try
             {
-                VerifiedSendDiagnostics.Record("ReceiptConfirmed", "immediate-user-turn-observed", submitAttempts);
+                immediateObservation = await ObserveImmediatePhysicalSubmitAsync(
+                    tab,
+                    expected,
+                    before.Count,
+                    cancellationToken);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+            {
+                // The click may have reached ChatGPT but the observation channel failed. This is an
+                // unknown physical outcome, so consume exactly-once authority and reconcile read-only.
+                submitAttempts++;
+                unacceptedClickAttempts = 0;
+                unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
+                _sessionPool.Invalidate(tab.Id);
+                VerifiedSendDiagnostics.Record("AwaitingReceipt", "post-click-observation-unreadable", submitAttempts);
+                await Task.Delay(250, cancellationToken);
+                continue;
+            }
+
+            if (immediateObservation == ImmediatePhysicalSubmitObservation.ReceiptConfirmed)
+            {
+                submitAttempts++;
+                VerifiedSendDiagnostics.Record("ReceiptConfirmed", "physical-submit-confirmed-immediately", submitAttempts);
                 return true;
             }
+
+            if (immediateObservation == ImmediatePhysicalSubmitObservation.AcceptedTransition)
+            {
+                submitAttempts++;
+                unacceptedClickAttempts = 0;
+                unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
+                VerifiedSendDiagnostics.Record("AwaitingReceipt", "physical-submit-transition-observed", submitAttempts);
+                continue;
+            }
+
+            if (immediateObservation == ImmediatePhysicalSubmitObservation.ClickNotAccepted)
+            {
+                unacceptedClickAttempts++;
+                VerifiedSendDiagnostics.Record("RetryAuthorized", "click-not-accepted-composer-still-ready", submitAttempts);
+                if (unacceptedClickAttempts >= maxUnacceptedClickAttempts)
+                {
+                    VerifiedSendDiagnostics.Record("FailedClosed", "physical-click-not-accepted", submitAttempts);
+                    return false;
+                }
+
+                // No user turn, no generation, and the exact expected text is still sitting in an
+                // enabled composer. The previous DOM click did not become a physical submit, so one
+                // bounded click retry is safe and does not consume the exactly-once submit budget.
+                await Task.Delay(350, cancellationToken);
+                continue;
+            }
+
+            // The click happened but the UI no longer gives enough evidence to prove either rejection
+            // or acceptance. Fail into read-only reconciliation and never blind-click again.
+            submitAttempts++;
+            unacceptedClickAttempts = 0;
+            unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
+            VerifiedSendDiagnostics.Record("AwaitingReceipt", "physical-submit-ambiguous-after-click", submitAttempts);
+            continue;
         }
 
         VerifiedSendDiagnostics.Record(
