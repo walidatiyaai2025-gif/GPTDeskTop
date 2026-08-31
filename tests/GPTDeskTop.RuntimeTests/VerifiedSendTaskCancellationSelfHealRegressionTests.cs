@@ -42,15 +42,20 @@ public sealed class VerifiedSendTaskCancellationSelfHealRegressionTests
     }
 
     [Fact]
-    public void PostSubmitTransportInterruptionKeepsSameLogicalOperationAlive()
+    public void PostSubmitTransportInterruptionKeepsSameLogicalOperationAliveWithinBoundedBudget()
     {
         var method = Slice(ChromeSource(), "public async Task<bool> SendChatMessageVerifiedAsync", "private enum UnacknowledgedSubmitReconciliationResult");
 
-        Assert.Contains("while (DateTimeOffset.UtcNow < deadline || unacknowledgedSubmitSinceUtc is not null)", method, StringComparison.Ordinal);
+        Assert.Contains("maxUnacknowledgedReconciliation = TimeSpan.FromSeconds(90)", method, StringComparison.Ordinal);
+        Assert.Contains("unacknowledgedSubmitSinceUtc is not null", method, StringComparison.Ordinal);
+        Assert.Contains("DateTimeOffset.UtcNow - unacknowledgedSubmitSinceUtc.Value < maxUnacknowledgedReconciliation", method, StringComparison.Ordinal);
+        Assert.Contains("post-submit-reconciliation-time-budget-exhausted", method, StringComparison.Ordinal);
+        Assert.Contains("reconciliationCts.CancelAfter(reconciliationRemaining)", method, StringComparison.Ordinal);
         Assert.Contains("current.Count != before.Count && unacknowledgedSubmitSinceUtc is null", method, StringComparison.Ordinal);
         Assert.Contains("UnacknowledgedSubmitReconciliationResult.TransientInterruption", method, StringComparison.Ordinal);
         Assert.Contains("\"Reconciling\", \"transient-transport-recovery\"", method, StringComparison.Ordinal);
         Assert.Contains("await TryRefreshTabBindingAsync(tab, cancellationToken)", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("while (DateTimeOffset.UtcNow < deadline || unacknowledgedSubmitSinceUtc is not null)", method, StringComparison.Ordinal);
 
         var transient = Slice(method, "if (reconciliation == UnacknowledgedSubmitReconciliationResult.TransientInterruption)", "VerifiedSendDiagnostics.Record(\"FailedClosed\", \"ambiguous-post-submit-reconciliation\"");
         Assert.DoesNotContain("unacknowledgedSubmitSinceUtc = null", transient, StringComparison.Ordinal);
