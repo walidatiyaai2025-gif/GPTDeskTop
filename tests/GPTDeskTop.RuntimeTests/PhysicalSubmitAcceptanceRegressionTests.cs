@@ -48,6 +48,48 @@ public sealed class PhysicalSubmitAcceptanceRegressionTests
         Assert.DoesNotContain("ReloadTabAsync", observer, StringComparison.Ordinal);
     }
 
+
+    [Fact]
+    public void RejectedDomClickUsesNativeCdpPointerFallbackOnlyAfterStableUnchangedComposerEvidence()
+    {
+        var source = ChromeSource();
+        var send = Slice(source, "public async Task<bool> SendChatMessageAsync", "public async Task<bool> SendChatMessageVerifiedAsync");
+        var helper = Slice(source, "private async Task<bool> TryNativeFallbackAfterRejectedDomClickAsync", "private async Task<bool> RefreshStuckComposerAsync");
+
+        Assert.Contains("TryNativeFallbackAfterRejectedDomClickAsync(tab, message, cancellationToken)", send, StringComparison.Ordinal);
+        Assert.Contains("stableStillReadyReads >= 3", helper, StringComparison.Ordinal);
+        Assert.Contains("ComposerEvidenceTextEquals(composer.Text, expected)", helper, StringComparison.Ordinal);
+        Assert.Contains("TryDispatchNativeSendClickAsync", helper, StringComparison.Ordinal);
+        Assert.Contains("Input.dispatchMouseEvent", source, StringComparison.Ordinal);
+        Assert.Contains("NativeSendClickDispatched", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ComposerEvidenceComparisonCanonicalizesRichEditorWhitespaceWithoutIgnoringContentChanges()
+    {
+        var source = ChromeSource();
+        var helper = Slice(source, "private static string CanonicalizeComposerEvidenceText", "private enum ImmediatePhysicalSubmitObservation");
+
+        Assert.Contains("char.IsWhiteSpace", helper, StringComparison.Ordinal);
+        Assert.Contains("\\u200b", helper, StringComparison.Ordinal);
+        Assert.Contains("ComposerEvidenceTextEquals", helper, StringComparison.Ordinal);
+        var observer = Slice(source, "private async Task<ImmediatePhysicalSubmitObservation> ObserveImmediatePhysicalSubmitAsync", "private async Task<bool> TryDispatchNativeSendClickAsync");
+        Assert.Contains("ComposerEvidenceTextEquals(composer.Text, expected)", observer, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReconciliationAuthorizesRetryWhenComposerItselfStablyProvesSubmitWasNotAccepted()
+    {
+        var source = ChromeSource();
+        var reconcile = Slice(source, "private async Task<UnacknowledgedSubmitReconciliationResult> ReconcileUnacknowledgedSubmitAsync", "private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync");
+
+        Assert.Contains("stableReadyComposerReads", reconcile, StringComparison.Ordinal);
+        Assert.Contains("stableReadyComposerReads >= 3", reconcile, StringComparison.Ordinal);
+        Assert.Contains("stable-composer-proves-submit-not-accepted", reconcile, StringComparison.Ordinal);
+        Assert.Contains("ComposerEvidenceTextEquals(composer.Text, expected)", reconcile, StringComparison.Ordinal);
+        Assert.Contains("UnacknowledgedSubmitReconciliationResult.RetryAuthorized", reconcile, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void GlobalRateLimitModalBlocksComposerSubmission()
     {
@@ -57,12 +99,12 @@ public sealed class PhysicalSubmitAcceptanceRegressionTests
     }
 
     [Fact]
-    public void ReleaseIdentityIsV203IncludingInstallerRegistryVersion()
+    public void ReleaseIdentityIsV204IncludingInstallerRegistryVersion()
     {
         var root = Root();
-        Assert.Contains("<Version>2.0.3</Version>", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop", "GPTDeskTop.csproj")), StringComparison.Ordinal);
-        Assert.Contains("<Version>2.0.3</Version>", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop.Setup", "GPTDeskTop.Setup.csproj")), StringComparison.Ordinal);
-        Assert.Contains("internal const string Version = \"2.0.3\";", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop.Setup", "Program.cs")), StringComparison.Ordinal);
+        Assert.Contains("<Version>2.0.4</Version>", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop", "GPTDeskTop.csproj")), StringComparison.Ordinal);
+        Assert.Contains("<Version>2.0.4</Version>", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop.Setup", "GPTDeskTop.Setup.csproj")), StringComparison.Ordinal);
+        Assert.Contains("internal const string Version = \"2.0.4\";", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop.Setup", "Program.cs")), StringComparison.Ordinal);
     }
 
     private static string ChromeSource() => File.ReadAllText(Path.Combine(Root(), "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
