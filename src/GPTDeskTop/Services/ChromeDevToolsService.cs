@@ -1867,15 +1867,26 @@ public sealed class ChromeDevToolsService
         int stableReadsRequired = 3)
     {
         ArgumentNullException.ThrowIfNull(tab);
-        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
+
+        var originalUrl = tab.Url;
+        var hasStableConversationIdentity = RuntimeHealthPresentation.IsChatGptConversationUrl(originalUrl);
+        if (!hasStableConversationIdentity && !RuntimeHealthPresentation.IsChatGptTabUrl(originalUrl))
             return false;
 
+        // A brand-new ChatGPT target does not have a durable /c/{conversation-id} until its
+        // first user turn is accepted. Requiring a conversation identity here makes every
+        // fresh-chat follow-up fail closed before physical input. During this pre-first-turn
+        // window the exact target id created by GPTDeskTop is the authority. Once a durable
+        // conversation URL exists, the normal conversation-identity recovery rules apply.
+        var originalTargetId = tab.Id;
         stableReadsRequired = Math.Clamp(stableReadsRequired, 2, 6);
-        var originalUrl = tab.Url;
         var stableBindingKey = string.Empty;
         var stableReads = 0;
+        var bindingMode = hasStableConversationIdentity
+            ? "same-conversation-read-rebind"
+            : "fresh-chat-target-anchor";
 
-        RuntimeFlightRecorder.Record("CDP", "StableBindingRequested", "started", "same-conversation-read-rebind", tabId: tab.Id, conversationRef: originalUrl);
+        RuntimeFlightRecorder.Record("CDP", "StableBindingRequested", "started", bindingMode, tabId: tab.Id, conversationRef: originalUrl);
 
         for (var attempt = 1; attempt <= 12; attempt++)
         {
@@ -1883,13 +1894,36 @@ public sealed class ChromeDevToolsService
             try
             {
                 var tabs = await GetTabsAsync(cancellationToken).ConfigureAwait(false);
-                var current = MonitorDeliveryRecoveryPolicy.FindBestBinding(tabs, tab);
-                if (current is null || !ChatGptConversationIdentity.IsSame(originalUrl, current.Url))
+                ChromeTab? current;
+                if (hasStableConversationIdentity)
+                {
+                    current = MonitorDeliveryRecoveryPolicy.FindBestBinding(tabs, tab);
+                }
+                else
+                {
+                    current = tabs.FirstOrDefault(candidate =>
+                        string.Equals(candidate.Id, originalTargetId, StringComparison.Ordinal)
+                        && RuntimeHealthPresentation.IsChatGptTabUrl(candidate.Url));
+                }
+
+                var targetMatches = current is not null
+                    && (hasStableConversationIdentity
+                        ? ChatGptConversationIdentity.IsSame(originalUrl, current.Url)
+                        : string.Equals(current.Id, originalTargetId, StringComparison.Ordinal)
+                          && RuntimeHealthPresentation.IsChatGptTabUrl(current.Url));
+
+                if (!targetMatches || current is null)
                 {
                     stableReads = 0;
                     stableBindingKey = string.Empty;
                     _sessionPool.Invalidate(tab.Id);
-                    RuntimeFlightRecorder.Record("CDP", "StableBindingProbe", "missing", "same-conversation-target-not-found", tabId: tab.Id, conversationRef: originalUrl);
+                    RuntimeFlightRecorder.Record(
+                        "CDP",
+                        "StableBindingProbe",
+                        "missing",
+                        hasStableConversationIdentity ? "same-conversation-target-not-found" : "fresh-chat-target-not-found",
+                        tabId: tab.Id,
+                        conversationRef: originalUrl);
                     await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000, 200 + attempt * 100)), cancellationToken);
                     continue;
                 }
@@ -1910,8 +1944,12 @@ public sealed class ChromeDevToolsService
                     ? readyElement.GetString() ?? string.Empty
                     : string.Empty;
 
-                if (!ChatGptConversationIdentity.IsSame(originalUrl, href)
-                    || string.Equals(ready, "loading", StringComparison.OrdinalIgnoreCase))
+                var probeMatches = hasStableConversationIdentity
+                    ? ChatGptConversationIdentity.IsSame(originalUrl, href)
+                    : string.Equals(tab.Id, originalTargetId, StringComparison.Ordinal)
+                      && RuntimeHealthPresentation.IsChatGptTabUrl(href);
+
+                if (!probeMatches || string.Equals(ready, "loading", StringComparison.OrdinalIgnoreCase))
                 {
                     stableReads = 0;
                     stableBindingKey = string.Empty;
@@ -1932,7 +1970,13 @@ public sealed class ChromeDevToolsService
 
                 if (stableReads >= stableReadsRequired)
                 {
-                    RuntimeFlightRecorder.Record("CDP", "StableBindingCompleted", "ready", $"stable-reads:{stableReads}", tabId: tab.Id, conversationRef: tab.Url);
+                    RuntimeFlightRecorder.Record(
+                        "CDP",
+                        "StableBindingCompleted",
+                        "ready",
+                        $"{bindingMode};stable-reads:{stableReads}",
+                        tabId: tab.Id,
+                        conversationRef: tab.Url);
                     return true;
                 }
             }
@@ -1951,7 +1995,7 @@ public sealed class ChromeDevToolsService
             await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000, 200 + attempt * 100)), cancellationToken);
         }
 
-        RuntimeFlightRecorder.Record("CDP", "StableBindingCompleted", "failed", "transport-never-stabilized", tabId: tab.Id, conversationRef: originalUrl);
+        RuntimeFlightRecorder.Record("CDP", "StableBindingCompleted", "failed", $"{bindingMode};transport-never-stabilized", tabId: tab.Id, conversationRef: originalUrl);
         return false;
     }
 

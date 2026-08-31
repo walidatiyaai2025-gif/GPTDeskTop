@@ -8,7 +8,7 @@ namespace GPTDeskTop.Setup;
 internal static class Program
 {
     internal const string AppName = "GPTDeskTop";
-    internal const string Version = "2.0.6";
+    internal const string Version = "2.0.8";
     private static readonly string[] RequiredPayloadResources =
     [
         "Payload.GPTDeskTop.exe",
