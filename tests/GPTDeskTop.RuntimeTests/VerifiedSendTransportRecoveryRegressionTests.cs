@@ -52,16 +52,23 @@ public sealed class VerifiedSendTransportRecoveryRegressionTests
     }
 
     [Fact]
-    public void SuccessfulClickRemainsUnacknowledgedUntilNewUserTurnReceiptAppears()
+    public void SuccessfulJavascriptClickRequiresObservableAcceptanceBeforeConsumingSubmitAuthority()
     {
         var method = VerifiedSendMethod(ServiceSource());
 
         Assert.Contains("const int maxSubmitAttempts = 2;", method, StringComparison.Ordinal);
+        Assert.Contains("const int maxUnacceptedClickAttempts = 3;", method, StringComparison.Ordinal);
         Assert.Contains("var receiptGrace = TimeSpan.FromSeconds(3);", method, StringComparison.Ordinal);
+        Assert.Contains("ObserveImmediatePhysicalSubmitAsync", method, StringComparison.Ordinal);
+        Assert.Contains("ImmediatePhysicalSubmitObservation.ReceiptConfirmed", method, StringComparison.Ordinal);
+        Assert.Contains("ImmediatePhysicalSubmitObservation.AcceptedTransition", method, StringComparison.Ordinal);
+        Assert.Contains("ImmediatePhysicalSubmitObservation.ClickNotAccepted", method, StringComparison.Ordinal);
+        Assert.Contains("click-not-accepted-composer-still-ready", method, StringComparison.Ordinal);
+        Assert.Contains("physical-submit-ambiguous-after-click", method, StringComparison.Ordinal);
         Assert.Contains("unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow", method, StringComparison.Ordinal);
-        Assert.Contains("physical-submit-unacknowledged", method, StringComparison.Ordinal);
         Assert.Contains("current.Count > before.Count && string.Equals(current.LastText, expected", method, StringComparison.Ordinal);
         Assert.Contains("ReconcileUnacknowledgedSubmitAsync", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("physical-submit-unacknowledged", method, StringComparison.Ordinal);
         Assert.DoesNotContain("physicalSendAccepted", method, StringComparison.Ordinal);
     }
 
