@@ -960,6 +960,7 @@ public sealed class ChromeDevToolsService
 
         const int maxSubmitAttempts = 2;
         var receiptGrace = TimeSpan.FromSeconds(3);
+        var maxUnacknowledgedReconciliation = TimeSpan.FromSeconds(90);
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
         VerifiedSendDiagnostics.Record("Baseline", "reading-baseline", 0);
 
@@ -995,10 +996,12 @@ public sealed class ChromeDevToolsService
         var stuckRefreshUsed = false;
         var submitAttempts = 0;
 
-        // Before a physical submit the normal deadline still applies. Once a submit has
-        // an unknown outcome, elapsed time alone is never permission to abandon reconciliation: keep
-        // observing/rebinding until receipt, stable absence, a genuine conflict/error, or cancellation.
-        while (DateTimeOffset.UtcNow < deadline || unacknowledgedSubmitSinceUtc is not null)
+        // Before a physical submit the normal deadline still applies. Once a submit has an
+        // unknown outcome, reconciliation gets a bounded liveness budget. Budget exhaustion
+        // fails closed and never authorizes another physical submit.
+        while (DateTimeOffset.UtcNow < deadline
+               || (unacknowledgedSubmitSinceUtc is not null
+                   && DateTimeOffset.UtcNow - unacknowledgedSubmitSinceUtc.Value < maxUnacknowledgedReconciliation))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -1060,11 +1063,30 @@ public sealed class ChromeDevToolsService
                 }
 
                 VerifiedSendDiagnostics.Record("Reconciling", "receipt-not-observed-after-grace", submitAttempts);
-                var reconciliation = await ReconcileUnacknowledgedSubmitAsync(
-                    tab,
-                    expected,
-                    before.Count,
-                    cancellationToken);
+                var reconciliationRemaining = maxUnacknowledgedReconciliation
+                    - (DateTimeOffset.UtcNow - unacknowledgedSubmitSinceUtc.Value);
+                if (reconciliationRemaining <= TimeSpan.Zero)
+                {
+                    VerifiedSendDiagnostics.Record("FailedClosed", "post-submit-reconciliation-time-budget-exhausted", submitAttempts);
+                    return false;
+                }
+
+                using var reconciliationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                reconciliationCts.CancelAfter(reconciliationRemaining);
+                UnacknowledgedSubmitReconciliationResult reconciliation;
+                try
+                {
+                    reconciliation = await ReconcileUnacknowledgedSubmitAsync(
+                        tab,
+                        expected,
+                        before.Count,
+                        reconciliationCts.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && reconciliationCts.IsCancellationRequested)
+                {
+                    VerifiedSendDiagnostics.Record("FailedClosed", "post-submit-reconciliation-time-budget-exhausted", submitAttempts);
+                    return false;
+                }
 
                 if (reconciliation == UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed)
                 {
@@ -1205,7 +1227,12 @@ public sealed class ChromeDevToolsService
             }
         }
 
-        VerifiedSendDiagnostics.Record("FailedClosed", "verified-send-deadline-without-receipt", submitAttempts);
+        VerifiedSendDiagnostics.Record(
+            "FailedClosed",
+            unacknowledgedSubmitSinceUtc is null
+                ? "verified-send-deadline-without-receipt"
+                : "post-submit-reconciliation-time-budget-exhausted",
+            submitAttempts);
         return false;
     }
 
