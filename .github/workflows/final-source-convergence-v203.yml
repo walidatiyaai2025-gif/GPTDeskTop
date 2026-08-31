@@ -77,7 +77,7 @@ jobs:
       - name: Release x64 build
         if: steps.compose.outputs.changed == 'false'
         shell: pwsh
-        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release -r win-x64 --no-restore
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release -r win-x64
 
       - name: Build final Setup EXE
         if: steps.compose.outputs.changed == 'false'
