@@ -103,10 +103,10 @@ jobs:
           if (-not (Test-Path $path)) { throw 'QA-SEND-001 did not produce send-gap-receipt.json.' }
           $receipt = Get-Content $path -Raw | ConvertFrom-Json
           if ($receipt.sourceSha -ne '${{ github.sha }}') { throw 'Send-gap receipt source SHA mismatch.' }
-          if ([double]$receipt.gap12Milliseconds -lt 5000) { throw "Gap 1 was only $($receipt.gap12Milliseconds) ms." }
-          if ([double]$receipt.gap23Milliseconds -lt 5000) { throw "Gap 2 was only $($receipt.gap23Milliseconds) ms." }
-          if ([double]$receipt.minimumGapMilliseconds -lt 5000) { throw "Minimum real gap was only $($receipt.minimumGapMilliseconds) ms." }
-          if ([int]$receipt.requiredMinimumMilliseconds -ne 5000 -or -not $receipt.passed) { throw 'Wall-clock receipt failed its acceptance contract.' }
+          if ([double]$receipt.gap12Milliseconds -lt 15000) { throw "Gap 1 was only $($receipt.gap12Milliseconds) ms." }
+          if ([double]$receipt.gap23Milliseconds -lt 15000) { throw "Gap 2 was only $($receipt.gap23Milliseconds) ms." }
+          if ([double]$receipt.minimumGapMilliseconds -lt 15000) { throw "Minimum real gap was only $($receipt.minimumGapMilliseconds) ms." }
+          if ([int]$receipt.requiredMinimumMilliseconds -ne 15000 -or -not $receipt.passed) { throw 'Wall-clock receipt failed its acceptance contract.' }
 
       - name: Runtime QA-E2E-001 integrated journey
         shell: pwsh
