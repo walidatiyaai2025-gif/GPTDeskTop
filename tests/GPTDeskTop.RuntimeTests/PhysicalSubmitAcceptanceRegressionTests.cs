@@ -3,7 +3,7 @@ namespace GPTDeskTop.RuntimeTests;
 public sealed class PhysicalSubmitAcceptanceRegressionTests
 {
     [Fact]
-    public void JavascriptClickAloneIsNotTreatedAsPhysicalSubmitAcceptance()
+    public void SyntheticDomClickIsNotUsedForPhysicalSubmission()
     {
         var source = ChromeSource();
         var send = Slice(source, "public async Task<bool> SendChatMessageVerifiedAsync", "private async Task<(bool Success, int Count, string LastText)> WaitForStableUserMessageBaselineAsync");
@@ -11,9 +11,9 @@ public sealed class PhysicalSubmitAcceptanceRegressionTests
         Assert.Contains("maxUnacceptedClickAttempts = 3", send, StringComparison.Ordinal);
         Assert.Contains("ObserveImmediatePhysicalSubmitAsync", send, StringComparison.Ordinal);
         Assert.Contains("ImmediatePhysicalSubmitObservation.ClickNotAccepted", send, StringComparison.Ordinal);
-        Assert.Contains("click-not-accepted-composer-still-ready", send, StringComparison.Ordinal);
-        Assert.Contains("physical-click-not-accepted", send, StringComparison.Ordinal);
-        Assert.Contains("physical-submit-ambiguous-after-click", send, StringComparison.Ordinal);
+        Assert.Contains("physical-input-not-accepted", send, StringComparison.Ordinal);
+        Assert.Contains("physical-input-retry-limit-reached", send, StringComparison.Ordinal);
+        Assert.Contains("physical-submit-ambiguous-after-input", send, StringComparison.Ordinal);
         Assert.DoesNotContain("\"physical-submit-unacknowledged\"", send, StringComparison.Ordinal);
     }
 
@@ -42,6 +42,8 @@ public sealed class PhysicalSubmitAcceptanceRegressionTests
         Assert.Contains("snapshot.Count > baselineUserTurnCount", observer, StringComparison.Ordinal);
         Assert.Contains("readiness.IsGenerating", observer, StringComparison.Ordinal);
         Assert.Contains("composer.Text.Length == 0", observer, StringComparison.Ordinal);
+        Assert.Contains("stableEmptyComposerReads >= 8", observer, StringComparison.Ordinal);
+        Assert.Contains("composer-cleared-without-user-turn", observer, StringComparison.Ordinal);
         Assert.Contains("readiness.SendButtonPresent && readiness.SendButtonEnabled", observer, StringComparison.Ordinal);
         Assert.Contains("stableStillReadyReads >= 3", observer, StringComparison.Ordinal);
         Assert.DoesNotContain("Page.reload", observer, StringComparison.Ordinal);
@@ -50,16 +52,13 @@ public sealed class PhysicalSubmitAcceptanceRegressionTests
 
 
     [Fact]
-    public void RejectedDomClickUsesNativeCdpPointerFallbackOnlyAfterStableUnchangedComposerEvidence()
+    public void PhysicalSubmissionUsesNativeCdpPointerDirectly()
     {
         var source = ChromeSource();
         var send = Slice(source, "public async Task<bool> SendChatMessageAsync", "public async Task<bool> SendChatMessageVerifiedAsync");
-        var helper = Slice(source, "private async Task<bool> TryNativeFallbackAfterRejectedDomClickAsync", "private async Task<bool> RefreshStuckComposerAsync");
 
-        Assert.Contains("TryNativeFallbackAfterRejectedDomClickAsync(tab, message, cancellationToken)", send, StringComparison.Ordinal);
-        Assert.Contains("stableStillReadyReads >= 3", helper, StringComparison.Ordinal);
-        Assert.Contains("ComposerEvidenceTextEquals(composer.Text, expected)", helper, StringComparison.Ordinal);
-        Assert.Contains("TryDispatchNativeSendClickAsync", helper, StringComparison.Ordinal);
+        Assert.Contains("TryDispatchNativeSendClickAsync(tab, cancellationToken)", send, StringComparison.Ordinal);
+        Assert.DoesNotContain("sendButton.click();", send, StringComparison.Ordinal);
         Assert.Contains("Input.dispatchMouseEvent", source, StringComparison.Ordinal);
         Assert.Contains("NativeSendClickDispatched", source, StringComparison.Ordinal);
     }
@@ -99,12 +98,12 @@ public sealed class PhysicalSubmitAcceptanceRegressionTests
     }
 
     [Fact]
-    public void ReleaseIdentityIsV204IncludingInstallerRegistryVersion()
+    public void ReleaseIdentityIsV205IncludingInstallerRegistryVersion()
     {
         var root = Root();
-        Assert.Contains("<Version>2.0.4</Version>", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop", "GPTDeskTop.csproj")), StringComparison.Ordinal);
-        Assert.Contains("<Version>2.0.4</Version>", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop.Setup", "GPTDeskTop.Setup.csproj")), StringComparison.Ordinal);
-        Assert.Contains("internal const string Version = \"2.0.4\";", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop.Setup", "Program.cs")), StringComparison.Ordinal);
+        Assert.Contains("<Version>2.0.5</Version>", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop", "GPTDeskTop.csproj")), StringComparison.Ordinal);
+        Assert.Contains("<Version>2.0.5</Version>", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop.Setup", "GPTDeskTop.Setup.csproj")), StringComparison.Ordinal);
+        Assert.Contains("internal const string Version = \"2.0.5\";", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop.Setup", "Program.cs")), StringComparison.Ordinal);
     }
 
     private static string ChromeSource() => File.ReadAllText(Path.Combine(Root(), "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
