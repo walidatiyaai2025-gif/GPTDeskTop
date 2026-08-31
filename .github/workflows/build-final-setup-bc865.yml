@@ -1,0 +1,63 @@
+name: Build Final Setup bc86552
+
+on:
+  push:
+    branches:
+      - build/final-setup-bc86552
+
+permissions:
+  contents: read
+
+jobs:
+  build-setup:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout exact canonical runtime source
+        uses: actions/checkout@v4
+        with:
+          ref: bc86552cf59e28afad2f976c4c9b0e1b4c93080c
+
+      - name: Verify exact source
+        shell: pwsh
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne 'bc86552cf59e28afad2f976c4c9b0e1b4c93080c') { throw "Unexpected source SHA: $actual" }
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        shell: pwsh
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Build standalone Setup EXE
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -c Release --no-restore
+
+      - name: Verify installer
+        shell: pwsh
+        run: |
+          $setup = Join-Path $env:GITHUB_WORKSPACE 'Output\Setup\GPTDeskTop-Setup.exe'
+          if (-not (Test-Path $setup)) { throw "Setup EXE was not produced: $setup" }
+          $item = Get-Item $setup
+          if ($item.Length -lt 1000000) { throw "Setup EXE is unexpectedly small: $($item.Length) bytes" }
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            'SourceSha=bc86552cf59e28afad2f976c4c9b0e1b4c93080c',
+            "File=$($item.Name)",
+            "SizeBytes=$($item.Length)",
+            "SHA256=$hash"
+          ) | Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE 'Output\Setup\PROVENANCE.txt') -Encoding UTF8
+
+      - name: Upload final Setup EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.1-Final-Setup-bc86552
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/Version.txt
+            Output/Setup/PROVENANCE.txt
+          if-no-files-found: error
+          retention-days: 30
