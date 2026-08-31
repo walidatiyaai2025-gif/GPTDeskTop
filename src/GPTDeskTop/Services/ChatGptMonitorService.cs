@@ -671,7 +671,7 @@ public sealed class ChatGptMonitorService
                     {
                         if (!await CanPerformDestructiveAutomationAsync(monitor.Id, tab, "chatgpt-error-recovery", cancellationToken))
                             continue;
-                        var recoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage", cancellationToken)
+                        var fallbackRecoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage", cancellationToken)
                             ?? "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه.";
                         Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT error saved. Opening a fresh chat and continuing under the same Monitor ID...");
                         var oldTab = tab;
@@ -1278,3 +1278,4 @@ public sealed class ChatGptMonitorService
         public bool StopOwnsCleanup { get; set; }
     }
 }
+
