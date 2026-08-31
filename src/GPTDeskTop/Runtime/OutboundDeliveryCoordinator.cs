@@ -48,7 +48,7 @@ public sealed record OutboundDeliveryReceipt(
 public sealed class OutboundDeliveryCoordinator
 {
     private static readonly TimeSpan DuplicateWindow = TimeSpan.FromMinutes(2);
-    private static readonly TimeSpan DefaultInterSendGap = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DefaultInterSendGap = TimeSpan.FromSeconds(15);
     private static readonly GlobalFifoSendAuthority GlobalAuthority = new();
     private static readonly object GlobalGapSync = new();
     private static DateTimeOffset? _lastGlobalSendAuthorityUtc;
@@ -58,6 +58,7 @@ public sealed class OutboundDeliveryCoordinator
     private readonly Queue<QueueEntry> _queue = new();
     private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
     private readonly TimeSpan _interSendGap;
+    private readonly bool _usesSystemDelay;
     private readonly GlobalChatGptRateLimitCircuitBreaker _rateLimit;
     private QueueEntry? _active;
     private bool _isCooldown;
@@ -73,6 +74,7 @@ public sealed class OutboundDeliveryCoordinator
         TimeSpan? interSendGap = null,
         GlobalChatGptRateLimitCircuitBreaker? rateLimit = null)
     {
+        _usesSystemDelay = delayAsync is null;
         _delayAsync = delayAsync ?? Task.Delay;
         _interSendGap = interSendGap ?? DefaultInterSendGap;
         if (_interSendGap < TimeSpan.Zero)
@@ -206,6 +208,22 @@ public sealed class OutboundDeliveryCoordinator
                 try
                 {
                     await _delayAsync(_interSendGap, CancellationToken.None).ConfigureAwait(false);
+
+                    // Task.Delay may wake a fraction of a millisecond early on Windows. The
+                    // production authority must never release before the actual 15-second
+                    // wall-clock deadline, so close any residual gap before the global lease
+                    // can be granted to the next monitor. Injected test delays remain untouched.
+                    if (_usesSystemDelay && nextSendUtc.HasValue)
+                    {
+                        while (DateTimeOffset.UtcNow < nextSendUtc.Value)
+                        {
+                            var remaining = nextSendUtc.Value - DateTimeOffset.UtcNow;
+                            await Task.Delay(
+                                    remaining + TimeSpan.FromMilliseconds(1),
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -402,8 +420,9 @@ public sealed class OutboundDeliveryCoordinator
     private static bool IsDuplicateInFlight(OutboundDeliverySnapshot previous, string conversationKey, string fingerprint)
         => previous.ConversationKey == conversationKey
            && previous.MessageFingerprint == fingerprint
-           && previous.Phase is OutboundDeliveryPhase.Sending or OutboundDeliveryPhase.ReconcileRequired
-           && DateTimeOffset.UtcNow - previous.UpdatedUtc < DuplicateWindow;
+           && (previous.Phase == OutboundDeliveryPhase.ReconcileRequired
+               || (previous.Phase == OutboundDeliveryPhase.Sending
+                   && DateTimeOffset.UtcNow - previous.UpdatedUtc < DuplicateWindow));
 
     public static string Fingerprint(string text)
     {

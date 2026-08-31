@@ -10,12 +10,14 @@ namespace GPTDeskTop.Services;
 public sealed class ChatGptMonitorService
 {
     private static readonly TimeSpan RuntimeSettingsRefreshInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan MinimumStableSendDwell = TimeSpan.FromSeconds(15);
     private readonly ChromeDevToolsService _chrome;
     private readonly LocalDatabase _database;
     private readonly MonitoringConfig _config;
     private readonly ModelRoutingService _modelRouting = new();
     private readonly OutboundDeliveryCoordinator _outboundDelivery = new();
     private readonly GlobalChatGptRateLimitCircuitBreaker _globalRateLimit = GlobalChatGptRateLimitCircuitBreaker.Shared;
+    private readonly GlobalChatOperationGate _chatOperationGate = GlobalChatOperationGate.Shared;
     private readonly MonitorAutonomousTaskIntegration _autonomousTasks = new();
     private readonly object _sync = new();
     private readonly Dictionary<long, MonitorRuntime> _running = new();
@@ -38,7 +40,7 @@ public sealed class ChatGptMonitorService
     public RuntimeUiSnapshot GetRuntimeSnapshot()
     {
         var rateLimitRetry = _globalRateLimit.RetryAtUtc;
-        var currentMonitorId = _outboundDelivery.ActiveMonitorId;
+        var currentMonitorId = _chatOperationGate.ActiveMonitorId ?? _outboundDelivery.ActiveMonitorId;
         ChatGptRuntimeDecision? decision = null;
         string? monitorName = null;
         AutonomousTaskPhase? taskPhase = null;
@@ -60,8 +62,8 @@ public sealed class ChatGptMonitorService
         }
 
         return new RuntimeUiSnapshot(
-            _outboundDelivery.IsCooldown ? "COOLDOWN" : _globalRateLimit.IsActive ? "BLOCKED" : _outboundDelivery.ActiveMonitorId is null ? "IDLE" : "ACTIVE",
-            _outboundDelivery.QueuedCount,
+            _outboundDelivery.IsCooldown ? "COOLDOWN" : _globalRateLimit.IsActive ? "BLOCKED" : currentMonitorId is null ? "IDLE" : "ACTIVE",
+            Math.Max(_chatOperationGate.QueuedCount, _outboundDelivery.QueuedCount),
             currentMonitorId,
             monitorName,
             _globalRateLimit.IsActive ? ChatGptRuntimeState.TooManyRequests : decision?.State ?? ChatGptRuntimeState.Ready,
@@ -407,6 +409,10 @@ public sealed class ChatGptMonitorService
             {
                 try
                 {
+                    using var chatOperationLease = await _chatOperationGate.AcquireAsync(
+                        monitor.Id,
+                        "monitor-poll-cycle",
+                        cancellationToken);
                     var prefix = $"[{monitor.Title}]";
                     var pendingHandoffTab = await TryResumePendingConversationHandoffAsync(monitor, cancellationToken);
                     if (pendingHandoffTab is not null)
@@ -1079,10 +1085,66 @@ public sealed class ChatGptMonitorService
         throw new TimeoutException($"New Chat was not available within 60 seconds.{(last is null ? string.Empty : $" Last CDP error: {last.Message}")}");
     }
 
+    private async Task<bool> WaitForStableSendWindowAsync(long monitorId, ChromeTab tab, CancellationToken cancellationToken)
+    {
+        var expectedTabId = tab.Id;
+        var expectedUrl = tab.Url;
+        Activity?.Invoke(monitorId, "Global chat operation: target is sendable; enforcing 15-second pre-send dwell.");
+        RuntimeFlightRecorder.Record("ChatOperation", "StableSendDwell", "started", "15-second pre-send dwell", monitorId);
+
+        await Task.Delay(MinimumStableSendDwell, cancellationToken);
+
+        if (_globalRateLimit.IsActive)
+        {
+            Activity?.Invoke(monitorId, $"15-second dwell completed, but ChatGPT rate-limit authority is active. Send remains blocked until {_globalRateLimit.DisplayStatus}.");
+            return false;
+        }
+
+        var tabs = await _chrome.GetTabsAsync(cancellationToken);
+        var liveTab = tabs.FirstOrDefault(candidate => string.Equals(candidate.Id, expectedTabId, StringComparison.Ordinal));
+        if (liveTab is null)
+        {
+            Activity?.Invoke(monitorId, "15-second dwell reset: the ChatGPT target disappeared before send.");
+            return false;
+        }
+
+        if (!string.Equals(liveTab.Url, expectedUrl, StringComparison.Ordinal))
+        {
+            Activity?.Invoke(monitorId, "15-second dwell reset: the ChatGPT target navigated or rebound before send.");
+            RuntimeFlightRecorder.Record("ChatOperation", "StableSendDwell", "reset", "target-url-changed", monitorId);
+            return false;
+        }
+
+        var recheck = await _chrome.GetChatStateAsync(liveTab, cancellationToken);
+        _globalRateLimit.ObserveVisibleState(recheck.GlobalRateLimitText);
+        var decision = ChatGptRuntimeStateEngine.Classify(ToRuntimeEvidence(recheck));
+        SetRuntimeDecision(monitorId, decision);
+        if (_globalRateLimit.IsActive || recheck.IsGenerating || decision.SendPolicy != RuntimeSendPolicy.Allow)
+        {
+            Activity?.Invoke(monitorId, "15-second dwell reset: ChatGPT was no longer stably sendable at the final safety check.");
+            RuntimeFlightRecorder.Record("ChatOperation", "StableSendDwell", "reset", $"state={decision.State}", monitorId);
+            return false;
+        }
+
+        RuntimeFlightRecorder.Record("ChatOperation", "StableSendDwell", "completed", "15-second stable window verified", monitorId);
+        return true;
+    }
+
     private async Task<bool> SendWhenReadyAsync(long monitorId, ChromeTab tab, string message, bool allowRecoveryReload, CancellationToken cancellationToken)
     {
+        IDisposable? operationLease = null;
+        if (_chatOperationGate.ActiveMonitorId != monitorId)
+        {
+            operationLease = await _chatOperationGate.AcquireAsync(
+                monitorId,
+                "send-recovery-reconciliation",
+                cancellationToken);
+        }
+
         try
         {
+            try
+            {
             var liveState = await _chrome.GetChatStateAsync(tab, cancellationToken);
             _globalRateLimit.ObserveVisibleState(liveState.GlobalRateLimitText);
             var decision = ChatGptRuntimeStateEngine.Classify(ToRuntimeEvidence(liveState));
@@ -1096,12 +1158,20 @@ public sealed class ChatGptMonitorService
                 return false;
             }
 
+            if (!await WaitForStableSendWindowAsync(monitorId, tab, cancellationToken))
+            {
+                _autonomousTasks.Transition(monitorId, tab.Url,
+                    _globalRateLimit.IsActive ? AutonomousTaskPhase.RateLimitPaused : AutonomousTaskPhase.WaitingForSafeSend,
+                    "15-second stable send dwell was reset");
+                return false;
+            }
+
             _autonomousTasks.Transition(monitorId, tab.Url, AutonomousTaskPhase.WaitingInGlobalQueue, "awaiting canonical global send authority");
             var accepted = await _outboundDelivery.SendOnceAsync(
                 monitorId,
                 tab.Id,
                 message,
-                () => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken),
+                () => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken, allowRecoveryReload: allowRecoveryReload),
                 detail => Activity?.Invoke(monitorId, detail),
                 cancellationToken);
 
@@ -1115,10 +1185,15 @@ public sealed class ChatGptMonitorService
             Activity?.Invoke(monitorId, "Composer delivery was not confirmed. Exactly-once guard suppressed blind resend; monitoring will reconcile from observed ChatGPT state.");
             return false;
         }
-        catch (Exception ex) when (IsTransientChromeException(ex))
+            catch (Exception ex) when (IsTransientChromeException(ex))
+            {
+                Activity?.Invoke(monitorId, $"Physical composer send became uncertain ({ex.GetType().Name}). Exactly-once guard suppressed automatic resend.");
+                return false;
+            }
+        }
+        finally
         {
-            Activity?.Invoke(monitorId, $"Physical composer send became uncertain ({ex.GetType().Name}). Exactly-once guard suppressed automatic resend.");
-            return false;
+            operationLease?.Dispose();
         }
     }
 

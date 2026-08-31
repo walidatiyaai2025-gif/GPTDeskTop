@@ -14,13 +14,16 @@ public sealed class MonitorRestartRecoveryRegressionTests
             "SendChatMessageVerifiedAsync",
             BindingFlags.Public | BindingFlags.Instance,
             binder: null,
-            types: [typeof(ChromeTab), typeof(string), typeof(CancellationToken), typeof(bool)],
+            types: [typeof(ChromeTab), typeof(string), typeof(CancellationToken), typeof(bool), typeof(bool)],
             modifiers: null);
 
         Assert.NotNull(method);
         var requireNewTurn = method!.GetParameters()[3];
         Assert.True(requireNewTurn.HasDefaultValue);
         Assert.Equal(false, requireNewTurn.DefaultValue);
+        var allowRecoveryReload = method.GetParameters()[4];
+        Assert.True(allowRecoveryReload.HasDefaultValue);
+        Assert.Equal(false, allowRecoveryReload.DefaultValue);
 
         var source = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
         Assert.Contains(
@@ -33,6 +36,7 @@ public sealed class MonitorRestartRecoveryRegressionTests
             "current.Count > before.Count && string.Equals(current.LastText, expected, StringComparison.Ordinal)",
             source,
             StringComparison.Ordinal);
+        Assert.Contains("allowRecoveryReload && StuckComposerRecoveryPolicy.ShouldRefresh", source, StringComparison.Ordinal);
     }
 
     [Fact]

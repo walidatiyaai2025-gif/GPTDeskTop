@@ -7,7 +7,7 @@ namespace GPTDeskTop.RuntimeTests;
 public sealed class GlobalOutboundSafetyRegressionTests
 {
     [Fact]
-    public async Task ThreeMonitors_AreSerializedInFifoOrder_WithFiveSecondGlobalGap()
+    public async Task ThreeMonitors_AreSerializedInFifoOrder_WithFifteenSecondGlobalGap()
     {
         var delays = new ConcurrentQueue<TimeSpan>();
         var coordinator = new OutboundDeliveryCoordinator(
@@ -44,7 +44,7 @@ public sealed class GlobalOutboundSafetyRegressionTests
         Assert.True(await third);
         Assert.Equal(new long[] { 1, 2, 3 }, order.ToArray());
         Assert.Equal(3, delays.Count);
-        Assert.All(delays, delay => Assert.Equal(TimeSpan.FromSeconds(5), delay));
+        Assert.All(delays, delay => Assert.Equal(TimeSpan.FromSeconds(15), delay));
     }
 
     [Fact]
