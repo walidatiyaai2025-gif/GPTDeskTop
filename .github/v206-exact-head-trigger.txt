@@ -1,0 +1,1 @@
+Validate GPTDeskTop v2.0.6 CDP stability source descended from source commit 83b9c67bf09ea1f8a85d3553c4be85279f2d680e.
