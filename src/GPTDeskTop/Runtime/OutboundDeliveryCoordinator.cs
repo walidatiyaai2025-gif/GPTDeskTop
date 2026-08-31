@@ -48,7 +48,7 @@ public sealed record OutboundDeliveryReceipt(
 public sealed class OutboundDeliveryCoordinator
 {
     private static readonly TimeSpan DuplicateWindow = TimeSpan.FromMinutes(2);
-    private static readonly TimeSpan DefaultInterSendGap = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DefaultInterSendGap = TimeSpan.FromSeconds(15);
     private static readonly GlobalFifoSendAuthority GlobalAuthority = new();
     private static readonly object GlobalGapSync = new();
     private static DateTimeOffset? _lastGlobalSendAuthorityUtc;
