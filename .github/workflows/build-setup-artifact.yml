@@ -1,0 +1,53 @@
+name: Build Setup Artifact
+
+on:
+  push:
+    branches:
+      - artifact/gptdesktop-setup-9745919
+
+jobs:
+  setup:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore setup project
+        run: dotnet restore src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -p:EnableWindowsTargeting=true
+
+      - name: Build standalone setup
+        run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj --configuration Release --no-restore -p:EnableWindowsTargeting=true
+
+      - name: Verify setup EXE
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'Output\Setup\GPTDeskTop-Setup.exe'
+          if (-not (Test-Path $exe)) { throw "Setup EXE was not created: $exe" }
+          $item = Get-Item $exe
+          if ($item.Length -lt 1000000) { throw "Setup EXE is unexpectedly small: $($item.Length) bytes" }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Setup artifact is not a valid PE executable (missing MZ header).' }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            'APP_SOURCE_SHA=9745919132e944aad30e770f9c5a55bf83028cdb',
+            "BUILD_SHA=$env:GITHUB_SHA",
+            "FILE=$($item.Name)",
+            "SIZE_BYTES=$($item.Length)",
+            "SHA256=$hash"
+          ) | Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE 'Output\Setup\SETUP-METADATA.txt') -Encoding UTF8
+          Get-Content (Join-Path $env:GITHUB_WORKSPACE 'Output\Setup\SETUP-METADATA.txt')
+
+      - name: Upload setup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-Setup-9745919
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/SETUP-METADATA.txt
+          if-no-files-found: error
+          retention-days: 30
