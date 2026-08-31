@@ -1,0 +1,136 @@
+name: GPTDeskTop v2.0.7 Fresh Chat Per Response
+
+on:
+  push:
+    branches:
+      - hotfix/v207-isolated-submit
+
+permissions:
+  contents: write
+
+jobs:
+  patch-validate-package:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          ref: hotfix/v207-isolated-submit
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply one-shot v2.0.7 source change
+        id: patch
+        shell: pwsh
+        run: |
+          if (Test-Path 'tools/apply_v207_fresh_chat_per_response.py') {
+            python tools/apply_v207_fresh_chat_per_response.py
+            $monitor = Get-Content 'src/GPTDeskTop/Services/ChatGptMonitorService.cs' -Raw
+            $app = Get-Content 'src/GPTDeskTop/GPTDeskTop.csproj' -Raw
+            if (!$monitor.Contains('ContinueInFreshChatAfterResponseAsync')) { throw 'Fresh-chat helper was not written.' }
+            if (!$monitor.Contains('EveryResponseFreshChat')) { throw 'Every-response handoff marker is missing.' }
+            if ($monitor.Contains('var autoSent = await SendWhenReadyAsync(monitor.Id, tab, monitor.AutoReply')) { throw 'Legacy same-chat auto reply still exists.' }
+            if (!$app.Contains('<Version>2.0.7</Version>')) { throw 'Application version is not 2.0.7 after patch.' }
+            git config user.name "gptdesktop-runtime-worker"
+            git config user.email "actions@users.noreply.github.com"
+            git rm tools/apply_v207_fresh_chat_per_response.py
+            git add src tests
+            if (git status --porcelain) {
+              git commit -m "feat(runtime): start a fresh ChatGPT chat after every response"
+              git push origin HEAD:hotfix/v207-isolated-submit
+              "changed=true" >> $env:GITHUB_OUTPUT
+            } else {
+              "changed=false" >> $env:GITHUB_OUTPUT
+            }
+          } else {
+            "changed=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Defer validation to exact committed source
+        if: steps.patch.outputs.changed == 'true'
+        shell: pwsh
+        run: Write-Host 'v2.0.7 source committed. Push-triggered exact-head run will validate and package.'
+
+      - name: Setup .NET 8
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Focused fresh-chat regression tests
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --filter "FullyQualifiedName~FreshChatPerResponseRegressionTests|FullyQualifiedName~CdpTransportStabilityRegressionTests|FullyQualifiedName~PhysicalSubmitAcceptanceRegressionTests|FullyQualifiedName~VerifiedSendTransportRecoveryRegressionTests" --logger "trx;LogFileName=v207-fresh-chat.trx"
+
+      - name: Full runtime and product suite
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --logger "trx;LogFileName=v207-full-runtime.trx"
+
+      - name: Release x64 build
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release -r win-x64
+
+      - name: Build final Setup EXE
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -c Release -p:RunPackagingTargets=true
+
+      - name: Verify exact head and package final source
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          git merge-base --is-ancestor 73af12e6427e45595da2751a36af46faa0d407e8 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'v2.0.7 source lost v2.0.6 ancestry.' }
+          if (Test-Path 'tools/apply_v207_fresh_chat_per_response.py') { throw 'One-shot patch applicator leaked into final source.' }
+          $monitor = Get-Content 'src/GPTDeskTop/Services/ChatGptMonitorService.cs' -Raw
+          $app = Get-Content 'src/GPTDeskTop/GPTDeskTop.csproj' -Raw
+          if (!$app.Contains('<Version>2.0.7</Version>')) { throw 'Application version is not 2.0.7.' }
+          if (!$monitor.Contains('ContinueInFreshChatAfterResponseAsync')) { throw 'Final source lacks fresh-chat helper.' }
+          if (!$monitor.Contains('EveryResponseFreshChat')) { throw 'Final source lacks every-response handoff marker.' }
+          if ($monitor.Contains('var autoSent = await SendWhenReadyAsync(monitor.Id, tab, monitor.AutoReply')) { throw 'Final source still contains same-chat auto reply.' }
+          $exe = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (!(Test-Path $exe)) { throw 'Setup EXE missing.' }
+          $setupSha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $setupSize = (Get-Item $exe).Length
+          git archive --format=zip --output GPTDeskTop-v2.0.7-FINAL-SOURCE.zip HEAD
+          $sourceSha = (Get-FileHash GPTDeskTop-v2.0.7-FINAL-SOURCE.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "FINAL_HEAD=$head`nBASE_V206_HEAD=73af12e6427e45595da2751a36af46faa0d407e8`nVERSION=2.0.7`nBEHAVIOR=NEW_CHAT_AFTER_EVERY_RESPONSE`nSETUP_SHA256=$setupSha`nSETUP_SIZE=$setupSize`nSOURCE_ZIP_SHA256=$sourceSha" | Set-Content FINAL-V207-IDENTITY.txt
+          Write-Host "FINAL_HEAD=$head"
+          Write-Host "SETUP_SHA256=$setupSha"
+          Write-Host "SOURCE_ZIP_SHA256=$sourceSha"
+
+      - name: Upload v2.0.7 final source
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.7-FINAL-SOURCE
+          path: |
+            GPTDeskTop-v2.0.7-FINAL-SOURCE.zip
+            FINAL-V207-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload v2.0.7 final setup
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.7-FINAL-SETUP
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/Version.txt
+            FINAL-V207-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30
