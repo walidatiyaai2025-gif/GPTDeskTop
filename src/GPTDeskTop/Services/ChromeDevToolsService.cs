@@ -949,7 +949,7 @@ public sealed class ChromeDevToolsService
         return submitted.ValueKind == JsonValueKind.True;
     }
 
-    public async Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default, bool requireNewTurn = false)
+    public async Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default, bool requireNewTurn = false, bool allowRecoveryReload = false)
     {
         var expected = message.Trim();
         if (expected.Length == 0)
@@ -964,12 +964,7 @@ public sealed class ChromeDevToolsService
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
         VerifiedSendDiagnostics.Record("Baseline", "reading-baseline", 0);
 
-        var before = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
-        while (!before.Success && DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(250, cancellationToken);
-            before = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
-        }
+        var before = await WaitForStableUserMessageBaselineAsync(tab, deadline, cancellationToken);
 
         if (!before.Success)
         {
@@ -995,6 +990,9 @@ public sealed class ChromeDevToolsService
         DateTimeOffset? unacknowledgedSubmitSinceUtc = null;
         var stuckRefreshUsed = false;
         var submitAttempts = 0;
+        var preSubmitConflictStableReads = 0;
+        var preSubmitConflictCount = -1;
+        var preSubmitConflictLastText = string.Empty;
 
         // Before a physical submit the normal deadline still applies. Once a submit has an
         // unknown outcome, reconciliation gets a bounded liveness budget. Budget exhaustion
@@ -1021,10 +1019,46 @@ public sealed class ChromeDevToolsService
             // Before any physical submit an unexpected user turn is a real conflict. After an
             // unacknowledged submit, however, a reload/rebind can expose a partially hydrated turn
             // list. Let reconciliation require stable evidence instead of failing on one DOM read.
-            if (current.Count != before.Count && unacknowledgedSubmitSinceUtc is null)
+            if (unacknowledgedSubmitSinceUtc is null && current.Count < before.Count)
             {
+                preSubmitConflictStableReads = 0;
+                preSubmitConflictCount = -1;
+                preSubmitConflictLastText = string.Empty;
+                VerifiedSendDiagnostics.Record("Baseline", "pre-submit-hydration-observed", submitAttempts);
+                await Task.Delay(400, cancellationToken);
+                continue;
+            }
+
+            if (unacknowledgedSubmitSinceUtc is null && current.Count > before.Count)
+            {
+                if (current.Count == preSubmitConflictCount
+                    && string.Equals(current.LastText, preSubmitConflictLastText, StringComparison.Ordinal))
+                {
+                    preSubmitConflictStableReads++;
+                }
+                else
+                {
+                    preSubmitConflictStableReads = 1;
+                    preSubmitConflictCount = current.Count;
+                    preSubmitConflictLastText = current.LastText;
+                }
+
+                if (preSubmitConflictStableReads < 3)
+                {
+                    VerifiedSendDiagnostics.Record("Baseline", "pre-submit-user-turn-change-awaiting-stability", submitAttempts);
+                    await Task.Delay(400, cancellationToken);
+                    continue;
+                }
+
                 VerifiedSendDiagnostics.Record("FailedClosed", "unexpected-user-turn-change", submitAttempts);
                 return false;
+            }
+
+            if (unacknowledgedSubmitSinceUtc is null)
+            {
+                preSubmitConflictStableReads = 0;
+                preSubmitConflictCount = -1;
+                preSubmitConflictLastText = string.Empty;
             }
 
             if (unacknowledgedSubmitSinceUtc is not null)
@@ -1090,7 +1124,7 @@ public sealed class ChromeDevToolsService
 
                 if (reconciliation == UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed)
                 {
-                    VerifiedSendDiagnostics.Record("ReceiptConfirmed", "receipt-confirmed-after-refresh", submitAttempts);
+                    VerifiedSendDiagnostics.Record("ReceiptConfirmed", "receipt-confirmed-after-rebind", submitAttempts);
                     return true;
                 }
 
@@ -1104,7 +1138,7 @@ public sealed class ChromeDevToolsService
 
                     unacknowledgedSubmitSinceUtc = null;
                     sendBlockedSinceUtc = null;
-                    VerifiedSendDiagnostics.Record("RetryAuthorized", "stable-absence-after-refresh", submitAttempts);
+                    VerifiedSendDiagnostics.Record("RetryAuthorized", "stable-absence-after-rebind", submitAttempts);
                     continue;
                 }
 
@@ -1175,7 +1209,7 @@ public sealed class ChromeDevToolsService
                     var editorMatchesExpected = await ComposerEditorMatchesExpectedAsync(tab, expected, cancellationToken);
                     var blockedFor = now - sendBlockedSinceUtc.Value;
 
-                    if (StuckComposerRecoveryPolicy.ShouldRefresh(
+                    if (allowRecoveryReload && StuckComposerRecoveryPolicy.ShouldRefresh(
                             readiness,
                             editorMatchesExpected,
                             blockedFor,
@@ -1236,6 +1270,83 @@ public sealed class ChromeDevToolsService
         return false;
     }
 
+    private async Task<(bool Success, int Count, string LastText)> WaitForStableUserMessageBaselineAsync(
+        ChromeTab tab,
+        DateTimeOffset deadline,
+        CancellationToken cancellationToken)
+    {
+        const int stableReadsRequired = 5;
+        var stableReads = 0;
+        var stableCount = -1;
+        var stableLastText = string.Empty;
+        var stableSinceUtc = DateTimeOffset.MinValue;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var snapshot = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+            if (!snapshot.Success)
+            {
+                stableReads = 0;
+                stableSinceUtc = DateTimeOffset.MinValue;
+                await Task.Delay(500, cancellationToken);
+                continue;
+            }
+
+            ComposerReadinessSnapshot readiness;
+            try
+            {
+                readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+            {
+                _sessionPool.Invalidate(tab.Id);
+                await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
+                stableReads = 0;
+                stableSinceUtc = DateTimeOffset.MinValue;
+                await Task.Delay(500, cancellationToken);
+                continue;
+            }
+
+            if (readiness.IsGenerating
+                || !readiness.EditorPresent
+                || !readiness.EditorEnabled
+                || readiness.HasRenderedError)
+            {
+                stableReads = 0;
+                stableSinceUtc = DateTimeOffset.MinValue;
+                await Task.Delay(500, cancellationToken);
+                continue;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (snapshot.Count == stableCount
+                && string.Equals(snapshot.LastText, stableLastText, StringComparison.Ordinal))
+            {
+                stableReads++;
+            }
+            else
+            {
+                stableReads = 1;
+                stableCount = snapshot.Count;
+                stableLastText = snapshot.LastText;
+                stableSinceUtc = now;
+            }
+
+            if (stableReads >= stableReadsRequired
+                && stableSinceUtc != DateTimeOffset.MinValue
+                && now - stableSinceUtc >= TimeSpan.FromSeconds(2))
+            {
+                VerifiedSendDiagnostics.Record("Baseline", "stable-editor-and-user-turn-baseline", 0);
+                return snapshot;
+            }
+
+            await Task.Delay(500, cancellationToken);
+        }
+
+        return (false, 0, string.Empty);
+    }
+
     private enum UnacknowledgedSubmitReconciliationResult
     {
         ReceiptConfirmed,
@@ -1264,11 +1375,14 @@ public sealed class ChromeDevToolsService
         // can briefly expose a partial turn list; the post-refresh loop below requires two stable
         // identical unexpected reads before returning Ambiguous.
 
-        if (!await RefreshStuckComposerAsync(tab, cancellationToken))
-            return UnacknowledgedSubmitReconciliationResult.TransientInterruption;
+        // An uncertain physical submit must never drive a reload loop. Rebind to the same
+        // stable conversation and observe it read-only. Reload remains available only to the
+        // one-shot pre-submit stuck-composer recovery path.
+        await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
         if (!ChatGptConversationIdentity.IsSame(originalUrl, tab.Url))
             return UnacknowledgedSubmitReconciliationResult.Ambiguous;
 
+        RuntimeFlightRecorder.Record("Browser", "PostSubmitReloadSuppressed", "read-only", "rebind-before-reconcile", tabId: tab.Id, conversationRef: tab.Url);
         var stableAbsenceReads = 0;
         var stableUnexpectedReads = 0;
         var lastUnexpectedCount = -1;
@@ -1346,7 +1460,7 @@ public sealed class ChromeDevToolsService
             }
 
             stableAbsenceReads++;
-            if (stableAbsenceReads >= 2)
+            if (stableAbsenceReads >= 4)
                 return UnacknowledgedSubmitReconciliationResult.RetryAuthorized;
 
             await Task.Delay(400, cancellationToken);

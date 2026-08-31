@@ -7,9 +7,9 @@
     <Nullable>enable</Nullable>
     <AssemblyName>GPTDeskTop-Setup</AssemblyName>
     <RootNamespace>GPTDeskTop.Setup</RootNamespace>
-    <Version>2.0.1</Version>
-    <AssemblyVersion>2.0.1.0</AssemblyVersion>
-    <FileVersion>2.0.1.0</FileVersion>
+    <Version>2.0.2</Version>
+    <AssemblyVersion>2.0.2.0</AssemblyVersion>
+    <FileVersion>2.0.2.0</FileVersion>
     <ApplicationIcon>..\GPTDeskTop\Assets\GPTDeskTop.ico</ApplicationIcon>
     <PublishDir>$(MSBuildProjectDirectory)\..\..\Output\Publish</PublishDir>
     <SetupOutput>$(MSBuildProjectDirectory)\..\..\Output\Setup</SetupOutput>
@@ -54,7 +54,7 @@
   <Target Name="CreateStandaloneSetup" AfterTargets="Build" Condition="'$(RunPackagingTargets)' == 'true' AND '$(SetupPackaging)' != 'true' AND '$(Configuration)' == 'Release'">
     <Exec Command="dotnet publish &quot;$(MSBuildProjectFullPath)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -p:SetupPackaging=true -p:RunPackagingTargets=true -o &quot;$(SetupOutput)\Final&quot;" />
     <Copy SourceFiles="$(SetupOutput)\Final\GPTDeskTop-Setup.exe" DestinationFiles="$(SetupOutput)\GPTDeskTop-Setup.exe" />
-    <WriteLinesToFile File="$(SetupOutput)\Version.txt" Lines="GPTDeskTop Setup v2.0.1&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
+    <WriteLinesToFile File="$(SetupOutput)\Version.txt" Lines="GPTDeskTop Setup v2.0.2&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
     <Message Text="Final standalone setup: $(SetupOutput)\GPTDeskTop-Setup.exe" Importance="high" />
   </Target>
 </Project>

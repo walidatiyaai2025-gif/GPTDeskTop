@@ -1113,8 +1113,19 @@ public sealed class ChatGptMonitorService
 
     private async Task<bool> SendWhenReadyAsync(long monitorId, ChromeTab tab, string message, bool allowRecoveryReload, CancellationToken cancellationToken)
     {
+        IDisposable? operationLease = null;
+        if (_chatOperationGate.ActiveMonitorId != monitorId)
+        {
+            operationLease = await _chatOperationGate.AcquireAsync(
+                monitorId,
+                "send-recovery-reconciliation",
+                cancellationToken);
+        }
+
         try
         {
+            try
+            {
             var liveState = await _chrome.GetChatStateAsync(tab, cancellationToken);
             _globalRateLimit.ObserveVisibleState(liveState.GlobalRateLimitText);
             var decision = ChatGptRuntimeStateEngine.Classify(ToRuntimeEvidence(liveState));
@@ -1141,7 +1152,7 @@ public sealed class ChatGptMonitorService
                 monitorId,
                 tab.Id,
                 message,
-                () => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken),
+                () => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken, allowRecoveryReload: allowRecoveryReload),
                 detail => Activity?.Invoke(monitorId, detail),
                 cancellationToken);
 
@@ -1155,10 +1166,15 @@ public sealed class ChatGptMonitorService
             Activity?.Invoke(monitorId, "Composer delivery was not confirmed. Exactly-once guard suppressed blind resend; monitoring will reconcile from observed ChatGPT state.");
             return false;
         }
-        catch (Exception ex) when (IsTransientChromeException(ex))
+            catch (Exception ex) when (IsTransientChromeException(ex))
+            {
+                Activity?.Invoke(monitorId, $"Physical composer send became uncertain ({ex.GetType().Name}). Exactly-once guard suppressed automatic resend.");
+                return false;
+            }
+        }
+        finally
         {
-            Activity?.Invoke(monitorId, $"Physical composer send became uncertain ({ex.GetType().Name}). Exactly-once guard suppressed automatic resend.");
-            return false;
+            operationLease?.Dispose();
         }
     }
 

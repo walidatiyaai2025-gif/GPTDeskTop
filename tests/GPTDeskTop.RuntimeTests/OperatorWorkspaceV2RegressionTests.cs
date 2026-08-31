@@ -134,10 +134,10 @@ public sealed class OperatorWorkspaceV2RegressionTests
         var setup = ReadSource("src", "GPTDeskTop.Setup", "GPTDeskTop.Setup.csproj");
         var build = ReadSource("src", "GPTDeskTop.Build", "GPTDeskTop.Build.csproj");
 
-        Assert.Contains("<Version>2.0.1</Version>", app, StringComparison.Ordinal);
-        Assert.Contains("<AssemblyVersion>2.0.1.0</AssemblyVersion>", app, StringComparison.Ordinal);
-        Assert.Contains("<Version>2.0.1</Version>", setup, StringComparison.Ordinal);
-        Assert.Contains("GPTDeskTop Setup v2.0.1", setup, StringComparison.Ordinal);
-        Assert.Contains("GPTDeskTop v2.0.1", build, StringComparison.Ordinal);
+        Assert.Contains("<Version>2.0.2</Version>", app, StringComparison.Ordinal);
+        Assert.Contains("<AssemblyVersion>2.0.2.0</AssemblyVersion>", app, StringComparison.Ordinal);
+        Assert.Contains("<Version>2.0.2</Version>", setup, StringComparison.Ordinal);
+        Assert.Contains("GPTDeskTop Setup v2.0.2", setup, StringComparison.Ordinal);
+        Assert.Contains("GPTDeskTop v2.0.2", build, StringComparison.Ordinal);
     }
 }
