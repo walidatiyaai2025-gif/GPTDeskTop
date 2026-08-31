@@ -1,0 +1,67 @@
+name: Build v2.0.2 Final Setup
+
+on:
+  push:
+    branches:
+      - artifact/gptdesktop-v202-setup-234d6fa
+
+jobs:
+  build-setup:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact validated runtime source
+        uses: actions/checkout@v4
+        with:
+          ref: 234d6fa24567139dd947dac1a7d09bb2f0aee9bf
+          fetch-depth: 1
+
+      - name: Verify source SHA
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne '234d6fa24567139dd947dac1a7d09bb2f0aee9bf') { throw "Unexpected source SHA: $head" }
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore setup project
+        shell: pwsh
+        run: dotnet restore src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj
+
+      - name: Build standalone Setup EXE
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -c Release -p:RunPackagingTargets=true --no-restore
+
+      - name: Verify Setup EXE
+        shell: pwsh
+        run: |
+          $exe = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (!(Test-Path $exe)) { throw "Setup EXE missing: $exe" }
+          $item = Get-Item $exe
+          if ($item.Length -lt 1000000) { throw "Setup EXE unexpectedly small: $($item.Length)" }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Setup output is not a Windows PE executable.' }
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            'VERSION=2.0.2',
+            'APP_SOURCE_SHA=234d6fa24567139dd947dac1a7d09bb2f0aee9bf',
+            "FILE=GPTDeskTop-Setup.exe",
+            "SIZE_BYTES=$($item.Length)",
+            "SHA256=$sha"
+          ) | Set-Content 'Output/Setup/SETUP-METADATA.txt'
+          Write-Host "SETUP_SIZE=$($item.Length)"
+          Write-Host "SETUP_SHA256=$sha"
+
+      - name: Upload final Setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.2-Final-Setup-234d6fa
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/SETUP-METADATA.txt
+            Output/Setup/Version.txt
+          if-no-files-found: error
+          retention-days: 30
