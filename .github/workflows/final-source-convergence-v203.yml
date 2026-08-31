@@ -48,29 +48,15 @@ jobs:
 
           $sourcePath = 'src/GPTDeskTop/Services/ChatGptMonitorService.cs'
           $source = Get-Content $sourcePath -Raw
-          $old = @'
-                        var recoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage", cancellationToken)
-                            ?? "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه.";
-                        Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT error saved. Opening a fresh chat and continuing under the same Monitor ID...");
-                        var oldTab = tab;
-                        var handoffService = new ConversationHandoffService(_database);
-                        var recoveryMessage = await handoffService.BuildAsync(monitor, text, oldTab, fallbackRecoveryMessage, cancellationToken);
-'@
-          $new = @'
-                        var fallbackRecoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage", cancellationToken)
-                            ?? "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه.";
-                        Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT error saved. Opening a fresh chat and continuing under the same Monitor ID...");
-                        var oldTab = tab;
-                        var handoffService = new ConversationHandoffService(_database);
-                        var recoveryMessage = await handoffService.BuildAsync(monitor, text, oldTab, fallbackRecoveryMessage, cancellationToken);
-'@
-          if ($source.Contains($old)) {
-            $source = $source.Replace($old, $new)
+          $oldLine = 'var recoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage", cancellationToken)'
+          $newLine = 'var fallbackRecoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage", cancellationToken)'
+          if ($source.Contains($oldLine)) {
+            $source = $source.Replace($oldLine, $newLine)
             Set-Content -Path $sourcePath -Value $source -Encoding utf8NoBOM
             git add $sourcePath
             git commit -m "fix(convergence): preserve fallback recovery message after branch composition"
             $changed = $true
-          } elseif (-not $source.Contains('var fallbackRecoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage"')) {
+          } elseif (-not $source.Contains($newLine)) {
             throw 'Expected converged recovery code shape was not found.'
           }
 
