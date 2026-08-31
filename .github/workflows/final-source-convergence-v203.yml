@@ -24,7 +24,7 @@ jobs:
         run: |
           git fetch origin feature/gptdesktop-development-plan-autonomy worker/gptdesktop-final-runtime-closure hotfix/generation-recovery-safety
 
-      - name: Compose missing authoritative heads
+      - name: Compose and repair authoritative heads
         id: compose
         shell: pwsh
         run: |
@@ -46,6 +46,34 @@ jobs:
             $changed = $true
           }
 
+          $sourcePath = 'src/GPTDeskTop/Services/ChatGptMonitorService.cs'
+          $source = Get-Content $sourcePath -Raw
+          $old = @'
+                        var recoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage", cancellationToken)
+                            ?? "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه.";
+                        Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT error saved. Opening a fresh chat and continuing under the same Monitor ID...");
+                        var oldTab = tab;
+                        var handoffService = new ConversationHandoffService(_database);
+                        var recoveryMessage = await handoffService.BuildAsync(monitor, text, oldTab, fallbackRecoveryMessage, cancellationToken);
+'@
+          $new = @'
+                        var fallbackRecoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage", cancellationToken)
+                            ?? "كمل من آخر نقطة مؤكدة واستمر بدون تكرار ما تم إنجازه.";
+                        Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT error saved. Opening a fresh chat and continuing under the same Monitor ID...");
+                        var oldTab = tab;
+                        var handoffService = new ConversationHandoffService(_database);
+                        var recoveryMessage = await handoffService.BuildAsync(monitor, text, oldTab, fallbackRecoveryMessage, cancellationToken);
+'@
+          if ($source.Contains($old)) {
+            $source = $source.Replace($old, $new)
+            Set-Content -Path $sourcePath -Value $source -Encoding utf8NoBOM
+            git add $sourcePath
+            git commit -m "fix(convergence): preserve fallback recovery message after branch composition"
+            $changed = $true
+          } elseif (-not $source.Contains('var fallbackRecoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage"')) {
+            throw 'Expected converged recovery code shape was not found.'
+          }
+
           if ($changed) {
             git push origin HEAD:convergence/gptdesktop-final-source-v203
             'changed=true' >> $env:GITHUB_OUTPUT
@@ -56,7 +84,7 @@ jobs:
       - name: Defer validation until exact merged head
         if: steps.compose.outputs.changed == 'true'
         shell: pwsh
-        run: Write-Host 'Convergence commit pushed. The push-triggered exact-head run will validate and package the final source.'
+        run: Write-Host 'Convergence source changed and was pushed. The push-triggered exact-head run will validate and package it.'
 
       - name: Setup .NET 8
         if: steps.compose.outputs.changed == 'false'
@@ -107,7 +135,6 @@ jobs:
         if: steps.compose.outputs.changed == 'false'
         shell: pwsh
         run: |
-          $head = (git rev-parse HEAD).Trim()
           git archive --format=zip --output GPTDeskTop-FINAL-Converged-Source.zip HEAD
           $sha = (Get-FileHash GPTDeskTop-FINAL-Converged-Source.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           Add-Content FINAL-SOURCE-IDENTITY.txt "SOURCE_ZIP_SHA256=$sha"
