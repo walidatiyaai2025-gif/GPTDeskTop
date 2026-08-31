@@ -1,0 +1,114 @@
+name: Runtime Field Reconciliation v2.0.2
+
+on:
+  push:
+    branches:
+      - fix/runtime-field-reconciliation-v202
+
+permissions:
+  contents: write
+
+jobs:
+  patch-validate-build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout hotfix branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: fix/runtime-field-reconciliation-v202
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Repair applicator guard for idempotent source mutation
+        shell: pwsh
+        run: |
+          $path = 'tools/apply_runtime_field_reconciliation_v202.py'
+          $text = Get-Content $path -Raw
+          $old = 'if "WaitForStableUserMessageBaselineAsync(" not in text.split(insert_marker)[0]:'
+          $new = 'if "private async Task<(bool Success, int Count, string LastText)> WaitForStableUserMessageBaselineAsync" not in text:'
+          if ($text.Contains($old)) {
+            $text = $text.Replace($old, $new)
+            Set-Content -Path $path -Value $text -Encoding UTF8
+          }
+
+      - name: Apply runtime field hotfix
+        shell: pwsh
+        run: python tools/apply_runtime_field_reconciliation_v202.py
+
+      - name: Keep applicator out of generated source commit
+        shell: pwsh
+        run: git checkout -- tools/apply_runtime_field_reconciliation_v202.py
+
+      - name: Commit source mutation when needed
+        id: mutation
+        shell: pwsh
+        run: |
+          git config user.name "gptdesktop-runtime-worker"
+          git config user.email "actions@users.noreply.github.com"
+          if (git status --porcelain) {
+            git add src tests
+            git commit -m "fix(runtime): stabilize saved-monitor send hydration and reconciliation"
+            git push origin HEAD:fix/runtime-field-reconciliation-v202
+            "changed=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "changed=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Defer validation to exact committed head
+        if: steps.mutation.outputs.changed == 'true'
+        shell: pwsh
+        run: Write-Host 'Source hotfix committed. The push-triggered exact-head run will perform validation and packaging.'
+
+      - name: Restore
+        if: steps.mutation.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Focused field regression tests
+        if: steps.mutation.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --filter "FullyQualifiedName~FieldSavedMonitorReconciliationRegressionTests|FullyQualifiedName~VerifiedSendTaskCancellationSelfHealRegressionTests" --logger "trx;LogFileName=field-reconciliation.trx"
+
+      - name: Full runtime suite
+        if: steps.mutation.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --logger "trx;LogFileName=runtime-full-v202.trx"
+
+      - name: Build standalone Setup EXE
+        if: steps.mutation.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -c Release -p:RunPackagingTargets=true
+
+      - name: Verify installer and exact head
+        if: steps.mutation.outputs.changed == 'false'
+        shell: pwsh
+        run: |
+          $exe = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (!(Test-Path $exe)) { throw "Setup EXE missing: $exe" }
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $size = (Get-Item $exe).Length
+          $head = (git rev-parse HEAD).Trim()
+          "SOURCE_SHA=$head" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "SETUP_SHA256=$sha" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "SETUP_SIZE=$size" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "GPTDeskTop v2.0.2`nSource SHA: $head`nSetup SHA256: $sha`nSize: $size" | Set-Content Output/Setup/BUILD-IDENTITY.txt
+          Write-Host "Source SHA: $head"
+          Write-Host "Setup SHA256: $sha"
+          Write-Host "Setup size: $size"
+
+      - name: Upload final v2.0.2 Setup
+        if: steps.mutation.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.2-Field-Reconciliation-Setup
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/Version.txt
+            Output/Setup/BUILD-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30
