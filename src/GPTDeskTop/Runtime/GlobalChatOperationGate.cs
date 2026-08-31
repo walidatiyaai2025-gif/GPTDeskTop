@@ -1,3 +1,5 @@
+using GPTDeskTop.Services;
+
 namespace GPTDeskTop.Runtime;
 
 /// <summary>
