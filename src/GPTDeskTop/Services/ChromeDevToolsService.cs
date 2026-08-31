@@ -1140,60 +1140,94 @@ public sealed class ChromeDevToolsService
 
     public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default)
     {
-        var preparationDecision = await ReadComposerDecisionAsync(tab, requireSendReady: false, cancellationToken);
-        if (preparationDecision != ComposerAutomationDecision.ReadyToPrepare)
-            return false;
-
-        var textLiteral = JsonSerializer.Serialize(message);
-        var setEditorExpression = $$"""
-        (() => {
-          const text = {{textLiteral}};
-          const visible = element => {
-            if (!element) return false;
-            const rect = element.getBoundingClientRect();
-            const style = getComputedStyle(element);
-            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-          };
-          const stop = document.querySelector('button[data-testid="stop-button"]');
-          if (visible(stop)) return false;
-          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
-          if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
-          editor.focus();
-          if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
-            const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set;
-            setter?.call(editor, text);
-            editor.dispatchEvent(new Event('input', { bubbles: true }));
-            editor.dispatchEvent(new Event('change', { bubbles: true }));
-          } else {
-            const selection = window.getSelection();
-            const range = document.createRange();
-            range.selectNodeContents(editor);
-            selection?.removeAllRanges();
-            selection?.addRange(range);
-            document.execCommand('insertText', false, text);
-            editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-          }
-          return true;
-        })()
-        """;
-
-        var editorPrepared = await EvaluateAsync(tab, setEditorExpression, cancellationToken, false);
-        if (editorPrepared.ValueKind != JsonValueKind.True) return false;
-
-        for (var readinessAttempt = 0; readinessAttempt < 6; readinessAttempt++)
+        if (!await EnsureStableConversationTransportAsync(tab, cancellationToken, stableReadsRequired: 3).ConfigureAwait(false))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var submitDecision = await ReadComposerDecisionAsync(tab, requireSendReady: true, cancellationToken);
-            if (submitDecision == ComposerAutomationDecision.ReadyToSend)
-                break;
-            if (submitDecision is ComposerAutomationDecision.DeferWhileGenerating or ComposerAutomationDecision.DeferForRenderedError)
-                return false;
-            if (readinessAttempt == 5) return false;
-            await Task.Delay(150, cancellationToken);
+            VerifiedSendDiagnostics.Record("Deferred", "cdp-transport-not-stable-before-composer", 0);
+            return false;
         }
 
-        // Use a real CDP input event for the physical submit. Synthetic HTMLElement.click()
-        // can clear ChatGPT's editor without creating a user turn, which is not delivery.
+        try
+        {
+            var preparationDecision = await ReadComposerDecisionAsync(tab, requireSendReady: false, cancellationToken);
+            if (preparationDecision != ComposerAutomationDecision.ReadyToPrepare)
+                return false;
+
+            var textLiteral = JsonSerializer.Serialize(message);
+            var setEditorExpression = $$"""
+            (() => {
+              const text = {{textLiteral}};
+              const visible = element => {
+                if (!element) return false;
+                const rect = element.getBoundingClientRect();
+                const style = getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+              };
+              const stop = document.querySelector('button[data-testid="stop-button"]');
+              if (visible(stop)) return false;
+              const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
+              if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
+              editor.focus();
+              if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
+                const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set;
+                setter?.call(editor, text);
+                editor.dispatchEvent(new Event('input', { bubbles: true }));
+                editor.dispatchEvent(new Event('change', { bubbles: true }));
+              } else {
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(editor);
+                selection?.removeAllRanges();
+                selection?.addRange(range);
+                document.execCommand('insertText', false, text);
+                editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+              }
+              return true;
+            })()
+            """;
+
+            var editorPrepared = await EvaluateAsync(tab, setEditorExpression, cancellationToken, false);
+            if (editorPrepared.ValueKind != JsonValueKind.True) return false;
+
+            for (var readinessAttempt = 0; readinessAttempt < 6; readinessAttempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var submitDecision = await ReadComposerDecisionAsync(tab, requireSendReady: true, cancellationToken);
+                if (submitDecision == ComposerAutomationDecision.ReadyToSend)
+                    break;
+                if (submitDecision is ComposerAutomationDecision.DeferWhileGenerating or ComposerAutomationDecision.DeferForRenderedError)
+                    return false;
+                if (readinessAttempt == 5) return false;
+                await Task.Delay(150, cancellationToken);
+            }
+
+            if (!await EnsureStableConversationTransportAsync(tab, cancellationToken, stableReadsRequired: 3).ConfigureAwait(false))
+            {
+                VerifiedSendDiagnostics.Record("Deferred", "cdp-transport-not-stable-before-physical-input", 0);
+                return false;
+            }
+
+            var composerBeforeSubmit = await ReadComposerTextAsync(tab, cancellationToken);
+            var finalSubmitDecision = await ReadComposerDecisionAsync(tab, requireSendReady: true, cancellationToken);
+            if (!composerBeforeSubmit.Present
+                || !ComposerEvidenceTextEquals(composerBeforeSubmit.Text, message)
+                || finalSubmitDecision != ComposerAutomationDecision.ReadyToSend)
+            {
+                VerifiedSendDiagnostics.Record("RetryAuthorized", "composer-revalidation-required-after-cdp-rebind", 0);
+                return false;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+        {
+            _sessionPool.Invalidate(tab.Id);
+            await EnsureStableConversationTransportAsync(tab, cancellationToken, stableReadsRequired: 3).ConfigureAwait(false);
+            VerifiedSendDiagnostics.Record("RetryAuthorized", "pre-submit-cdp-recovered-before-physical-input", 0);
+            return false;
+        }
+
         var submitted = await TryDispatchNativeSendClickAsync(tab, cancellationToken);
         if (!submitted) return false;
         try
@@ -1202,7 +1236,6 @@ public sealed class ChromeDevToolsService
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
         {
-            // Physical input already happened; verified observation owns any transport uncertainty.
         }
         return true;
     }
@@ -1824,10 +1857,104 @@ public sealed class ChromeDevToolsService
         catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
         {
             _sessionPool.Invalidate(tab.Id);
-            await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
+            await EnsureStableConversationTransportAsync(tab, cancellationToken, stableReadsRequired: 3).ConfigureAwait(false);
             return (false, 0, string.Empty);
         }
     }
+    public async Task<bool> EnsureStableConversationTransportAsync(
+        ChromeTab tab,
+        CancellationToken cancellationToken = default,
+        int stableReadsRequired = 3)
+    {
+        ArgumentNullException.ThrowIfNull(tab);
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
+            return false;
+
+        stableReadsRequired = Math.Clamp(stableReadsRequired, 2, 6);
+        var originalUrl = tab.Url;
+        var stableBindingKey = string.Empty;
+        var stableReads = 0;
+
+        RuntimeFlightRecorder.Record("CDP", "StableBindingRequested", "started", "same-conversation-read-rebind", tabId: tab.Id, conversationRef: originalUrl);
+
+        for (var attempt = 1; attempt <= 12; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var tabs = await GetTabsAsync(cancellationToken).ConfigureAwait(false);
+                var current = MonitorDeliveryRecoveryPolicy.FindBestBinding(tabs, tab);
+                if (current is null || !ChatGptConversationIdentity.IsSame(originalUrl, current.Url))
+                {
+                    stableReads = 0;
+                    stableBindingKey = string.Empty;
+                    _sessionPool.Invalidate(tab.Id);
+                    RuntimeFlightRecorder.Record("CDP", "StableBindingProbe", "missing", "same-conversation-target-not-found", tabId: tab.Id, conversationRef: originalUrl);
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000, 200 + attempt * 100)), cancellationToken);
+                    continue;
+                }
+
+                var bindingChanged = !string.Equals(tab.Id, current.Id, StringComparison.Ordinal)
+                                     || !string.Equals(tab.WebSocketDebuggerUrl, current.WebSocketDebuggerUrl, StringComparison.Ordinal);
+                if (bindingChanged)
+                    _sessionPool.Invalidate(tab.Id);
+
+                RebindTab(tab, current);
+
+                const string probeExpression = "(() => ({ href: location.href, ready: document.readyState }))()";
+                var probe = await EvaluateAsync(tab, probeExpression, cancellationToken, false);
+                var href = probe.TryGetProperty("href", out var hrefElement)
+                    ? hrefElement.GetString() ?? string.Empty
+                    : string.Empty;
+                var ready = probe.TryGetProperty("ready", out var readyElement)
+                    ? readyElement.GetString() ?? string.Empty
+                    : string.Empty;
+
+                if (!ChatGptConversationIdentity.IsSame(originalUrl, href)
+                    || string.Equals(ready, "loading", StringComparison.OrdinalIgnoreCase))
+                {
+                    stableReads = 0;
+                    stableBindingKey = string.Empty;
+                    await Task.Delay(250, cancellationToken);
+                    continue;
+                }
+
+                var bindingKey = $"{tab.Id}|{tab.WebSocketDebuggerUrl}";
+                if (string.Equals(bindingKey, stableBindingKey, StringComparison.Ordinal))
+                {
+                    stableReads++;
+                }
+                else
+                {
+                    stableBindingKey = bindingKey;
+                    stableReads = 1;
+                }
+
+                if (stableReads >= stableReadsRequired)
+                {
+                    RuntimeFlightRecorder.Record("CDP", "StableBindingCompleted", "ready", $"stable-reads:{stableReads}", tabId: tab.Id, conversationRef: tab.Url);
+                    return true;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+            {
+                _sessionPool.Invalidate(tab.Id);
+                stableReads = 0;
+                stableBindingKey = string.Empty;
+                RuntimeFlightRecorder.Record("CDP", "StableBindingProbe", "retry", ex.GetType().Name, tabId: tab.Id, conversationRef: originalUrl);
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000, 200 + attempt * 100)), cancellationToken);
+        }
+
+        RuntimeFlightRecorder.Record("CDP", "StableBindingCompleted", "failed", "transport-never-stabilized", tabId: tab.Id, conversationRef: originalUrl);
+        return false;
+    }
+
     private async Task TryRefreshTabBindingAsync(ChromeTab tab, CancellationToken cancellationToken)
     {
         RuntimeFlightRecorder.Record("Browser", "BindingRefreshRequested", "started", "stable-target-search", tabId: tab.Id, conversationRef: tab.Url);

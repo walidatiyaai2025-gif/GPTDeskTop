@@ -1185,7 +1185,20 @@ public sealed class ChatGptMonitorService
             catch (Exception ex) when (IsTransientChromeException(ex))
             {
                 if (attempt <= 3 || attempt % 12 == 0)
-                    Activity?.Invoke(monitorId, $"Chrome/CDP connection retry {attempt}: {ex.GetType().Name}. Monitor remains active and will keep self-healing.");
+                    Activity?.Invoke(monitorId, $"Chrome/CDP transport disconnect retry {attempt}: {ex.GetType().Name}. Rebinding the same conversation target.");
+
+                var recovered = await _chrome.EnsureStableConversationTransportAsync(
+                    tab,
+                    cancellationToken,
+                    stableReadsRequired: 3);
+                if (recovered)
+                {
+                    Activity?.Invoke(monitorId, "Chrome/CDP recovery complete: same conversation target is stable.");
+                    attempt = 0;
+                    await Task.Delay(150, cancellationToken);
+                    continue;
+                }
+
                 await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(5000, 500 * attempt)), cancellationToken);
             }
         }

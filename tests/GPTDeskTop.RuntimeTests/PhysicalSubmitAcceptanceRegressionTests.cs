@@ -101,9 +101,9 @@ public sealed class PhysicalSubmitAcceptanceRegressionTests
     public void ReleaseIdentityIsV205IncludingInstallerRegistryVersion()
     {
         var root = Root();
-        Assert.Contains("<Version>2.0.5</Version>", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop", "GPTDeskTop.csproj")), StringComparison.Ordinal);
-        Assert.Contains("<Version>2.0.5</Version>", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop.Setup", "GPTDeskTop.Setup.csproj")), StringComparison.Ordinal);
-        Assert.Contains("internal const string Version = \"2.0.5\";", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop.Setup", "Program.cs")), StringComparison.Ordinal);
+        Assert.Contains("<Version>2.0.6</Version>", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop", "GPTDeskTop.csproj")), StringComparison.Ordinal);
+        Assert.Contains("<Version>2.0.6</Version>", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop.Setup", "GPTDeskTop.Setup.csproj")), StringComparison.Ordinal);
+        Assert.Contains("internal const string Version = \"2.0.6\";", File.ReadAllText(Path.Combine(root, "src", "GPTDeskTop.Setup", "Program.cs")), StringComparison.Ordinal);
     }
 
     private static string ChromeSource() => File.ReadAllText(Path.Combine(Root(), "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
