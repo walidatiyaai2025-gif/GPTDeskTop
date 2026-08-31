@@ -9,7 +9,7 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
 {
     [Fact]
     [Trait("Category", "WallClockAcceptance")]
-    public async Task ThreeIndependentCoordinatorsShareOneRealFiveSecondGlobalAuthority()
+    public async Task ThreeIndependentCoordinatorsShareOneRealFifteenSecondGlobalAuthority()
     {
         var coordinators = new[]
         {
@@ -43,13 +43,13 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
         Assert.Equal(3, times.Length);
         var firstGapMs = (times[1] - times[0]).TotalMilliseconds;
         var secondGapMs = (times[2] - times[1]).TotalMilliseconds;
-        Assert.True(firstGapMs >= 5000, $"First real send gap was {firstGapMs:0.###} ms.");
-        Assert.True(secondGapMs >= 5000, $"Second real send gap was {secondGapMs:0.###} ms.");
+        Assert.True(firstGapMs >= 15000, $"First real send gap was {firstGapMs:0.###} ms.");
+        Assert.True(secondGapMs >= 15000, $"Second real send gap was {secondGapMs:0.###} ms.");
 
         var released = receipts.OrderBy(receipt => receipt.SendAuthorityUtc).ToArray();
         Assert.Equal(3, released.Length);
-        Assert.True(released[1].MeasuredGapMs >= 5000, $"Receipt gap 2 was {released[1].MeasuredGapMs} ms.");
-        Assert.True(released[2].MeasuredGapMs >= 5000, $"Receipt gap 3 was {released[2].MeasuredGapMs} ms.");
+        Assert.True(released[1].MeasuredGapMs >= 15000, $"Receipt gap 2 was {released[1].MeasuredGapMs} ms.");
+        Assert.True(released[2].MeasuredGapMs >= 15000, $"Receipt gap 3 was {released[2].MeasuredGapMs} ms.");
         Assert.All(released, receipt =>
         {
             Assert.False(string.IsNullOrWhiteSpace(receipt.OperationId));
@@ -74,7 +74,7 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
         var authorityGap12 = (released[1].SendAuthorityUtc - released[0].SendAuthorityUtc).TotalMilliseconds;
         var authorityGap23 = (released[2].SendAuthorityUtc - released[1].SendAuthorityUtc).TotalMilliseconds;
         var minimumAuthorityGap = Math.Min(authorityGap12, authorityGap23);
-        Assert.True(minimumAuthorityGap >= 5000, $"Minimum production send-authority gap was {minimumAuthorityGap:0.###} ms.");
+        Assert.True(minimumAuthorityGap >= 15000, $"Minimum production send-authority gap was {minimumAuthorityGap:0.###} ms.");
 
         WriteReceipt("send-gap-receipt.json", new
         {
@@ -91,7 +91,7 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
             gap12Milliseconds = authorityGap12,
             gap23Milliseconds = authorityGap23,
             minimumGapMilliseconds = minimumAuthorityGap,
-            requiredMinimumMilliseconds = 5000,
+            requiredMinimumMilliseconds = 15000,
             passed = true
         });
     }
@@ -100,7 +100,7 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
     public void EveryProductionPhysicalSendPathIsWrappedByTheCanonicalCoordinator()
     {
         var coordinatorSource = ReadSource("src", "GPTDeskTop", "Runtime", "OutboundDeliveryCoordinator.cs");
-        Assert.Contains("DefaultInterSendGap = TimeSpan.FromSeconds(5)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("DefaultInterSendGap = TimeSpan.FromSeconds(15)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("GlobalFifoSendAuthority GlobalAuthority", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("GlobalAuthority.AcquireAsync", coordinatorSource, StringComparison.Ordinal);
 
