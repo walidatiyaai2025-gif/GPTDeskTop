@@ -256,6 +256,8 @@ public sealed class GlobalChatGptRateLimitCircuitBreaker
         if (publish is not null)
         {
             RuntimeFlightRecorder.Record("RateLimit", publish.EventName, publish.IsActive ? "paused" : "ready", publish.Detail);
+            if (publish.EventName == "RateLimitDetected")
+                RuntimeFlightRecorder.Record("Monitor", "RateLimitCircuitOpened", "paused", "global-rendered-rate-limit");
             Publish(publish);
         }
         if (secondEvent is not null)
@@ -286,7 +288,10 @@ public sealed class GlobalChatGptRateLimitCircuitBreaker
             || normalized.Contains("making requests too quickly", StringComparison.OrdinalIgnoreCase)
             || normalized.Contains("temporarily limited access", StringComparison.OrdinalIgnoreCase)
             || normalized.Contains("temporarily limited access to your conversations", StringComparison.OrdinalIgnoreCase)
-            || normalized.Contains("please wait a few minutes before trying again", StringComparison.OrdinalIgnoreCase);
+            || normalized.Contains("please wait a few minutes before trying again", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("http 429", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("error 429", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("status 429", StringComparison.OrdinalIgnoreCase);
     }
 
     private void PersistTargetLocked(DurableState state)
