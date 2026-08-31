@@ -106,7 +106,7 @@ public sealed class OutboundDeliveryWallClockAcceptanceTests
 
         var monitorSource = ReadSource("src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs");
         Assert.Contains("_outboundDelivery.SendOnceAsync(", monitorSource, StringComparison.Ordinal);
-        Assert.Contains("() => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken)", monitorSource, StringComparison.Ordinal);
+        Assert.Contains("() => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken, allowRecoveryReload: allowRecoveryReload)", monitorSource, StringComparison.Ordinal);
 
         var recoveryAdapter = ReadSource("src", "GPTDeskTop", "Services", "ICrashRecoveryRuntime.cs");
         Assert.Contains("_outboundDelivery.SendOnceAsync(", recoveryAdapter, StringComparison.Ordinal);
