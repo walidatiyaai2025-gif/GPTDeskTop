@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
 
+# Exact-head validation run for the committed field-reconciliation source.
 jobs:
   patch-validate-build:
     runs-on: windows-latest
