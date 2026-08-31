@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
 
+# Exact-head validation for the committed fresh-chat-per-response runtime.
 jobs:
   patch-validate-package:
     runs-on: windows-latest
