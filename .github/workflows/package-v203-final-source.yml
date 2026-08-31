@@ -1,0 +1,41 @@
+name: Package v2.0.3 Final Source
+
+on:
+  push:
+    branches:
+      - artifact/gptdesktop-v203-final-source-7857e6b
+
+permissions:
+  contents: read
+
+jobs:
+  package-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Package exact validated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          FINAL_SHA='7857e6bd7b8b81f3da2dc88eb28085764a9ae018'
+          git cat-file -e "${FINAL_SHA}^{commit}"
+          git archive --format=zip --output=GPTDeskTop-v2.0.3-Final-Source-7857e6b.zip "$FINAL_SHA"
+          sha256sum GPTDeskTop-v2.0.3-Final-Source-7857e6b.zip | tee SOURCE-SHA256.txt
+          printf 'SOURCE_SHA=%s\n' "$FINAL_SHA" | tee SOURCE-IDENTITY.txt
+          test -s GPTDeskTop-v2.0.3-Final-Source-7857e6b.zip
+
+      - name: Upload exact source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.3-Final-Source-7857e6b
+          path: |
+            GPTDeskTop-v2.0.3-Final-Source-7857e6b.zip
+            SOURCE-SHA256.txt
+            SOURCE-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30
