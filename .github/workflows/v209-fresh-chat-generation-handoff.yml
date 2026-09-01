@@ -1,0 +1,148 @@
+name: GPTDeskTop v2.0.9 Fresh Chat Generation Handoff
+
+on:
+  push:
+    branches:
+      - hotfix/v209-fresh-chat-generation-handoff
+
+permissions:
+  contents: write
+
+jobs:
+  patch-validate-package:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          ref: hotfix/v209-fresh-chat-generation-handoff
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply one-shot v2.0.9 generation handoff patch
+        id: patch
+        shell: pwsh
+        run: |
+          if (Test-Path 'tools/apply_v209_fresh_chat_generation_handoff.py') {
+            python tools/apply_v209_fresh_chat_generation_handoff.py
+            $monitor = Get-Content 'src/GPTDeskTop/Services/ChatGptMonitorService.cs' -Raw
+            $chrome = Get-Content 'src/GPTDeskTop/Services/ChromeDevToolsService.cs' -Raw
+            $lease = Get-Content 'src/GPTDeskTop/Services/GenerationRecoveryInterlock.cs' -Raw
+            $app = Get-Content 'src/GPTDeskTop/GPTDeskTop.csproj' -Raw
+            if (!$monitor.Contains('ConfirmFreshChatGenerationBoundaryAsync')) { throw 'Fresh-chat generation boundary confirmation is missing.' }
+            if (!$monitor.Contains('ReleaseMonitor(monitor.Id, "monitor-worker-ended")')) { throw 'Monitor generation lease cleanup is missing.' }
+            if (!$chrome.Contains('CreateNewChatTabForFreshHandoffAsync')) { throw 'Dedicated additive fresh-chat target path is missing.' }
+            if (!$lease.Contains('public bool ReleaseMonitor(long monitorId, string reason)')) { throw 'Generation lease lifecycle release API is missing.' }
+            if (!$app.Contains('<Version>2.0.9</Version>')) { throw 'Application version is not 2.0.9 after patch.' }
+            git config user.name "gptdesktop-runtime-worker"
+            git config user.email "actions@users.noreply.github.com"
+            git rm tools/apply_v209_fresh_chat_generation_handoff.py
+            git add src tests
+            if (git status --porcelain) {
+              git commit -m "fix(runtime): release stale generation leases before fresh-chat handoff"
+              git push origin HEAD:hotfix/v209-fresh-chat-generation-handoff
+              "changed=true" >> $env:GITHUB_OUTPUT
+            } else {
+              "changed=false" >> $env:GITHUB_OUTPUT
+            }
+          } else {
+            "changed=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Defer validation to exact committed source
+        if: steps.patch.outputs.changed == 'true'
+        shell: pwsh
+        run: Write-Host 'v2.0.9 source committed. Push-triggered exact-head run will validate and package.'
+
+      - name: Setup .NET 8
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Focused generation handoff regression tests
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --filter "FullyQualifiedName~FreshChatGenerationLeaseHandoffRegressionTests|FullyQualifiedName~GenerationRecoverySafetyHotfixTests|FullyQualifiedName~FreshChatPerResponseRegressionTests|FullyQualifiedName~FreshChatTransportAnchorRegressionTests|FullyQualifiedName~CdpTransportStabilityRegressionTests|FullyQualifiedName~PhysicalSubmitAcceptanceRegressionTests|FullyQualifiedName~VerifiedSendTransportRecoveryRegressionTests" --logger "trx;LogFileName=v209-generation-handoff.trx"
+
+      - name: Full runtime and product suite
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --logger "trx;LogFileName=v209-full-runtime.trx"
+
+      - name: Release x64 build
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release -r win-x64
+
+      - name: Build final Setup EXE
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -c Release -p:RunPackagingTargets=true
+
+      - name: Verify exact head and package final source
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          git merge-base --is-ancestor 114f908f1d91ce56e174101369be76005d341a85 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'v2.0.9 source lost v2.0.8 ancestry.' }
+          if (Test-Path 'tools/apply_v209_fresh_chat_generation_handoff.py') { throw 'One-shot patch applicator leaked into final source.' }
+          $monitor = Get-Content 'src/GPTDeskTop/Services/ChatGptMonitorService.cs' -Raw
+          $chrome = Get-Content 'src/GPTDeskTop/Services/ChromeDevToolsService.cs' -Raw
+          $lease = Get-Content 'src/GPTDeskTop/Services/GenerationRecoveryInterlock.cs' -Raw
+          $app = Get-Content 'src/GPTDeskTop/GPTDeskTop.csproj' -Raw
+          $setup = Get-Content 'src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj' -Raw
+          $setupProgram = Get-Content 'src/GPTDeskTop.Setup/Program.cs' -Raw
+          if (!$app.Contains('<Version>2.0.9</Version>')) { throw 'Application version is not 2.0.9.' }
+          if (!$setup.Contains('<Version>2.0.9</Version>')) { throw 'Setup project version is not 2.0.9.' }
+          if (!$setupProgram.Contains('Version = "2.0.9"')) { throw 'Setup program version constant is not 2.0.9.' }
+          if (!$monitor.Contains('ConfirmFreshChatGenerationBoundaryAsync')) { throw 'Final source lacks completed-response generation boundary confirmation.' }
+          if (!$monitor.Contains('CreateNewChatTabForFreshHandoffAsync(monitor.Id')) { throw 'Final source does not route normal response handoff through dedicated additive target creation.' }
+          if (!$monitor.Contains('ReleaseMonitor(monitor.Id, "monitor-worker-ended")')) { throw 'Final source does not clean stale monitor generation leases.' }
+          if (!$chrome.Contains('FreshChatTargetCreateAllowed')) { throw 'Final source lacks additive fresh-chat target authority marker.' }
+          if (!$chrome.Contains('GenerationRecoveryInterlock.Shared.HasAnyActiveLease')) { throw 'Generic destructive/recovery target creation guard was weakened.' }
+          if (!$lease.Contains('public bool ReleaseMonitor(long monitorId, string reason)')) { throw 'Final source lacks generation lease lifecycle release API.' }
+          $exe = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (!(Test-Path $exe)) { throw 'Setup EXE missing.' }
+          $setupSha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $setupSize = (Get-Item $exe).Length
+          git archive --format=zip --output GPTDeskTop-v2.0.9-FINAL-SOURCE.zip HEAD
+          $sourceSha = (Get-FileHash GPTDeskTop-v2.0.9-FINAL-SOURCE.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "FINAL_HEAD=$head`nBASE_V208_HEAD=114f908f1d91ce56e174101369be76005d341a85`nVERSION=2.0.9`nBEHAVIOR=FRESH_CHAT_AFTER_RESPONSE_WITH_GENERATION_BOUNDARY`nSETUP_SHA256=$setupSha`nSETUP_SIZE=$setupSize`nSOURCE_ZIP_SHA256=$sourceSha" | Set-Content FINAL-V209-IDENTITY.txt
+          Write-Host "FINAL_HEAD=$head"
+          Write-Host "SETUP_SHA256=$setupSha"
+          Write-Host "SOURCE_ZIP_SHA256=$sourceSha"
+
+      - name: Upload v2.0.9 final source
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.9-FINAL-SOURCE
+          path: |
+            GPTDeskTop-v2.0.9-FINAL-SOURCE.zip
+            FINAL-V209-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload v2.0.9 final setup
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.9-FINAL-SETUP
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/Version.txt
+            FINAL-V209-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30
