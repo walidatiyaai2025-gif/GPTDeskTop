@@ -89,6 +89,26 @@ public sealed class GenerationRecoveryInterlock
         lock (_sync) return _leases.TryGetValue(monitorId, out var lease) ? lease : null;
     }
 
+    public bool ReleaseMonitor(long monitorId, string reason)
+    {
+        GenerationLeaseSnapshot? removed;
+        lock (_sync)
+        {
+            if (!_leases.Remove(monitorId, out removed))
+                return false;
+        }
+
+        RuntimeFlightRecorder.Record(
+            "Monitor",
+            "GenerationLeaseReleased",
+            removed.IsGenerationActive ? "released" : "cleared",
+            reason,
+            monitorId,
+            removed.TargetId,
+            removed.ConversationIdentity);
+        return true;
+    }
+
     public void RecordSuppressed(long monitorId, ChromeTab tab, string operation)
         => RuntimeFlightRecorder.Record("Monitor", "RecoverySuppressed", "suppressed", $"active-generation:{operation}", monitorId, tab.Id, tab.Url);
 

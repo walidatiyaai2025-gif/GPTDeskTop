@@ -789,6 +789,7 @@ public sealed class ChatGptMonitorService
         catch (Exception ex) { await ExceptionLogService.LogAsync(ex, "ChatGptMonitorService.WorkerFatal", monitor.Id, tab.Id, monitor.Title); Activity?.Invoke(monitor.Id, $"Monitor worker stopped by exception: {ex.Message}"); }
         finally
         {
+            GenerationRecoveryInterlock.Shared.ReleaseMonitor(monitor.Id, "monitor-worker-ended");
             MonitorRuntime? runtimeToDispose = null;
             lock (_sync)
             {
@@ -809,6 +810,39 @@ public sealed class ChatGptMonitorService
         }
     }
 
+    private async Task<bool> ConfirmFreshChatGenerationBoundaryAsync(
+        long monitorId,
+        ChromeTab oldTab,
+        string expectedResponseText,
+        CancellationToken cancellationToken)
+    {
+        // Require two fresh authoritative non-generating observations immediately before the
+        // additive fresh-chat target is created. This deliberately drives the same generation
+        // interlock that protects reload/close/recovery paths; it does not clear the lease by time.
+        for (var confirmation = 0; confirmation < 2; confirmation++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var state = await GetChatStateWithRetryAsync(monitorId, oldTab, cancellationToken);
+            GenerationRecoveryInterlock.Shared.Observe(monitorId, oldTab, state.IsGenerating);
+            var text = GetEffectiveResponse(state);
+            if (state.IsGenerating || !string.Equals(text, expectedResponseText, StringComparison.Ordinal))
+                return false;
+            if (confirmation == 0)
+                await Task.Delay(250, cancellationToken);
+        }
+
+        var released = !GenerationRecoveryInterlock.Shared.IsActive(monitorId);
+        RuntimeFlightRecorder.Record(
+            "Monitor",
+            "FreshChatGenerationBoundary",
+            released ? "released" : "deferred",
+            released ? "two-authoritative-non-generating-confirmations" : "generation-lease-still-active",
+            monitorId,
+            oldTab.Id,
+            oldTab.Url);
+        return released;
+    }
+
     private async Task<ChromeTab?> ContinueInFreshChatAfterResponseAsync(
         SavedMonitor monitor,
         ChromeTab oldTab,
@@ -822,6 +856,7 @@ public sealed class ChatGptMonitorService
             Activity?.Invoke(monitor.Id, $"{prefix} Waiting {replyDelaySeconds}s before fresh-chat follow-up...");
             await Task.Delay(TimeSpan.FromSeconds(replyDelaySeconds), cancellationToken);
             var recheck = await GetChatStateWithRetryAsync(monitor.Id, oldTab, cancellationToken);
+            GenerationRecoveryInterlock.Shared.Observe(monitor.Id, oldTab, recheck.IsGenerating);
             var latestText = GetEffectiveResponse(recheck);
             if (recheck.IsGenerating || !string.Equals(latestText, responseText, StringComparison.Ordinal))
             {
@@ -829,6 +864,12 @@ public sealed class ChatGptMonitorService
                 HistoryChanged?.Invoke();
                 return null;
             }
+        }
+
+        if (!await ConfirmFreshChatGenerationBoundaryAsync(monitor.Id, oldTab, responseText, cancellationToken))
+        {
+            Activity?.Invoke(monitor.Id, $"{prefix} Fresh-chat handoff deferred until the completed response is authoritatively non-generating.");
+            return null;
         }
 
         if (_globalRateLimit.IsActive)
@@ -853,7 +894,7 @@ public sealed class ChatGptMonitorService
         ChromeTab newTab;
         try
         {
-            newTab = await _chrome.CreateNewChatTabAsync(cancellationToken);
+            newTab = await _chrome.CreateNewChatTabForFreshHandoffAsync(monitor.Id, cancellationToken);
             await ConversationHandoffCheckpointStore.MarkTargetCreatedAsync(_database, monitor.Id, newTab, cancellationToken);
             await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken);
             await ApplyModelRouteAsync(monitor, newTab, recovery: false, contextRotation: true, cancellationToken);

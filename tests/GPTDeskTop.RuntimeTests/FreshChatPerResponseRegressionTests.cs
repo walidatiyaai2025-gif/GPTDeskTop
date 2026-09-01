@@ -19,7 +19,7 @@ public sealed class FreshChatPerResponseRegressionTests
         var source = ReadMonitorSource();
         var method = Slice(source, "private async Task<ChromeTab?> ContinueInFreshChatAfterResponseAsync", "private async Task<ChromeTab?> CommitVerifiedConversationHandoffAsync");
         Assert.Contains("var startMessage = monitor.AutoReply.Trim();", method, StringComparison.Ordinal);
-        Assert.Contains("CreateNewChatTabAsync", method, StringComparison.Ordinal);
+        Assert.Contains("CreateNewChatTabForFreshHandoffAsync(monitor.Id", method, StringComparison.Ordinal);
         Assert.Contains("SendWhenReadyAsync(monitor.Id, newTab, startMessage", method, StringComparison.Ordinal);
         Assert.Contains("rotationTrigger: \"EveryResponseFreshChat\"", method, StringComparison.Ordinal);
         Assert.Contains("CommitVerifiedConversationHandoffAsync", method, StringComparison.Ordinal);

@@ -316,9 +316,46 @@ public sealed class ChromeDevToolsService
             RuntimeFlightRecorder.Record("Monitor", "RecoverySuppressed", "suppressed", "active-generation:create-target");
             throw new InvalidOperationException("Creating a Chrome target is forbidden while an authoritative generation lease is active.");
         }
-        var existing = await GetTabsAsync(cancellationToken); var controlTab = existing.FirstOrDefault() ?? throw new InvalidOperationException("Monitor Chrome has no controllable page."); var result = await SendCommandAsync(controlTab, "Target.createTarget", new { url }, cancellationToken); var targetId = result.TryGetProperty("targetId", out var id) ? id.GetString() : null; if (string.IsNullOrWhiteSpace(targetId)) throw new InvalidOperationException("Chrome did not return a target ID for the new tab."); for (var attempt = 0; attempt < 40; attempt++) { cancellationToken.ThrowIfCancellationRequested(); await Task.Delay(250, cancellationToken); var tabs = await GetTabsAsync(cancellationToken); var created = tabs.FirstOrDefault(t => string.Equals(t.Id, targetId, StringComparison.Ordinal)); if (created is not null) return created; } throw new TimeoutException("The new Chrome tab did not become ready in time.");
+        return await CreateTargetCoreAsync(url, cancellationToken).ConfigureAwait(false);
     }
-    public Task<ChromeTab> CreateNewChatTabAsync(CancellationToken cancellationToken = default) => CreateTabAsync(_config.StartUrl, cancellationToken);
+
+    public Task<ChromeTab> CreateNewChatTabAsync(CancellationToken cancellationToken = default)
+        => CreateTabAsync(_config.StartUrl, cancellationToken);
+
+    public async Task<ChromeTab> CreateNewChatTabForFreshHandoffAsync(long monitorId, CancellationToken cancellationToken = default)
+    {
+        // A brand-new target is additive: it does not reload, close, or mutate any generating
+        // conversation. The normal CreateTabAsync guard remains fail-closed for recovery paths.
+        // This dedicated path is used only after the source monitor has authoritatively crossed
+        // its completed-response generation boundary. Other monitors may still be generating.
+        if (GenerationRecoveryInterlock.Shared.IsActive(monitorId))
+            throw new InvalidOperationException("Fresh-chat handoff cannot create a target while its source monitor generation lease is active.");
+
+        RuntimeFlightRecorder.Record(
+            "Monitor", "FreshChatTargetCreateAllowed", "allowed", "completed-response-additive-target", monitorId);
+        return await CreateTargetCoreAsync(_config.StartUrl, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ChromeTab> CreateTargetCoreAsync(string url, CancellationToken cancellationToken)
+    {
+        var existing = await GetTabsAsync(cancellationToken);
+        var controlTab = existing.FirstOrDefault() ?? throw new InvalidOperationException("Monitor Chrome has no controllable page.");
+        var result = await SendCommandAsync(controlTab, "Target.createTarget", new { url }, cancellationToken);
+        var targetId = result.TryGetProperty("targetId", out var id) ? id.GetString() : null;
+        if (string.IsNullOrWhiteSpace(targetId))
+            throw new InvalidOperationException("Chrome did not return a target ID for the new tab.");
+
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(250, cancellationToken);
+            var tabs = await GetTabsAsync(cancellationToken);
+            var created = tabs.FirstOrDefault(t => string.Equals(t.Id, targetId, StringComparison.Ordinal));
+            if (created is not null) return created;
+        }
+
+        throw new TimeoutException("The new Chrome tab did not become ready in time.");
+    }
     public async Task<bool> CloseTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) { if (GenerationRecoveryInterlock.Shared.IsActive(tab)) { GenerationRecoveryInterlock.Shared.RecordSuppressed(0, tab, "close-target"); return false; } try { using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/close/{Uri.EscapeDataString(tab.Id)}", cancellationToken); return response.IsSuccessStatusCode; } catch { return false; } finally { _sessionPool.Invalidate(tab.Id); lock (_autoFollowSync) _autoFollowSequences.Remove(tab.Id); } }
     public async Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken = default)
     {
