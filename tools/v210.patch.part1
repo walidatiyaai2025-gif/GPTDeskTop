@@ -1,0 +1,63 @@
+--- a/src/GPTDeskTop/Services/ChatGptMonitorService.cs
++++ b/src/GPTDeskTop/Services/ChatGptMonitorService.cs
+@@ -9,6 +9,15 @@
+ 
+ public sealed class ChatGptMonitorService
+ {
++    private enum SendWhenReadyOutcome
++    {
++        Accepted,
++        DeferredBeforePhysicalSubmit,
++        ReconcileRequired
++    }
++
++    private sealed record FreshChatContinuationResult(ChromeTab? Tab, bool RetrySourceResponse);
++
+     private static readonly TimeSpan RuntimeSettingsRefreshInterval = TimeSpan.FromSeconds(5);
+     private static readonly TimeSpan MinimumStableSendDwell = TimeSpan.FromSeconds(15);
+     private readonly ChromeDevToolsService _chrome;
+@@ -500,18 +509,24 @@
+ 
+                     if (!isError)
+                     {
+-                        var freshTab = await ContinueInFreshChatAfterResponseAsync(
++                        var freshResult = await ContinueInFreshChatAfterResponseAsync(
+                             monitor, tab, text, replyDelaySeconds, cancellationToken);
+-                        if (freshTab is not null)
++                        if (freshResult.Tab is not null)
+                         {
+-                            tab = freshTab;
++                            tab = freshResult.Tab;
++                            lastHandledText = string.Empty;
++                        }
++                        else if (freshResult.RetrySourceResponse)
++                        {
++                            // No physical submit occurred. Keep the completed source response eligible
++                            // so the next poll can retry the fresh-chat handoff without ever sending
++                            // back into the old conversation.
+                             lastHandledText = string.Empty;
+                         }
+                         else
+                         {
+-                            // The source response remains handled. We never send another automated
+-                            // message into the old conversation; a later poll will reconcile any
+-                            // accepted handoff checkpoint or retry creation of a fresh chat.
++                            // The source response remains handled. This includes accepted/uncertain
++                            // delivery states where exactly-once safety forbids a blind retry.
+                             lastHandledText = text;
+                         }
+                         candidateText = string.Empty;
+@@ -556,7 +571,7 @@
+                         if (monitor.MaxConversationRotations > 0 && monitor.RotationCount >= monitor.MaxConversationRotations) { Activity?.Invoke(monitor.Id, $"{prefix} Conversation limit detected, but maximum rotations ({monitor.MaxConversationRotations}) has been reached. Monitor remains stopped on the current chat."); await _database.AddLogAsync("System", monitor.NewChatStartMessage, text, "RotationLimitReached", monitor.Id, tab.Id, monitor.Title, cancellationToken); continue; }
+                         Activity?.Invoke(monitor.Id, $"{prefix} ChatGPT reported a conversation/context limit. Rotating to a new chat..."); if (monitor.NewChatDelaySeconds > 0) await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(monitor.NewChatDelaySeconds, 0, 600)), cancellationToken);
+                         var oldTab = tab; if (_globalRateLimit.IsActive) { Activity?.Invoke(monitor.Id, $"{prefix} Fresh-chat recovery deferred by global ChatGPT rate limit."); continue; } var newTab = await _chrome.CreateNewChatTabAsync(cancellationToken); await WaitForChatReadyAsync(monitor.Id, newTab, cancellationToken); await ApplyModelRouteAsync(monitor, newTab, recovery: false, contextRotation: true, cancellationToken); await Task.Delay(Math.Max(500, _config.DelayAfterSendMilliseconds), cancellationToken);
+-                        var handoffService = new ConversationHandoffService(_database); var handoffMessage = await handoffService.BuildAsync(monitor, text, oldTab, cancellationToken); var startMessage = string.IsNullOrWhiteSpace(handoffMessage) ? (string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage) : handoffMessage; var sent = await SendWhenReadyAsync(monitor.Id, newTab, startMessage, allowRecoveryReload: true, cancellationToken);
++                        var handoffService = new ConversationHandoffService(_database); var handoffMessage = await handoffService.BuildAsync(monitor, text, oldTab, cancellationToken); var startMessage = string.IsNullOrWhiteSpace(handoffMessage) ? (string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage) : handoffMessage; var sent = await SendWhenReadyAsync(monitor.Id, newTab, startMessage, allowRecoveryReload: true, cancellationToken) == SendWhenReadyOutcome.Accepted;
+                         if (!sent)
+                         {
+                             Activity?.Invoke(monitor.Id, $"{prefix} Rotation handoff was not verified. Closing the unused new tab; automatic duplicate retry is suppressed until the source response changes.");
+@@ -636,7 +651,7 @@
+ 
+                         bool sent;
+                         using (RuntimeFlightRecorder.BeginScope(monitor.Id, newTab.Id, newTab.Url))
+-                            sent = await SendWhenReadyAsync(monitor.Id, newTab, recoveryMessage, allowRecoveryReload: true, cancellationToken);
