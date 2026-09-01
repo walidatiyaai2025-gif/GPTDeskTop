@@ -1,0 +1,109 @@
++                    : "blank-new-chat-url-canonicalized",
++                monitorId);
++        }
++
+         var recheck = await _chrome.GetChatStateAsync(liveTab, cancellationToken);
+         _globalRateLimit.ObserveVisibleState(recheck.GlobalRateLimitText);
+         var decision = ChatGptRuntimeStateEngine.Classify(ToRuntimeEvidence(recheck));
+@@ -1238,8 +1294,9 @@
+         return true;
+     }
+ 
+-    private async Task<bool> SendWhenReadyAsync(long monitorId, ChromeTab tab, string message, bool allowRecoveryReload, CancellationToken cancellationToken)
++    private async Task<SendWhenReadyOutcome> SendWhenReadyAsync(long monitorId, ChromeTab tab, string message, bool allowRecoveryReload, CancellationToken cancellationToken)
+     {
++        var physicalSubmitMayHaveOccurred = false;
+         IDisposable? operationLease = null;
+         if (_chatOperationGate.ActiveMonitorId != monitorId)
+         {
+@@ -1264,7 +1321,7 @@
+                     _globalRateLimit.IsActive ? AutonomousTaskPhase.RateLimitPaused : AutonomousTaskPhase.WaitingForSafeSend,
+                     $"send blocked by {decision.State}");
+                 Activity?.Invoke(monitorId, $"Canonical ChatGPT state {decision.State} forbids send; no composer mutation attempted.");
+-                return false;
++                return SendWhenReadyOutcome.DeferredBeforePhysicalSubmit;
+             }
+ 
+             if (!await WaitForStableSendWindowAsync(monitorId, tab, cancellationToken))
+@@ -1272,7 +1329,7 @@
+                 _autonomousTasks.Transition(monitorId, tab.Url,
+                     _globalRateLimit.IsActive ? AutonomousTaskPhase.RateLimitPaused : AutonomousTaskPhase.WaitingForSafeSend,
+                     "15-second stable send dwell was reset");
+-                return false;
++                return SendWhenReadyOutcome.DeferredBeforePhysicalSubmit;
+             }
+ 
+             _autonomousTasks.Transition(monitorId, tab.Url, AutonomousTaskPhase.WaitingInGlobalQueue, "awaiting canonical global send authority");
+@@ -1280,7 +1337,11 @@
+                 monitorId,
+                 tab.Id,
+                 message,
+-                () => _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken, allowRecoveryReload: allowRecoveryReload),
++                () =>
++                {
++                    physicalSubmitMayHaveOccurred = true;
++                    return _chrome.SendChatMessageVerifiedAsync(tab, message, cancellationToken, allowRecoveryReload: allowRecoveryReload);
++                },
+                 detail => Activity?.Invoke(monitorId, detail),
+                 cancellationToken);
+ 
+@@ -1288,16 +1349,22 @@
+             {
+                 _autonomousTasks.Transition(monitorId, tab.Url, AutonomousTaskPhase.WaitingForChatGpt, "verified outbound accepted");
+                 Activity?.Invoke(monitorId, "Verified message accepted. Exactly-once guard closed the delivery operation.");
+-                return true;
++                return SendWhenReadyOutcome.Accepted;
+             }
+ 
+             Activity?.Invoke(monitorId, "Composer delivery was not confirmed. Exactly-once guard suppressed blind resend; monitoring will reconcile from observed ChatGPT state.");
+-            return false;
++            return SendWhenReadyOutcome.ReconcileRequired;
+         }
+             catch (Exception ex) when (IsTransientChromeException(ex))
+             {
++                if (!physicalSubmitMayHaveOccurred)
++                {
++                    Activity?.Invoke(monitorId, $"Pre-submit Chrome/CDP transport became unavailable ({ex.GetType().Name}); no composer mutation occurred and the operation may retry later.");
++                    return SendWhenReadyOutcome.DeferredBeforePhysicalSubmit;
++                }
++
+                 Activity?.Invoke(monitorId, $"Physical composer send became uncertain ({ex.GetType().Name}). Exactly-once guard suppressed automatic resend.");
+-                return false;
++                return SendWhenReadyOutcome.ReconcileRequired;
+             }
+         }
+         finally
+--- a/src/GPTDeskTop/Services/ChatGptConversationIdentity.cs
++++ b/src/GPTDeskTop/Services/ChatGptConversationIdentity.cs
+@@ -25,6 +25,8 @@
+         if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+             return trimmed.TrimEnd('/');
+ 
+-        return uri.GetLeftPart(UriPartial.Path).TrimEnd('/') + uri.Query;
++        // Query parameters are runtime/UI state, not part of the durable /c/{conversation-id}
++        // ownership identity. Treat query-only navigation as the same conversation.
++        return uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+     }
+ }
+--- a/src/GPTDeskTop/GPTDeskTop.csproj
++++ b/src/GPTDeskTop/GPTDeskTop.csproj
+@@ -7,9 +7,9 @@
+     <Nullable>enable</Nullable>
+     <RootNamespace>GPTDeskTop</RootNamespace>
+     <AssemblyName>GPTDeskTop</AssemblyName>
+-    <Version>2.0.9</Version>
+-    <AssemblyVersion>2.0.9.0</AssemblyVersion>
+-    <FileVersion>2.0.9.0</FileVersion>
++    <Version>2.0.10</Version>
++    <AssemblyVersion>2.0.10.0</AssemblyVersion>
++    <FileVersion>2.0.10.0</FileVersion>
+     <ApplicationIcon>Assets\GPTDeskTop.ico</ApplicationIcon>
+   </PropertyGroup>
+   <ItemGroup>
+--- a/src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj
++++ b/src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj
+@@ -7,9 +7,9 @@
+     <Nullable>enable</Nullable>
+     <AssemblyName>GPTDeskTop-Setup</AssemblyName>
+     <RootNamespace>GPTDeskTop.Setup</RootNamespace>
+-    <Version>2.0.9</Version>
