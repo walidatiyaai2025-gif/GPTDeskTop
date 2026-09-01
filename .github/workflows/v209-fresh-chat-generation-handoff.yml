@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
 
+# Exact-head validation trigger after the one-shot source applicator has been removed.
 jobs:
   patch-validate-package:
     runs-on: windows-latest
