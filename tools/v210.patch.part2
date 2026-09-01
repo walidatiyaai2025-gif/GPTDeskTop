@@ -1,0 +1,81 @@
++                            sent = await SendWhenReadyAsync(monitor.Id, newTab, recoveryMessage, allowRecoveryReload: true, cancellationToken) == SendWhenReadyOutcome.Accepted;
+                         if (sent)
+                             await ConversationHandoffCheckpointStore.MarkDeliveryAcceptedAsync(_database, monitor.Id, newTab, cancellationToken);
+ 
+@@ -715,7 +730,7 @@
+ 
+                         bool sent;
+                         using (RuntimeFlightRecorder.BeginScope(monitor.Id, newTab.Id, newTab.Url))
+-                            sent = await SendWhenReadyAsync(monitor.Id, newTab, recoveryMessage, allowRecoveryReload: true, cancellationToken);
++                            sent = await SendWhenReadyAsync(monitor.Id, newTab, recoveryMessage, allowRecoveryReload: true, cancellationToken) == SendWhenReadyOutcome.Accepted;
+                         if (sent)
+                             await ConversationHandoffCheckpointStore.MarkDeliveryAcceptedAsync(_database, monitor.Id, newTab, cancellationToken);
+ 
+@@ -843,7 +858,7 @@
+         return released;
+     }
+ 
+-    private async Task<ChromeTab?> ContinueInFreshChatAfterResponseAsync(
++    private async Task<FreshChatContinuationResult> ContinueInFreshChatAfterResponseAsync(
+         SavedMonitor monitor,
+         ChromeTab oldTab,
+         string responseText,
+@@ -862,23 +877,25 @@
+             {
+                 await _database.AddLogAsync("System", monitor.AutoReply, latestText, "FreshChatSendDelayCancelled", monitor.Id, oldTab.Id, monitor.Title, cancellationToken);
+                 HistoryChanged?.Invoke();
+-                return null;
++                return new FreshChatContinuationResult(
++                    null,
++                    RetrySourceResponse: recheck.IsGenerating && string.Equals(latestText, responseText, StringComparison.Ordinal));
+             }
+         }
+ 
+         if (!await ConfirmFreshChatGenerationBoundaryAsync(monitor.Id, oldTab, responseText, cancellationToken))
+         {
+-            Activity?.Invoke(monitor.Id, $"{prefix} Fresh-chat handoff deferred until the completed response is authoritatively non-generating.");
+-            return null;
++            Activity?.Invoke(monitor.Id, $"{prefix} Fresh-chat handoff deferred until the completed response is authoritatively non-generating; the same response will be retried on a later poll.");
++            return new FreshChatContinuationResult(null, RetrySourceResponse: true);
+         }
+ 
+         if (_globalRateLimit.IsActive)
+         {
+-            Activity?.Invoke(monitor.Id, $"{prefix} Fresh-chat follow-up deferred by global ChatGPT rate limit.");
+-            return null;
++            Activity?.Invoke(monitor.Id, $"{prefix} Fresh-chat follow-up deferred by global ChatGPT rate limit; the same response remains eligible for retry.");
++            return new FreshChatContinuationResult(null, RetrySourceResponse: true);
+         }
+         if (!await CanPerformDestructiveAutomationAsync(monitor.Id, oldTab, "fresh-chat-per-response", cancellationToken))
+-            return null;
++            return new FreshChatContinuationResult(null, RetrySourceResponse: true);
+ 
+         var startMessage = monitor.AutoReply.Trim();
+         Activity?.Invoke(monitor.Id, $"{prefix} Response complete. Opening a brand-new chat; no further automated message will be sent to the old conversation.");
+@@ -902,25 +919,33 @@
+         }
+         catch (Exception ex) when (IsTransientChromeException(ex))
+         {
+-            Activity?.Invoke(monitor.Id, $"{prefix} Fresh-chat creation is waiting for Chrome/CDP recovery: {ex.GetType().Name}.");
+-            return null;
++            Activity?.Invoke(monitor.Id, $"{prefix} Fresh-chat creation is waiting for Chrome/CDP recovery: {ex.GetType().Name}. The same completed response remains eligible for retry.");
++            return new FreshChatContinuationResult(null, RetrySourceResponse: true);
+         }
+ 
+-        bool sent;
++        SendWhenReadyOutcome sendOutcome;
+         using (RuntimeFlightRecorder.BeginScope(monitor.Id, newTab.Id, newTab.Url))
+-            sent = await SendWhenReadyAsync(monitor.Id, newTab, startMessage, allowRecoveryReload: true, cancellationToken);
+-        if (sent)
++            sendOutcome = await SendWhenReadyAsync(monitor.Id, newTab, startMessage, allowRecoveryReload: true, cancellationToken);
++        if (sendOutcome == SendWhenReadyOutcome.Accepted)
+             await ConversationHandoffCheckpointStore.MarkDeliveryAcceptedAsync(_database, monitor.Id, newTab, cancellationToken);
+ 
+-        if (!sent)
++        if (sendOutcome == SendWhenReadyOutcome.DeferredBeforePhysicalSubmit)
+         {
+-            Activity?.Invoke(monitor.Id, $"{prefix} Fresh-chat follow-up was not verified. The old conversation remains untouched; the unused new chat is closed.");
+-            await _database.AddLogAsync("System", startMessage, responseText, "FreshChatFollowUpDeferred", monitor.Id, newTab.Id, monitor.Title, cancellationToken);
++            Activity?.Invoke(monitor.Id, $"{prefix} Fresh-chat follow-up deferred before any composer submit. The old conversation remains untouched; the unused new chat is closed and this same completed response will retry later.");
++            await _database.AddLogAsync("System", startMessage, responseText, "FreshChatFollowUpPreSubmitDeferred", monitor.Id, newTab.Id, monitor.Title, cancellationToken);
+             HistoryChanged?.Invoke();
