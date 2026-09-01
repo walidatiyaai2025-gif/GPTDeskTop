@@ -6,7 +6,7 @@ public sealed class FreshChatPerResponseRegressionTests
     public void NormalResponseAlwaysMovesContinuationToBrandNewChat()
     {
         var source = ReadMonitorSource();
-        var loop = Slice(source, "private async Task MonitorLoopAsync", "private async Task<ChromeTab?> ContinueInFreshChatAfterResponseAsync");
+        var loop = Slice(source, "private async Task MonitorLoopAsync", "private async Task<FreshChatContinuationResult> ContinueInFreshChatAfterResponseAsync");
         Assert.Contains("if (!isError)", loop, StringComparison.Ordinal);
         Assert.Contains("ContinueInFreshChatAfterResponseAsync(", loop, StringComparison.Ordinal);
         Assert.Contains("continue;", loop, StringComparison.Ordinal);
@@ -17,7 +17,7 @@ public sealed class FreshChatPerResponseRegressionTests
     public void FreshChatContinuationUsesExactConfiguredFollowUpAndClosesOldChatAfterVerifiedHandoff()
     {
         var source = ReadMonitorSource();
-        var method = Slice(source, "private async Task<ChromeTab?> ContinueInFreshChatAfterResponseAsync", "private async Task<ChromeTab?> CommitVerifiedConversationHandoffAsync");
+        var method = Slice(source, "private async Task<FreshChatContinuationResult> ContinueInFreshChatAfterResponseAsync", "private async Task<ChromeTab?> CommitVerifiedConversationHandoffAsync");
         Assert.Contains("var startMessage = monitor.AutoReply.Trim();", method, StringComparison.Ordinal);
         Assert.Contains("CreateNewChatTabForFreshHandoffAsync(monitor.Id", method, StringComparison.Ordinal);
         Assert.Contains("SendWhenReadyAsync(monitor.Id, newTab, startMessage", method, StringComparison.Ordinal);
@@ -29,14 +29,47 @@ public sealed class FreshChatPerResponseRegressionTests
     }
 
     [Fact]
-    public void FailedFreshChatSendNeverFallsBackToOldConversation()
+    public void PreSubmitFreshChatDeferralRetriesSameCompletedResponseWithoutOldChatSend()
     {
         var source = ReadMonitorSource();
-        var method = Slice(source, "private async Task<ChromeTab?> ContinueInFreshChatAfterResponseAsync", "private async Task<ChromeTab?> CommitVerifiedConversationHandoffAsync");
-        Assert.Contains("if (!sent)", method, StringComparison.Ordinal);
-        Assert.Contains("old conversation remains untouched", method, StringComparison.Ordinal);
+        var loop = Slice(source, "private async Task MonitorLoopAsync", "private async Task<FreshChatContinuationResult> ContinueInFreshChatAfterResponseAsync");
+        var method = Slice(source, "private async Task<FreshChatContinuationResult> ContinueInFreshChatAfterResponseAsync", "private async Task<ChromeTab?> CommitVerifiedConversationHandoffAsync");
+
+        Assert.Contains("else if (freshResult.RetrySourceResponse)", loop, StringComparison.Ordinal);
+        Assert.Contains("lastHandledText = string.Empty;", loop, StringComparison.Ordinal);
+        Assert.Contains("SendWhenReadyOutcome.DeferredBeforePhysicalSubmit", method, StringComparison.Ordinal);
+        Assert.Contains("FreshChatFollowUpPreSubmitDeferred", method, StringComparison.Ordinal);
+        Assert.Contains("RetrySourceResponse: true", method, StringComparison.Ordinal);
         Assert.Contains("CloseTabAsync(newTab", method, StringComparison.Ordinal);
         Assert.DoesNotContain("SendWhenReadyAsync(monitor.Id, oldTab", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UncertainFreshChatDeliveryPreservesExactlyOnceFence()
+    {
+        var source = ReadMonitorSource();
+        var method = Slice(source, "private async Task<FreshChatContinuationResult> ContinueInFreshChatAfterResponseAsync", "private async Task<ChromeTab?> CommitVerifiedConversationHandoffAsync");
+        var uncertain = Slice(method, "if (sendOutcome == SendWhenReadyOutcome.ReconcileRequired)", "var committedTab = await CommitVerifiedConversationHandoffAsync");
+
+        Assert.Contains("Exactly-once safety preserves the target/checkpoint", uncertain, StringComparison.Ordinal);
+        Assert.Contains("FreshChatFollowUpReconcileRequired", uncertain, StringComparison.Ordinal);
+        Assert.Contains("RetrySourceResponse: false", uncertain, StringComparison.Ordinal);
+        Assert.DoesNotContain("ConversationHandoffCheckpointStore.ClearAsync", uncertain, StringComparison.Ordinal);
+        Assert.DoesNotContain("CloseTabAsync(newTab", uncertain, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BlankNewChatUrlCanonicalizationDoesNotResetStableDwell()
+    {
+        var source = ReadMonitorSource();
+        var helper = Slice(source, "private static bool IsStableSendTargetContinuityPreserved", "private async Task<bool> WaitForStableSendWindowAsync");
+        var dwell = Slice(source, "private async Task<bool> WaitForStableSendWindowAsync", "private async Task<SendWhenReadyOutcome> SendWhenReadyAsync");
+
+        Assert.Contains("return !currentHasConversationIdentity;", helper, StringComparison.Ordinal);
+        Assert.Contains("blank-new-chat-url-canonicalized", dwell, StringComparison.Ordinal);
+        Assert.Contains("FirstOrDefault(candidate => string.Equals(candidate.Id, expectedTabId", dwell, StringComparison.Ordinal);
+        Assert.Contains("IsStableSendTargetContinuityPreserved(expectedUrl, liveTab.Url)", dwell, StringComparison.Ordinal);
+        Assert.DoesNotContain("string.Equals(liveTab.Url, expectedUrl, StringComparison.Ordinal))\r\n        {\r\n            Activity?.Invoke(monitorId, \"15-second dwell reset", dwell, StringComparison.Ordinal);
     }
 
     private static string ReadMonitorSource()
