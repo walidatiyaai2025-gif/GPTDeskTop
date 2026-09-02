@@ -6,6 +6,8 @@ namespace GPTDeskTop.Runtime;
 /// Process-wide, fail-closed authority for automated ChatGPT browser operations.
 /// Saved monitors must acquire this lease before touching a ChatGPT target so
 /// recovery, navigation, polling and delivery cannot race across conversations.
+/// A saved monitor that owns an active ChatGPT response turn may keep polling its
+/// own target, while every other monitor waits outside the browser-operation gate.
 /// </summary>
 public sealed class GlobalChatOperationGate
 {
@@ -13,9 +15,20 @@ public sealed class GlobalChatOperationGate
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _sync = new();
+    private readonly GlobalChatTurnFence _turnFence;
     private long? _activeMonitorId;
     private int _queuedCount;
     private long _sequence;
+
+    public GlobalChatOperationGate()
+        : this(GlobalChatTurnFence.Shared)
+    {
+    }
+
+    public GlobalChatOperationGate(GlobalChatTurnFence turnFence)
+    {
+        _turnFence = turnFence ?? throw new ArgumentNullException(nameof(turnFence));
+    }
 
     public long? ActiveMonitorId
     {
@@ -51,7 +64,21 @@ public sealed class GlobalChatOperationGate
 
         try
         {
-            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            while (true)
+            {
+                // Crucially this wait happens before the semaphore is held. A monitor whose
+                // response is still generating therefore remains able to reacquire the gate
+                // and observe completion; queued monitors cannot deadlock the response owner.
+                await _turnFence.WaitUntilRunnableAsync(monitorId, cancellationToken).ConfigureAwait(false);
+                await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                // Close the race where another monitor starts a physical turn between the
+                // pre-gate fence observation and this semaphore acquisition.
+                if (_turnFence.CanRunMonitor(monitorId))
+                    break;
+
+                _gate.Release();
+            }
         }
         catch
         {
