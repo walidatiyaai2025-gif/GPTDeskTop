@@ -751,8 +751,31 @@ public sealed class ChatGptMonitorService
     }
 
     private async Task<ChatPageState> GetChatStateWithRetryAsync(long monitorId, ChromeTab tab, CancellationToken cancellationToken)
-    { Exception? last = null; for (var attempt = 1; attempt <= 3; attempt++) { try { return await _chrome.GetChatStateAsync(tab, cancellationToken); } catch (Exception ex) when (IsTransientChromeException(ex)) { last = ex; Activity?.Invoke(monitorId, $"Initial Chrome/CDP connection retry {attempt}/3: {ex.GetType().Name}"); await Task.Delay(500 * attempt, cancellationToken); } } throw last ?? new InvalidOperationException("Unable to read the ChatGPT tab state."); }
+    {
+        long attempt = 0;
+        while (true)
+        {
+  cancellationToken.ThrowIfCancellationRequested();
+  attempt++;
+  try
+  {
+      return await _chrome.GetChatStateAsync(tab, cancellationToken);
+  }
+  catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsTransientChromeException(ex))
+  {
+      if (attempt <= 3)
+          Activity?.Invoke(monitorId, $"Initial Chrome/CDP connection retry {attempt}: {ex.GetType().Name}");
+      else if (attempt == 4)
+          Activity?.Invoke(monitorId, "Chrome/CDP is temporarily unavailable during startup. Monitor remains active; background recovery will continue until Chrome returns or the monitor is stopped.");
+      else if (attempt % 12 == 0)
+          Activity?.Invoke(monitorId, $"Chrome/CDP is still unavailable during startup after {attempt} attempts. Monitor remains active and recovery continues.");
 
+      await Task.Delay(
+          TimeSpan.FromMilliseconds(Math.Min(5000L, 750L * attempt)),
+          cancellationToken);
+  }
+        }
+    }
     private static bool IsTransientChromeException(Exception ex) => ex is WebSocketException || ex is TimeoutException || ex is TaskCanceledException || ex is IOException || ex.Message.Contains("Chrome closed the DevTools connection", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("Promise was collected", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("connection was forcibly closed", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("unable to connect", StringComparison.OrdinalIgnoreCase);
     private static string GetEffectiveResponse(ChatPageState state) => !string.IsNullOrWhiteSpace(state.ErrorText) ? state.ErrorText.Trim() : state.LastAssistantText.Trim();
     private static bool IsDeliveryTimeout(string text) => text.Contains("message delivery timed out", StringComparison.OrdinalIgnoreCase);
