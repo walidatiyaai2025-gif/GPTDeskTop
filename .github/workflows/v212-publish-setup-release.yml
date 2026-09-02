@@ -1,0 +1,42 @@
+name: Publish GPTDeskTop v2.0.12 Setup
+
+on:
+  push:
+    branches:
+      - ci/v212-release-publish
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download exact validated setup artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Path staging | Out-Null
+          gh run download 33595935585 --repo ${{ github.repository }} --name GPTDeskTop-v2.0.12-FINAL-SETUP --dir staging
+          $source = 'staging/GPTDeskTop-Setup.exe'
+          if (!(Test-Path $source)) { throw 'Validated setup EXE not found in artifact.' }
+          Copy-Item $source 'GPTDeskTop-v2.0.12-Setup.exe'
+          $bytes = [System.IO.File]::ReadAllBytes('GPTDeskTop-v2.0.12-Setup.exe')
+          if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Setup EXE is not PE/MZ.' }
+          $sha = (Get-FileHash 'GPTDeskTop-v2.0.12-Setup.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "SETUP_SHA256=$sha"
+
+      - name: Publish direct GitHub release asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = 'gptdesktop-v2.0.12'
+          gh release view $tag --repo ${{ github.repository }} *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo ${{ github.repository }} --target 9c726aa5b69c8904768f9ca19b12b247373b6ea8 --title 'GPTDeskTop v2.0.12' --notes 'Validated Windows x64 setup for the CDP recovery-resume runtime fix. Exact validated source head: 9c726aa5b69c8904768f9ca19b12b247373b6ea8.'
+          }
+          gh release upload $tag 'GPTDeskTop-v2.0.12-Setup.exe' --repo ${{ github.repository }} --clobber
