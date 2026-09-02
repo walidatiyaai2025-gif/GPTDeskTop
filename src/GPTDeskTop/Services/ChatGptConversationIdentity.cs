@@ -25,6 +25,8 @@ public static class ChatGptConversationIdentity
         if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
             return trimmed.TrimEnd('/');
 
-        return uri.GetLeftPart(UriPartial.Path).TrimEnd('/') + uri.Query;
+        // Query parameters are runtime/UI state, not part of the durable /c/{conversation-id}
+        // ownership identity. Treat query-only navigation as the same conversation.
+        return uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
     }
 }

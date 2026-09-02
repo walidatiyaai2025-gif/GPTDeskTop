@@ -1,0 +1,150 @@
+name: Final Source Convergence v2.0.3
+
+on:
+  push:
+    branches:
+      - convergence/gptdesktop-final-source-v203
+
+permissions:
+  contents: write
+
+jobs:
+  converge-validate-package:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout convergence branch
+        uses: actions/checkout@v4
+        with:
+          ref: convergence/gptdesktop-final-source-v203
+          fetch-depth: 0
+
+      - name: Fetch authoritative live heads
+        shell: pwsh
+        run: |
+          git fetch origin feature/gptdesktop-development-plan-autonomy worker/gptdesktop-final-runtime-closure hotfix/generation-recovery-safety
+
+      - name: Compose and repair authoritative heads
+        id: compose
+        shell: pwsh
+        run: |
+          git config user.name "gptdesktop-convergence-worker"
+          git config user.email "actions@users.noreply.github.com"
+          $changed = $false
+
+          git merge-base --is-ancestor 7857e6bd7b8b81f3da2dc88eb28085764a9ae018 HEAD
+          if ($LASTEXITCODE -ne 0) {
+            git merge --no-edit -X theirs 7857e6bd7b8b81f3da2dc88eb28085764a9ae018
+            if ($LASTEXITCODE -ne 0) { git status --short; throw 'Runtime convergence merge failed.' }
+            $changed = $true
+          }
+
+          git merge-base --is-ancestor 87eb2f9c30bbe563402ba044bce1e0fe6cd6c218 HEAD
+          if ($LASTEXITCODE -ne 0) {
+            git merge --no-edit -X theirs 87eb2f9c30bbe563402ba044bce1e0fe6cd6c218
+            if ($LASTEXITCODE -ne 0) { git status --short; throw 'Generation-safety convergence merge failed.' }
+            $changed = $true
+          }
+
+          $sourcePath = 'src/GPTDeskTop/Services/ChatGptMonitorService.cs'
+          $source = Get-Content $sourcePath -Raw
+          $oldLine = 'var recoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage", cancellationToken)'
+          $newLine = 'var fallbackRecoveryMessage = await _database.GetSettingAsync("ChatGptErrorContinuationMessage", cancellationToken)'
+          if ($source.Contains($oldLine)) {
+            $source = $source.Replace($oldLine, $newLine)
+            Set-Content -Path $sourcePath -Value $source -Encoding utf8NoBOM
+            git add $sourcePath
+            git commit -m "fix(convergence): preserve fallback recovery message after branch composition"
+            $changed = $true
+          } elseif (-not $source.Contains($newLine)) {
+            throw 'Expected converged recovery code shape was not found.'
+          }
+
+          if ($changed) {
+            git push origin HEAD:convergence/gptdesktop-final-source-v203
+            'changed=true' >> $env:GITHUB_OUTPUT
+          } else {
+            'changed=false' >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Defer validation until exact merged head
+        if: steps.compose.outputs.changed == 'true'
+        shell: pwsh
+        run: Write-Host 'Convergence source changed and was pushed. The push-triggered exact-head run will validate and package it.'
+
+      - name: Setup .NET 8
+        if: steps.compose.outputs.changed == 'false'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        if: steps.compose.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Full runtime and product suite
+        if: steps.compose.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --logger "trx;LogFileName=final-converged-source.trx"
+
+      - name: Release x64 build
+        if: steps.compose.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release -r win-x64
+
+      - name: Build final Setup EXE
+        if: steps.compose.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -c Release -p:RunPackagingTargets=true
+
+      - name: Verify convergence ancestry and setup
+        if: steps.compose.outputs.changed == 'false'
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          git merge-base --is-ancestor 81e8af448d6314376ddcc9126e3af5e92cb2fd78 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Missing T0004/product source ancestry.' }
+          git merge-base --is-ancestor 7857e6bd7b8b81f3da2dc88eb28085764a9ae018 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Missing latest runtime source ancestry.' }
+          git merge-base --is-ancestor 87eb2f9c30bbe563402ba044bce1e0fe6cd6c218 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Missing generation-safety source ancestry.' }
+          $exe = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (!(Test-Path $exe)) { throw 'Final Setup EXE missing.' }
+          $setupSha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $setupSize = (Get-Item $exe).Length
+          "FINAL_HEAD=$head`nPRODUCT_HEAD=81e8af448d6314376ddcc9126e3af5e92cb2fd78`nRUNTIME_HEAD=7857e6bd7b8b81f3da2dc88eb28085764a9ae018`nGENERATION_SAFETY_HEAD=87eb2f9c30bbe563402ba044bce1e0fe6cd6c218`nSETUP_SHA256=$setupSha`nSETUP_SIZE=$setupSize" | Set-Content FINAL-SOURCE-IDENTITY.txt
+          Write-Host "FINAL_HEAD=$head"
+          Write-Host "SETUP_SHA256=$setupSha"
+
+      - name: Package exact final source
+        if: steps.compose.outputs.changed == 'false'
+        shell: pwsh
+        run: |
+          git archive --format=zip --output GPTDeskTop-FINAL-Converged-Source.zip HEAD
+          $sha = (Get-FileHash GPTDeskTop-FINAL-Converged-Source.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          Add-Content FINAL-SOURCE-IDENTITY.txt "SOURCE_ZIP_SHA256=$sha"
+          Add-Content FINAL-SOURCE-IDENTITY.txt "SOURCE_ZIP_SIZE=$((Get-Item GPTDeskTop-FINAL-Converged-Source.zip).Length)"
+
+      - name: Upload final converged source
+        if: steps.compose.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-FINAL-Converged-Source
+          path: |
+            GPTDeskTop-FINAL-Converged-Source.zip
+            FINAL-SOURCE-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload final converged setup
+        if: steps.compose.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-FINAL-Converged-Setup
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/Version.txt
+            FINAL-SOURCE-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30

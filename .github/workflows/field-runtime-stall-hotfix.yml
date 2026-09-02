@@ -1,0 +1,96 @@
+name: Field Runtime Stall Hotfix Validation
+
+on:
+  push:
+    branches:
+      - fix/runtime-unacknowledged-send-liveness
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-build-setup:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout hotfix branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Apply bounded reconciliation field fix
+        shell: pwsh
+        run: python scripts/apply_runtime_stall_hotfix.py
+
+      - name: Persist hotfix source to branch
+        shell: pwsh
+        run: |
+          $changes = git status --porcelain
+          if ($changes) {
+            git config user.name "gptdesktop-field-hotfix-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add src/GPTDeskTop/Services/ChromeDevToolsService.cs `
+                    src/GPTDeskTop/Runtime/OutboundDeliveryCoordinator.cs `
+                    src/GPTDeskTop/GPTDeskTop.csproj `
+                    src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj `
+                    tests/GPTDeskTop.RuntimeTests/VerifiedSendReconciliationLivenessRegressionTests.cs
+            git commit -m "fix(runtime): bound uncertain send reconciliation and preserve liveness"
+            git push origin HEAD:$env:GITHUB_REF_NAME
+          }
+          $buildSha = (git rev-parse HEAD).Trim()
+          "BUILD_SHA=$buildSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Building exact hotfix source $buildSha"
+
+      - name: Restore solution
+        shell: pwsh
+        run: dotnet restore GPTDeskTop.sln -p:EnableWindowsTargeting=true
+
+      - name: Focused field liveness regression
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --filter "FullyQualifiedName~VerifiedSendReconciliationLivenessRegressionTests" -p:EnableWindowsTargeting=true
+
+      - name: Full runtime regression suite
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
+
+      - name: Build standalone v2.0.1 setup
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj --configuration Release --no-restore -p:EnableWindowsTargeting=true
+
+      - name: Verify setup and write provenance
+        shell: pwsh
+        run: |
+          $setup = "Output\Setup\GPTDeskTop-Setup.exe"
+          if (-not (Test-Path $setup)) { throw "Setup EXE was not produced: $setup" }
+          $info = Get-Item $setup
+          if ($info.Length -lt 50000000) { throw "Setup EXE is unexpectedly small: $($info.Length) bytes" }
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "GPTDeskTop v2.0.1 Field Stall Hotfix",
+            "SourceSHA=$env:BUILD_SHA",
+            "SetupSHA256=$hash",
+            "SizeBytes=$($info.Length)",
+            "BoundedPostSubmitReconciliationSeconds=90",
+            "InterSendCooldownSeconds=15"
+          ) | Set-Content "Output\Setup\HOTFIX-PROVENANCE.txt" -Encoding UTF8
+          Write-Host "SETUP_SHA256=$hash"
+          Write-Host "SETUP_SIZE=$($info.Length)"
+
+      - name: Upload latest setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.1-Field-Hotfix-Setup
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/HOTFIX-PROVENANCE.txt
+            Output/Setup/Version.txt
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 30

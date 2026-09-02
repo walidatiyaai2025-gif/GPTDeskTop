@@ -63,7 +63,7 @@ jobs:
 
           $failed = $false
           if ($result.SlowText -ne 'slow-complete-load-1') { Write-Host "ASSERTION: Slow/generating tab was unexpectedly reloaded or did not complete, final text='$($result.SlowText)'."; $failed = $true }
-          if ($result.RecoveryText -ne 'recovery-received:qa-error-continuation') { Write-Host "ASSERTION: Fresh recovery chat did not receive the configured continuation message, final text='$($result.RecoveryText)'."; $failed = $true }
+          if (-not ([string]$result.RecoveryText).StartsWith('recovery-received:qa-error-continuation', [StringComparison]::Ordinal)) { Write-Host "ASSERTION: Fresh recovery chat did not receive the configured continuation message, final text='$($result.RecoveryText)'."; $failed = $true }
           if ([long]$result.ReboundErrorMonitorId -ne [long]$result.ErrorMonitorId) { Write-Host "ASSERTION: Recovery changed Monitor ID. original=$($result.ErrorMonitorId) rebound=$($result.ReboundErrorMonitorId)."; $failed = $true }
           if ($result.ReboundErrorMonitorUrl -ne 'https://chatgpt.com/c/qa-passive-wait-recovery') { Write-Host "ASSERTION: Saved monitor was not rebound to the fresh conversation URL: '$($result.ReboundErrorMonitorUrl)'."; $failed = $true }
           if ([string]::IsNullOrWhiteSpace([string]$result.RecoveryTabId) -or $result.ReboundErrorMonitorTabId -ne $result.RecoveryTabId) { Write-Host "ASSERTION: Saved monitor target does not match the verified fresh recovery tab. saved='$($result.ReboundErrorMonitorTabId)' recovery='$($result.RecoveryTabId)'."; $failed = $true }

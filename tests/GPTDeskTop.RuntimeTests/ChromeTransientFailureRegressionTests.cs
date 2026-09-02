@@ -118,18 +118,19 @@ public sealed class ChromeTransientFailureRegressionTests
             "src", "GPTDeskTop", "Services", "ChatGptMonitorService.cs"));
 
         var transientCatch = source.IndexOf(
-            "catch (Exception ex) when (IsTransientChromeException(ex)) { transientFailures++;",
+            "catch (Exception ex) when (IsTransientChromeException(ex))",
             StringComparison.Ordinal);
-        var genericCatch = source.IndexOf(
-            "catch (Exception ex) { Activity?.Invoke(monitor.Id, $\"Monitor exception logged:",
-            transientCatch,
-            StringComparison.Ordinal);
-
         Assert.True(transientCatch >= 0);
-        Assert.True(genericCatch > transientCatch);
+
+        var transientFailureIncrement = source.IndexOf("transientFailures++;", transientCatch, StringComparison.Ordinal);
+        var genericCatch = source.IndexOf("catch (Exception ex)", transientFailureIncrement + "transientFailures++;".Length, StringComparison.Ordinal);
+
+        Assert.True(transientFailureIncrement > transientCatch);
+        Assert.True(genericCatch > transientFailureIncrement);
 
         var transientBranch = source[transientCatch..genericCatch];
         Assert.Contains("Background retry continues", transientBranch, StringComparison.Ordinal);
+        Assert.Contains("Task.Delay", transientBranch, StringComparison.Ordinal);
         Assert.DoesNotContain("ExceptionLogService.Log", transientBranch, StringComparison.Ordinal);
     }
 }

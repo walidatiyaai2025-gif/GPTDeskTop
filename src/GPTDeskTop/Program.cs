@@ -96,7 +96,7 @@ internal static class Program
             // The development runtime remains eager because it may need to resume an active plan after
             // crash/takeover recovery. Only the operator dashboard is visual state.
             var resolver = new SavedMonitorTabResolver(chrome);
-            var targetFactory = new DevelopmentTaskMonitorTargetFactory(database, resolver, chrome);
+            var targetFactory = new DevelopmentTaskMonitorTargetFactory(database, resolver, chrome, monitor);
             var developmentEngine = new DevelopmentTaskEngine();
             developmentRuntime = new DevelopmentTaskRuntimeBinding(developmentEngine, targetFactory);
             var developmentDashboardExpanded = !string.Equals(

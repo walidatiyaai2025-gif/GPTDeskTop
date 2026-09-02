@@ -1,9 +1,12 @@
+using GPTDeskTop.Models;
+
 namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
 /// <summary>
 /// Delivers each development-plan message to every recovered monitor/chat.
-/// A message advances only after every recipient has a verified receipt.
-/// Successful recipients are persisted so a later retry never sends them again.
+/// Verified outbound delivery is persisted per recipient, but delivery alone never
+/// advances the plan. Once every recipient has a receipt the engine waits for a
+/// stable assistant response from every expected monitor.
 /// </summary>
 public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDisposable
 {
@@ -59,6 +62,17 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
                     continue;
                 }
 
+                ChatPageState before;
+                try
+                {
+                    before = await recipient.ReadStateAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    allDelivered = false;
+                    continue;
+                }
+
                 var sent = await recipient.SendVerifiedAsync(message).ConfigureAwait(false);
                 if (!sent)
                 {
@@ -72,6 +86,8 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
                     TabId = recipient.TabId,
                     MessageIndex = messageIndex,
                     Fingerprint = fingerprint,
+                    AssistantCountBeforeDelivery = before.AssistantCount,
+                    AssistantFingerprintBeforeDelivery = DevelopmentTaskDeliveryCoordinator.Fingerprint(before.LastAssistantText ?? string.Empty),
                     DeliveredAt = DateTimeOffset.UtcNow,
                     Revision = _engine.State.Revision + 1
                 };
@@ -80,15 +96,19 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
 
             if (!allDelivered)
             {
+                await _engine.ReportDeliveryFailureAsync(
+                    $"Development message #{messageIndex + 1} was not verified for every eligible monitor. Successful receipts are preserved and only missing recipients will be retried.").ConfigureAwait(false);
                 DeliveryFailed?.Invoke(message);
                 return;
             }
 
-            await _engine.AdvanceAsync().ConfigureAwait(false);
+            await _engine.MarkAwaitingAssistantResponseAsync(
+                _recipients.Select(recipient => recipient.MonitorId)).ConfigureAwait(false);
             DeliverySucceeded?.Invoke(message);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            await _engine.ReportDeliveryFailureAsync(ex.Message).ConfigureAwait(false);
             DeliveryFailed?.Invoke(message);
         }
         finally
@@ -110,4 +130,18 @@ public sealed class DevelopmentTaskMultiMonitorDeliveryCoordinator : IAsyncDispo
 public sealed record DevelopmentTaskMonitorRecipient(
     string MonitorId,
     string TabId,
-    Func<string, Task<bool>> SendVerifiedAsync);
+    Func<string, Task<bool>> SendVerifiedAsync,
+    Func<Task<ChatPageState>> ReadStateAsync)
+{
+    public DevelopmentTaskMonitorRecipient(
+        string monitorId,
+        string tabId,
+        Func<string, Task<bool>> sendVerifiedAsync)
+        : this(
+            monitorId,
+            tabId,
+            sendVerifiedAsync,
+            () => Task.FromResult(new ChatPageState(0, string.Empty, false, string.Empty)))
+    {
+    }
+}

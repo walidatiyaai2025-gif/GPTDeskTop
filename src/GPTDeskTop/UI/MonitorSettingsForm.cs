@@ -1,15 +1,17 @@
 using GPTDeskTop.Models;
+using GPTDeskTop.Services.DevelopmentTaskEngine;
 
 namespace GPTDeskTop.UI;
 
 public sealed class MonitorSettingsForm : Form
 {
-    private readonly TextBox _autoReplyBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false };
+    private readonly TextBox _autoReplyBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false, MinimumSize = new Size(0, 72) };
     private readonly NumericUpDown _delaySeconds = new() { Minimum = 0, Maximum = 300, Width = 130 };
     private readonly NumericUpDown _timerSeconds = new() { Minimum = 1, Maximum = 60, Width = 130 };
+    private readonly CheckBox _developmentMessagesCheck = new() { Text = "Use Development Messages as monitor auto-reply plan", AutoSize = true };
     private readonly CheckBox _enabledCheck = new() { Text = "Monitor is enabled", AutoSize = true };
     private readonly CheckBox _rotationEnabledCheck = new() { Text = "Enable conversation rotation for this monitor", AutoSize = true };
-    private readonly TextBox _newChatMessageBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false };
+    private readonly TextBox _newChatMessageBox = new() { Dock = DockStyle.Fill, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, AutoSize = false, MinimumSize = new Size(0, 72) };
     private readonly NumericUpDown _newChatDelaySeconds = new() { Minimum = 0, Maximum = 600, Width = 130 };
     private readonly NumericUpDown _rotationCooldownSeconds = new() { Minimum = 0, Maximum = 3600, Width = 130 };
     private readonly NumericUpDown _maxRotations = new() { Minimum = 0, Maximum = 1000, Width = 130 };
@@ -31,6 +33,7 @@ public sealed class MonitorSettingsForm : Form
     public string AutoReply => _autoReplyBox.Text.Trim();
     public int ReplyDelaySeconds => (int)_delaySeconds.Value;
     public int TimerSeconds => (int)_timerSeconds.Value;
+    public bool UseDevelopmentMessages => _developmentMessagesCheck.Checked;
     public bool MonitorEnabled => _enabledCheck.Checked;
     public bool ConversationRotationEnabled => _rotationEnabledCheck.Checked;
     public string NewChatStartMessage => _newChatMessageBox.Text.Trim();
@@ -41,7 +44,7 @@ public sealed class MonitorSettingsForm : Form
     public string PreferredModel => string.IsNullOrWhiteSpace(_preferredModelBox.Text) ? "Auto" : _preferredModelBox.Text.Trim();
     public string FallbackModel => string.IsNullOrWhiteSpace(_fallbackModelBox.Text) ? PreferredModel : _fallbackModelBox.Text.Trim();
 
-    public MonitorSettingsForm(string title, string url, SavedMonitor monitor)
+    public MonitorSettingsForm(string title, string url, SavedMonitor monitor, bool useDevelopmentMessages = false)
     {
         ArgumentNullException.ThrowIfNull(monitor);
 
@@ -53,11 +56,12 @@ public sealed class MonitorSettingsForm : Form
         ShowInTaskbar = false;
         AutoScaleMode = AutoScaleMode.Dpi;
         MinimumSize = new Size(740, 540);
-        ClientSize = new Size(900, 680);
+        ClientSize = new Size(900, 700);
 
         _autoReplyBox.Text = string.IsNullOrWhiteSpace(monitor.AutoReply) ? "كمل" : monitor.AutoReply;
         _delaySeconds.Value = Math.Clamp(monitor.ReplyDelaySeconds, 0, 300);
         _timerSeconds.Value = Math.Clamp(monitor.TimerSeconds, 1, 60);
+        _developmentMessagesCheck.Checked = useDevelopmentMessages;
         _enabledCheck.Checked = monitor.Enabled;
         _rotationEnabledCheck.Checked = monitor.ConversationRotationEnabled;
         _newChatMessageBox.Text = string.IsNullOrWhiteSpace(monitor.NewChatStartMessage) ? "كمل" : monitor.NewChatStartMessage;
@@ -168,13 +172,15 @@ public sealed class MonitorSettingsForm : Form
     private TabPage BuildGeneralTab()
     {
         var page = CreateTab("General");
-        var layout = CreateSettingsLayout(7);
-        AddSectionTitle(layout, 0, "Response automation", "Core behavior for detecting a completed response and deciding when to continue the conversation.");
+        var layout = CreateSettingsLayout(8);
+        AddSectionTitle(layout, 0, "Response automation", "Choose whether this monitor uses its single Auto Reply or the ordered Development Messages project plan.");
         layout.RowStyles[2] = new RowStyle(SizeType.Absolute, 96);
-        AddRow(layout, 2, "Auto reply", _autoReplyBox, "Message sent after a stable assistant response.");
-        AddRow(layout, 3, "Delay before send", _delaySeconds, "Seconds to wait before sending the auto reply.");
-        AddRow(layout, 4, "Monitor timer", _timerSeconds, "Polling interval in seconds.");
-        layout.Controls.Add(_enabledCheck, 0, 5);
+        AddRow(layout, 2, "Auto reply", _autoReplyBox, "Used only when Development Messages ownership is off.");
+        AddRow(layout, 3, "Delay before send", _delaySeconds, "Seconds to wait before the legacy single auto reply. Development Messages uses its own plan sequencing.");
+        AddRow(layout, 4, "Monitor timer", _timerSeconds, "Polling interval in seconds; stable response detection still drives Development Messages progression.");
+        layout.Controls.Add(_developmentMessagesCheck, 0, 5);
+        layout.SetColumnSpan(_developmentMessagesCheck, 2);
+        layout.Controls.Add(_enabledCheck, 0, 6);
         layout.SetColumnSpan(_enabledCheck, 2);
         page.Controls.Add(layout);
         return page;
@@ -215,26 +221,32 @@ public sealed class MonitorSettingsForm : Form
     private void WireEvents()
     {
         _saveButton.Click += (_, _) => TrySaveAndClose();
+        _developmentMessagesCheck.CheckedChanged += (_, _) => UpdateDependentControls();
         _rotationEnabledCheck.CheckedChanged += (_, _) => UpdateDependentControls();
         _modelRoutingEnabledCheck.CheckedChanged += (_, _) => UpdateDependentControls();
         Shown += (_, _) =>
         {
-            _autoReplyBox.Focus();
-            _autoReplyBox.SelectAll();
+            if (_developmentMessagesCheck.Checked) _developmentMessagesCheck.Focus();
+            else
+            {
+                _autoReplyBox.Focus();
+                _autoReplyBox.SelectAll();
+            }
         };
     }
 
     private void ConfigureAccessibility()
     {
         AccessibleName = "Monitor settings";
-        AccessibleDescription = "Configure automation, rotation and model routing for the selected ChatGPT monitor.";
+        AccessibleDescription = "Configure automation, Development Messages ownership, rotation and model routing for the selected ChatGPT monitor.";
         _tabs.AccessibleName = "Monitor settings categories";
         _tabs.TabIndex = 0;
 
-        ConfigureAccessible(_autoReplyBox, "Monitor auto reply", "Message sent after a stable assistant response.", 0);
-        ConfigureAccessible(_delaySeconds, "Monitor reply delay", "Seconds to wait before sending the automatic reply.", 1);
+        ConfigureAccessible(_autoReplyBox, "Monitor auto reply", "Message sent after a stable assistant response when Development Messages ownership is off.", 0);
+        ConfigureAccessible(_delaySeconds, "Monitor reply delay", "Seconds to wait before sending the legacy automatic reply.", 1);
         ConfigureAccessible(_timerSeconds, "Monitor polling timer", "Seconds between state checks for this monitor.", 2);
-        ConfigureAccessible(_enabledCheck, "Monitor enabled", "Controls whether this saved monitor is eligible to run.", 3);
+        ConfigureAccessible(_developmentMessagesCheck, "Use Development Messages as monitor auto-reply plan", "When enabled, ordered Development Messages own continuation delivery and the single monitor Auto Reply is suppressed.", 3);
+        ConfigureAccessible(_enabledCheck, "Monitor enabled", "Controls whether this saved monitor is eligible to run.", 4);
 
         ConfigureAccessible(_rotationEnabledCheck, "Conversation rotation enabled", "Allow this monitor to create a replacement chat when the current conversation reaches a supported rotation condition.", 0);
         ConfigureAccessible(_newChatMessageBox, "Context limit start message", "Message sent to the replacement chat after context-limit rotation.", 1);
@@ -282,6 +294,10 @@ public sealed class MonitorSettingsForm : Form
 
     private void UpdateDependentControls()
     {
+        var developmentPlanOwnsReply = _developmentMessagesCheck.Checked;
+        _autoReplyBox.Enabled = !developmentPlanOwnsReply;
+        _delaySeconds.Enabled = !developmentPlanOwnsReply;
+
         var rotationEnabled = _rotationEnabledCheck.Checked;
         _newChatMessageBox.Enabled = rotationEnabled;
         _newChatDelaySeconds.Enabled = rotationEnabled;
@@ -295,11 +311,11 @@ public sealed class MonitorSettingsForm : Form
 
     private void TrySaveAndClose()
     {
-        if (string.IsNullOrWhiteSpace(_autoReplyBox.Text))
+        if (!_developmentMessagesCheck.Checked && string.IsNullOrWhiteSpace(_autoReplyBox.Text))
         {
             _tabs.SelectedIndex = 0;
             _autoReplyBox.Focus();
-            MessageBox.Show(this, "Auto reply cannot be empty.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Auto reply cannot be empty while Development Messages ownership is off.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -361,12 +377,30 @@ public sealed class MonitorSettingsForm : Form
 
     public static bool Edit(IWin32Window owner, SavedMonitor monitor)
     {
-        using var dialog = new MonitorSettingsForm(monitor.Title, monitor.Url, monitor);
-        if (dialog.ShowDialog(owner) != DialogResult.OK) return false;
+        var currentOwnership = DevelopmentPlanMonitorSettings.ReadForDialog(monitor);
+        if (!Edit(owner, monitor, currentOwnership, out var updatedOwnership)) return false;
+        DevelopmentPlanMonitorSettings.PersistFromDialog(monitor, updatedOwnership);
+        return true;
+    }
+
+    public static bool Edit(
+        IWin32Window owner,
+        SavedMonitor monitor,
+        bool useDevelopmentMessages,
+        out bool updatedUseDevelopmentMessages)
+    {
+        using var dialog = new MonitorSettingsForm(monitor.Title, monitor.Url, monitor, useDevelopmentMessages);
+        if (dialog.ShowDialog(owner) != DialogResult.OK)
+        {
+            updatedUseDevelopmentMessages = useDevelopmentMessages;
+            return false;
+        }
+
         monitor.AutoReply = dialog.AutoReply;
         monitor.ReplyDelaySeconds = dialog.ReplyDelaySeconds;
         monitor.TimerSeconds = dialog.TimerSeconds;
         monitor.Enabled = dialog.MonitorEnabled;
+        monitor.UseDevelopmentMessages = dialog.UseDevelopmentMessages;
         monitor.ConversationRotationEnabled = dialog.ConversationRotationEnabled;
         monitor.NewChatStartMessage = dialog.NewChatStartMessage;
         monitor.NewChatDelaySeconds = dialog.NewChatDelaySeconds;
@@ -375,6 +409,7 @@ public sealed class MonitorSettingsForm : Form
         monitor.ModelRoutingEnabled = dialog.ModelRoutingEnabled;
         monitor.PreferredModel = dialog.PreferredModel;
         monitor.FallbackModel = dialog.FallbackModel;
+        updatedUseDevelopmentMessages = dialog.UseDevelopmentMessages;
         return true;
     }
 }

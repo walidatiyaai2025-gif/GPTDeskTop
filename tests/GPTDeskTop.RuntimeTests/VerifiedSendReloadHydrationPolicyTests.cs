@@ -58,13 +58,17 @@ public sealed class VerifiedSendReloadHydrationPolicyTests
         Assert.True(start >= 0 && end > start);
         var method = source[start..end];
 
+        Assert.Contains("TryRefreshTabBindingAsync(tab, cancellationToken)", method, StringComparison.Ordinal);
+        Assert.Contains("PostSubmitReloadSuppressed", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("RefreshStuckComposerAsync", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("Page.reload", method, StringComparison.Ordinal);
         Assert.Contains("MonitorDeliveryRecoveryPolicy.ClassifyPostRefreshUserTurn", method, StringComparison.Ordinal);
         Assert.Contains("PostRefreshUserTurnObservation.Hydrating", method, StringComparison.Ordinal);
         Assert.Contains("PostRefreshUserTurnObservation.ReceiptConfirmed", method, StringComparison.Ordinal);
         Assert.Contains("PostRefreshUserTurnObservation.UnexpectedChange", method, StringComparison.Ordinal);
         Assert.Contains("stableUnexpectedReads >= 2", method, StringComparison.Ordinal);
         Assert.Contains("stableAbsenceReads++;", method, StringComparison.Ordinal);
-        Assert.Contains("stableAbsenceReads >= 2", method, StringComparison.Ordinal);
+        Assert.Contains("stableAbsenceReads >= 4", method, StringComparison.Ordinal);
         Assert.DoesNotContain("if (receiptAfterRefresh.Count != baselineUserTurnCount)\n                return UnacknowledgedSubmitReconciliationResult.Ambiguous;", method, StringComparison.Ordinal);
     }
 }

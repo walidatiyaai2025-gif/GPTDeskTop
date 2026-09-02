@@ -17,13 +17,17 @@ public sealed class DevelopmentTaskDeliveryReceiptRecoveryTests
     }
 
     [Fact]
-    public void VerifiedSendPathUsesReceiptBeforeAdvance()
+    public void VerifiedSendPathUsesReceiptBeforeAssistantResponseWaitAndNeverAdvancesOnDelivery()
     {
         var source = File.ReadAllText(RepositoryPath("Services", "DevelopmentTaskEngine", "DevelopmentTaskDeliveryCoordinator.cs"));
         var checkpoint = source.IndexOf("_checkpointAfterDelivery", StringComparison.Ordinal);
-        var advance = source.IndexOf("await _engine.AdvanceAsync()", StringComparison.Ordinal);
+        var wait = source.IndexOf("MarkAwaitingAssistantResponseAsync", checkpoint, StringComparison.Ordinal);
+        var success = source.IndexOf("DeliverySucceeded?.Invoke", wait, StringComparison.Ordinal);
+
         Assert.True(checkpoint >= 0);
-        Assert.True(advance > checkpoint);
+        Assert.True(wait > checkpoint);
+        Assert.True(success > wait);
+        Assert.DoesNotContain("await _engine.AdvanceAsync()", source, StringComparison.Ordinal);
     }
 
     [Fact]

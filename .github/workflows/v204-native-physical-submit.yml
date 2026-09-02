@@ -1,0 +1,85 @@
+name: GPTDeskTop v2.0.4 Native Physical Submit
+
+on:
+  push:
+    branches:
+      - hotfix/v204-native-physical-submit
+
+permissions:
+  contents: read
+
+jobs:
+  validate-package:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact hotfix head
+        uses: actions/checkout@v4
+        with:
+          ref: hotfix/v204-native-physical-submit
+          fetch-depth: 0
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        shell: pwsh
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Focused physical-submit regression tests
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --filter "FullyQualifiedName~PhysicalSubmitAcceptanceRegressionTests|FullyQualifiedName~VerifiedSendTransportRecoveryRegressionTests|FullyQualifiedName~VerifiedSendTaskCancellationSelfHealRegressionTests" --logger "trx;LogFileName=v204-physical-submit.trx"
+
+      - name: Full runtime and product suite
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --logger "trx;LogFileName=v204-full-runtime.trx"
+
+      - name: Release x64 build
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release -r win-x64
+
+      - name: Build final Setup EXE
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -c Release -p:RunPackagingTargets=true
+
+      - name: Verify exact head and package source
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          git merge-base --is-ancestor 1cca71d2c99c772b355528a2023e40c75b14b711 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'v2.0.4 source does not contain the final v2.0.3 convergence head.' }
+          $version = (Select-String -Path src/GPTDeskTop/GPTDeskTop.csproj -Pattern '<Version>2.0.4</Version>')
+          if (-not $version) { throw 'Application version is not v2.0.4.' }
+          $exe = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (!(Test-Path $exe)) { throw 'Setup EXE missing.' }
+          $setupSha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $setupSize = (Get-Item $exe).Length
+          git archive --format=zip --output GPTDeskTop-v2.0.4-FINAL-SOURCE.zip HEAD
+          $sourceSha = (Get-FileHash GPTDeskTop-v2.0.4-FINAL-SOURCE.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "FINAL_HEAD=$head`nBASE_CONVERGENCE_HEAD=1cca71d2c99c772b355528a2023e40c75b14b711`nVERSION=2.0.4`nSETUP_SHA256=$setupSha`nSETUP_SIZE=$setupSize`nSOURCE_ZIP_SHA256=$sourceSha" | Set-Content FINAL-V204-IDENTITY.txt
+          Write-Host "FINAL_HEAD=$head"
+          Write-Host "SETUP_SHA256=$setupSha"
+          Write-Host "SOURCE_ZIP_SHA256=$sourceSha"
+
+      - name: Upload v2.0.4 final source
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.4-FINAL-SOURCE
+          path: |
+            GPTDeskTop-v2.0.4-FINAL-SOURCE.zip
+            FINAL-V204-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload v2.0.4 final setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.4-FINAL-SETUP
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/Version.txt
+            FINAL-V204-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30

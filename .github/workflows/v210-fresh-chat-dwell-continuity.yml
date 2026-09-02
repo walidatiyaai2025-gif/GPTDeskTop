@@ -1,0 +1,152 @@
+name: GPTDeskTop v2.0.10 Fresh Chat Dwell Continuity
+
+on:
+  push:
+    branches:
+      - hotfix/v210-fresh-chat-dwell-continuity
+
+permissions:
+  contents: write
+
+jobs:
+  patch-validate-package:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          ref: hotfix/v210-fresh-chat-dwell-continuity
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assemble and apply v2.0.10 fresh-chat continuity patch
+        id: patch
+        shell: pwsh
+        run: |
+          if (Test-Path 'tools/v210.patch.part1') {
+            python -c "from pathlib import Path; Path('tools/v210.patch').write_bytes(b''.join(Path(f'tools/v210.patch.part{i}').read_bytes() for i in range(1,8)))"
+            git apply --ignore-space-change --ignore-whitespace tools/v210.patch
+            Remove-Item tools/v210.patch
+
+            $monitor = Get-Content 'src/GPTDeskTop/Services/ChatGptMonitorService.cs' -Raw
+            $identity = Get-Content 'src/GPTDeskTop/Services/ChatGptConversationIdentity.cs' -Raw
+            $app = Get-Content 'src/GPTDeskTop/GPTDeskTop.csproj' -Raw
+            if (!$monitor.Contains('IsStableSendTargetContinuityPreserved')) { throw 'Logical fresh-chat target continuity helper is missing.' }
+            if (!$monitor.Contains('FreshChatFollowUpPreSubmitDeferred')) { throw 'Retry-safe pre-submit fresh-chat deferral is missing.' }
+            if (!$monitor.Contains('SendWhenReadyOutcome')) { throw 'Send outcome classification is missing.' }
+            if (!$monitor.Contains('RetrySourceResponse: true')) { throw 'Completed source response retry ownership is missing.' }
+            if ($identity.Contains('+ uri.Query')) { throw 'Durable conversation identity still includes query state.' }
+            if (!$app.Contains('<Version>2.0.10</Version>')) { throw 'Application version is not 2.0.10 after patch.' }
+            if (!(Test-Path 'tests/GPTDeskTop.RuntimeTests/ChatGptConversationIdentityQueryRegressionTests.cs')) { throw 'Conversation identity query regression test is missing.' }
+
+            git config user.name "gptdesktop-runtime-worker"
+            git config user.email "actions@users.noreply.github.com"
+            git rm tools/v210.patch.part1 tools/v210.patch.part2 tools/v210.patch.part3 tools/v210.patch.part4 tools/v210.patch.part5 tools/v210.patch.part6 tools/v210.patch.part7
+            git add src tests
+            git diff --check
+            git commit -m "fix(runtime): keep fresh-chat handoff alive across benign URL rebound"
+            git push origin HEAD:hotfix/v210-fresh-chat-dwell-continuity
+            "changed=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "changed=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Defer validation to exact committed source
+        if: steps.patch.outputs.changed == 'true'
+        shell: pwsh
+        run: Write-Host 'v2.0.10 source committed. Push-triggered exact-head run will validate and package.'
+
+      - name: Setup .NET 8
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Focused fresh-chat dwell continuity regressions
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --filter "FullyQualifiedName~FreshChatPerResponseRegressionTests|FullyQualifiedName~ChatGptConversationIdentityQueryRegressionTests|FullyQualifiedName~GlobalChatOperationGateTests|FullyQualifiedName~FreshChatGenerationLeaseHandoffRegressionTests|FullyQualifiedName~FreshChatTransportAnchorRegressionTests|FullyQualifiedName~CdpTransportStabilityRegressionTests|FullyQualifiedName~PhysicalSubmitAcceptanceRegressionTests|FullyQualifiedName~VerifiedSendTransportRecoveryRegressionTests" --logger "trx;LogFileName=v210-fresh-chat-dwell.trx"
+
+      - name: Full runtime and product suite
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --logger "trx;LogFileName=v210-full-runtime.trx"
+
+      - name: Release x64 build
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release -r win-x64
+
+      - name: Build final Setup EXE
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -c Release -p:RunPackagingTargets=true
+
+      - name: Verify exact head and package final source
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          git merge-base --is-ancestor 2acd30ae284db2f4934bb2892936db44d944852c HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'v2.0.10 source lost exact v2.0.9 ancestry.' }
+          if (Test-Path 'tools/v210.patch.part1') { throw 'Patch staging files leaked into final source.' }
+
+          $monitor = Get-Content 'src/GPTDeskTop/Services/ChatGptMonitorService.cs' -Raw
+          $identity = Get-Content 'src/GPTDeskTop/Services/ChatGptConversationIdentity.cs' -Raw
+          $app = Get-Content 'src/GPTDeskTop/GPTDeskTop.csproj' -Raw
+          $setup = Get-Content 'src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj' -Raw
+          $setupProgram = Get-Content 'src/GPTDeskTop.Setup/Program.cs' -Raw
+          if (!$app.Contains('<Version>2.0.10</Version>')) { throw 'Application version is not 2.0.10.' }
+          if (!$setup.Contains('<Version>2.0.10</Version>')) { throw 'Setup version is not 2.0.10.' }
+          if (!$setupProgram.Contains('Version = "2.0.10"')) { throw 'Setup program version constant is not 2.0.10.' }
+          if (!$monitor.Contains('blank-new-chat-url-canonicalized')) { throw 'Blank new-chat URL continuity marker is missing.' }
+          if (!$monitor.Contains('FreshChatFollowUpPreSubmitDeferred')) { throw 'Retry-safe pre-submit deferral marker is missing.' }
+          if (!$monitor.Contains('FreshChatFollowUpReconcileRequired')) { throw 'Exactly-once uncertain-delivery marker is missing.' }
+          if ($identity.Contains('+ uri.Query')) { throw 'Durable conversation identity still includes query state.' }
+
+          $exe = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (!(Test-Path $exe)) { throw 'Setup EXE missing.' }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Setup EXE is not a valid PE/MZ executable.' }
+          $setupSha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $setupSize = (Get-Item $exe).Length
+          git archive --format=zip --output GPTDeskTop-v2.0.10-FINAL-SOURCE.zip HEAD
+          $sourceSha = (Get-FileHash GPTDeskTop-v2.0.10-FINAL-SOURCE.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "FINAL_HEAD=$head`nBASE_V209_HEAD=2acd30ae284db2f4934bb2892936db44d944852c`nVERSION=2.0.10`nBEHAVIOR=FRESH_CHAT_DWELL_LOGICAL_CONTINUITY_AND_RETRY_SAFE_PRE_SUBMIT_DEFERRAL`nSETUP_SHA256=$setupSha`nSETUP_SIZE=$setupSize`nSOURCE_ZIP_SHA256=$sourceSha" | Set-Content FINAL-V210-IDENTITY.txt
+          Write-Host "FINAL_HEAD=$head"
+          Write-Host "SETUP_SHA256=$setupSha"
+          Write-Host "SETUP_SIZE=$setupSize"
+          Write-Host "SOURCE_ZIP_SHA256=$sourceSha"
+
+      - name: Upload v2.0.10 final source
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.10-FINAL-SOURCE
+          path: |
+            GPTDeskTop-v2.0.10-FINAL-SOURCE.zip
+            FINAL-V210-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload v2.0.10 final setup
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.10-FINAL-SETUP
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/Version.txt
+            FINAL-V210-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30

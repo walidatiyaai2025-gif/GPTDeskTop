@@ -1,0 +1,134 @@
+name: GPTDeskTop v2.0.12 CDP Recovery Resume
+
+on:
+  push:
+    branches:
+      - hotfix/v212-cdp-recovery-resume
+
+permissions:
+  contents: write
+
+jobs:
+  patch-validate-package:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          ref: hotfix/v212-cdp-recovery-resume
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply v2.0.12 CDP recovery resume patch
+        id: patch
+        shell: pwsh
+        run: |
+          if (Test-Path 'tools/apply_v212_cdp_recovery_resume.py') {
+            python tools/apply_v212_cdp_recovery_resume.py
+            git config user.name "gptdesktop-runtime-worker"
+            git config user.email "actions@users.noreply.github.com"
+            git rm tools/apply_v212_cdp_recovery_resume.py
+            git add src tests
+            git diff --check
+            git commit -m "fix(runtime): resume monitor polling after CDP recovery"
+            git push origin HEAD:hotfix/v212-cdp-recovery-resume
+            "changed=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "changed=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Defer validation to exact committed source
+        if: steps.patch.outputs.changed == 'true'
+        shell: pwsh
+        run: Write-Host 'v2.0.12 source committed. The push-triggered exact-head run will validate and package.'
+
+      - name: Setup .NET 8
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Focused CDP recovery resume regressions
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CdpRecoveryResumeRegressionTests|FullyQualifiedName~VerifiedSendTransportRecoveryRegressionTests|FullyQualifiedName~FreshChatPerResponseRegressionTests|FullyQualifiedName~FreshChatGenerationLeaseHandoffRegressionTests|FullyQualifiedName~FreshChatTransportAnchorRegressionTests|FullyQualifiedName~RenderedUserTurnReceiptRegressionTests" --logger "trx;LogFileName=v212-cdp-recovery-resume.trx"
+
+      - name: Full runtime and product suite
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --logger "trx;LogFileName=v212-full-runtime.trx"
+
+      - name: Release x64 build
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release -r win-x64
+
+      - name: Build final Setup EXE
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -c Release -p:RunPackagingTargets=true
+
+      - name: Verify exact head and package final source
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          git merge-base --is-ancestor 172c291ccd85e658b2663cf7f860ab8928ac1a94 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'v2.0.12 lost v2.0.11 ancestry.' }
+          if (Test-Path 'tools/apply_v212_cdp_recovery_resume.py') { throw 'One-shot patch applicator leaked into final source.' }
+          $monitor = Get-Content 'src/GPTDeskTop/Services/ChatGptMonitorService.cs' -Raw
+          $app = Get-Content 'src/GPTDeskTop/GPTDeskTop.csproj' -Raw
+          $setup = Get-Content 'src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj' -Raw
+          $setupProgram = Get-Content 'src/GPTDeskTop.Setup/Program.cs' -Raw
+          if (!$monitor.Contains('MonitorChatStateReadTimeout = TimeSpan.FromSeconds(12)')) { throw 'Bounded monitor state-read deadline missing.' }
+          if (!$monitor.Contains('Chrome/CDP recovery read verified; monitor polling resumed.')) { throw 'Post-recovery resume proof missing.' }
+          if (!$monitor.Contains('var state = await GetChatStateWithRetryAsync(monitor.Id, tab, cancellationToken);')) { throw 'Poll cycle is not recovery-aware.' }
+          if (!$monitor.Contains('MinimumStableSendDwell = TimeSpan.FromSeconds(15)')) { throw '15-second pre-send dwell was lost.' }
+          if (!$app.Contains('<Version>2.0.12</Version>')) { throw 'App version mismatch.' }
+          if (!$setup.Contains('<Version>2.0.12</Version>')) { throw 'Setup version mismatch.' }
+          if (!$setupProgram.Contains('Version = "2.0.12"')) { throw 'Setup program version mismatch.' }
+          $exe = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (!(Test-Path $exe)) { throw 'Setup EXE missing.' }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Setup EXE is not PE/MZ.' }
+          $setupSha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $setupSize = (Get-Item $exe).Length
+          git archive --format=zip --output GPTDeskTop-v2.0.12-FINAL-SOURCE.zip HEAD
+          $sourceSha = (Get-FileHash GPTDeskTop-v2.0.12-FINAL-SOURCE.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "FINAL_HEAD=$head`nBASE_V211_HEAD=172c291ccd85e658b2663cf7f860ab8928ac1a94`nVERSION=2.0.12`nBEHAVIOR=BOUNDED_CDP_RECOVERY_AND_MONITOR_POLL_RESUME`nSETUP_SHA256=$setupSha`nSETUP_SIZE=$setupSize`nSOURCE_ZIP_SHA256=$sourceSha" | Set-Content FINAL-V212-IDENTITY.txt
+          Write-Host "FINAL_HEAD=$head"
+          Write-Host "SETUP_SHA256=$setupSha"
+          Write-Host "SOURCE_ZIP_SHA256=$sourceSha"
+
+      - name: Upload v2.0.12 final source
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.12-FINAL-SOURCE
+          path: |
+            GPTDeskTop-v2.0.12-FINAL-SOURCE.zip
+            FINAL-V212-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload v2.0.12 final setup
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.12-FINAL-SETUP
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/Version.txt
+            FINAL-V212-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30

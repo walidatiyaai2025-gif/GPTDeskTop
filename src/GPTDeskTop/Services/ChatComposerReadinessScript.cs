@@ -16,12 +16,12 @@ public static class ChatComposerReadinessScript
   };
 
   const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
-  const send = document.querySelector('button[data-testid="send-button"]') ||
-    [...document.querySelectorAll('button')].find(button => {
-      if (!visible(button)) return false;
-      const label = (button.getAttribute('aria-label') || '').trim();
-      return /^(send|send message|إرسال|إرسال الرسالة)$/i.test(label);
-    });
+  const send = [...document.querySelectorAll('button')].find(button => {
+    if (!visible(button) || button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
+    if (button.getAttribute('data-testid') === 'send-button') return true;
+    const label = (button.getAttribute('aria-label') || '').trim();
+    return /^(send|send message|إرسال|إرسال الرسالة)$/i.test(label);
+  });
   const stop = document.querySelector('button[data-testid="stop-button"]');
 
   const editorDisabled = !editor || editor.matches(':disabled,[aria-disabled="true"]');

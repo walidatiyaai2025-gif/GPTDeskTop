@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net.WebSockets;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Models;
@@ -36,7 +37,7 @@ public sealed class ChromeDevToolsService
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
   const errorPattern = /message delivery timed out|something went wrong|there was an error|network error|failed to (generate|load)|unable to (generate|load)|error generating|حدث خطأ|خطأ في الشبكة|تعذر/i;
-  const globalRateLimitPattern = /too many requests|making requests too quickly|temporarily limited access(?: to your conversations)?|please wait a few minutes before trying again/i;
+  const globalRateLimitPattern = /too many requests|making requests too quickly|temporarily limited access(?: to your conversations)?|please wait a few minutes before trying again|(?:http|error|status)\s*429/i;
   const findGlobalRateLimitText = () => {
     const selectors = ['[role="dialog"]', '[aria-modal="true"]', '[role="alert"]'];
     for (const selector of selectors) {
@@ -308,11 +309,61 @@ public sealed class ChromeDevToolsService
         _monitorChromeProcess = Process.Start(new ProcessStartInfo { FileName = chromePath, Arguments = arguments, UseShellExecute = true }) ?? throw new InvalidOperationException("Chrome could not be started.");
         return _monitorChromeProcess;
     }
-    public async Task<ChromeTab> CreateTabAsync(string url, CancellationToken cancellationToken = default) { var existing = await GetTabsAsync(cancellationToken); var controlTab = existing.FirstOrDefault() ?? throw new InvalidOperationException("Monitor Chrome has no controllable page."); var result = await SendCommandAsync(controlTab, "Target.createTarget", new { url }, cancellationToken); var targetId = result.TryGetProperty("targetId", out var id) ? id.GetString() : null; if (string.IsNullOrWhiteSpace(targetId)) throw new InvalidOperationException("Chrome did not return a target ID for the new tab."); for (var attempt = 0; attempt < 40; attempt++) { cancellationToken.ThrowIfCancellationRequested(); await Task.Delay(250, cancellationToken); var tabs = await GetTabsAsync(cancellationToken); var created = tabs.FirstOrDefault(t => string.Equals(t.Id, targetId, StringComparison.Ordinal)); if (created is not null) return created; } throw new TimeoutException("The new Chrome tab did not become ready in time."); }
-    public Task<ChromeTab> CreateNewChatTabAsync(CancellationToken cancellationToken = default) => CreateTabAsync(_config.StartUrl, cancellationToken);
-    public async Task<bool> CloseTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) { try { using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/close/{Uri.EscapeDataString(tab.Id)}", cancellationToken); return response.IsSuccessStatusCode; } catch { return false; } finally { _sessionPool.Invalidate(tab.Id); lock (_autoFollowSync) _autoFollowSequences.Remove(tab.Id); } }
+    public async Task<ChromeTab> CreateTabAsync(string url, CancellationToken cancellationToken = default)
+    {
+        if (GenerationRecoveryInterlock.Shared.HasAnyActiveLease)
+        {
+            RuntimeFlightRecorder.Record("Monitor", "RecoverySuppressed", "suppressed", "active-generation:create-target");
+            throw new InvalidOperationException("Creating a Chrome target is forbidden while an authoritative generation lease is active.");
+        }
+        return await CreateTargetCoreAsync(url, cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<ChromeTab> CreateNewChatTabAsync(CancellationToken cancellationToken = default)
+        => CreateTabAsync(_config.StartUrl, cancellationToken);
+
+    public async Task<ChromeTab> CreateNewChatTabForFreshHandoffAsync(long monitorId, CancellationToken cancellationToken = default)
+    {
+        // A brand-new target is additive: it does not reload, close, or mutate any generating
+        // conversation. The normal CreateTabAsync guard remains fail-closed for recovery paths.
+        // This dedicated path is used only after the source monitor has authoritatively crossed
+        // its completed-response generation boundary. Other monitors may still be generating.
+        if (GenerationRecoveryInterlock.Shared.IsActive(monitorId))
+            throw new InvalidOperationException("Fresh-chat handoff cannot create a target while its source monitor generation lease is active.");
+
+        RuntimeFlightRecorder.Record(
+            "Monitor", "FreshChatTargetCreateAllowed", "allowed", "completed-response-additive-target", monitorId);
+        return await CreateTargetCoreAsync(_config.StartUrl, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ChromeTab> CreateTargetCoreAsync(string url, CancellationToken cancellationToken)
+    {
+        var existing = await GetTabsAsync(cancellationToken);
+        var controlTab = existing.FirstOrDefault() ?? throw new InvalidOperationException("Monitor Chrome has no controllable page.");
+        var result = await SendCommandAsync(controlTab, "Target.createTarget", new { url }, cancellationToken);
+        var targetId = result.TryGetProperty("targetId", out var id) ? id.GetString() : null;
+        if (string.IsNullOrWhiteSpace(targetId))
+            throw new InvalidOperationException("Chrome did not return a target ID for the new tab.");
+
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(250, cancellationToken);
+            var tabs = await GetTabsAsync(cancellationToken);
+            var created = tabs.FirstOrDefault(t => string.Equals(t.Id, targetId, StringComparison.Ordinal));
+            if (created is not null) return created;
+        }
+
+        throw new TimeoutException("The new Chrome tab did not become ready in time.");
+    }
+    public async Task<bool> CloseTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) { if (GenerationRecoveryInterlock.Shared.IsActive(tab)) { GenerationRecoveryInterlock.Shared.RecordSuppressed(0, tab, "close-target"); return false; } try { using var response = await _httpClient.GetAsync($"{_config.DebuggingBaseUrl.TrimEnd('/')}/json/close/{Uri.EscapeDataString(tab.Id)}", cancellationToken); return response.IsSuccessStatusCode; } catch { return false; } finally { _sessionPool.Invalidate(tab.Id); lock (_autoFollowSync) _autoFollowSequences.Remove(tab.Id); } }
     public async Task CloseAllMonitorTabsAsync(CancellationToken cancellationToken = default)
     {
+        if (GenerationRecoveryInterlock.Shared.HasAnyActiveLease)
+        {
+            RuntimeFlightRecorder.Record("Monitor", "RecoverySuppressed", "suppressed", "active-generation:browser-close");
+            return;
+        }
         var trackedProcess = _monitorChromeProcess;
         var browserCloseRequested = false;
 
@@ -454,6 +505,11 @@ public sealed class ChromeDevToolsService
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
         {
             var failureCount = IncrementChatStateTransportFailures(tab);
+            if (GenerationRecoveryInterlock.Shared.IsActive(tab))
+            {
+                RuntimeFlightRecorder.Record("Monitor", "TransportReconnectDeferred", "active-generation", ex.GetType().Name, tabId: tab.Id, conversationRef: tab.Url);
+                return await RetrySameTargetGenerationObservationAsync(tab, failureCount, cancellationToken).ConfigureAwait(false);
+            }
             if (failureCount < MonitorRecoveryFailureThreshold)
                 throw;
 
@@ -463,6 +519,57 @@ public sealed class ChromeDevToolsService
             ResetChatStateTransportFailures(tab);
             return await ReadChatStateCoreAsync(tab, cancellationToken);
         }
+    }
+
+    public async Task<ChatPageState?> TryGetChatStatePassiveAsync(ChromeTab tab, CancellationToken cancellationToken = default)
+    {
+        try { return await ReadChatStateCoreAsync(tab, cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+        {
+            RuntimeFlightRecorder.Record("Monitor", "TransportReconnectDeferred", "passive-observation", ex.GetType().Name, tabId: tab.Id, conversationRef: tab.Url);
+            return null;
+        }
+    }
+
+    private async Task<ChatPageState> RetrySameTargetGenerationObservationAsync(ChromeTab tab, int failureCount, CancellationToken cancellationToken)
+    {
+        Exception? last = null;
+        var authoritativeMissingTargetObservations = 0;
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var baseDelay = Math.Min(8000, 250 * (1 << Math.Min(attempt + Math.Max(0, failureCount - 1), 5)));
+            await Task.Delay(baseDelay + Random.Shared.Next(0, 151), cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var targetId = tab.Id;
+                _sessionPool.Invalidate(targetId);
+                var tabs = await GetTabsAsync(cancellationToken).ConfigureAwait(false);
+                var sameTarget = tabs.FirstOrDefault(candidate => string.Equals(candidate.Id, targetId, StringComparison.Ordinal));
+                if (sameTarget is null)
+                {
+                    authoritativeMissingTargetObservations++;
+                    if (authoritativeMissingTargetObservations >= 3)
+                    {
+                        GenerationRecoveryInterlock.Shared.ConfirmTargetDestroyed(tab);
+                        throw new IOException("The generating target was positively confirmed destroyed after three successful target enumerations.");
+                    }
+                    throw new IOException("The generating target is not currently observable; destructive replacement remains forbidden.");
+                }
+                authoritativeMissingTargetObservations = 0;
+                RebindTab(tab, sameTarget);
+                var state = await ReadChatStateCoreAsync(tab, cancellationToken).ConfigureAwait(false);
+                ResetChatStateTransportFailures(tab);
+                return state;
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+            {
+                last = ex;
+                RuntimeFlightRecorder.Record("Monitor", "TransportReconnectDeferred", "active-generation", $"same-target-attempt-{attempt + 1}", tabId: tab.Id, conversationRef: tab.Url);
+            }
+        }
+        throw last ?? new WebSocketException("Same-target generation observation remains unavailable.");
     }
     private string BuildChatStateInstallExpression()
     {
@@ -527,6 +634,12 @@ public sealed class ChromeDevToolsService
     {
         if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
             return false;
+
+        if (GenerationRecoveryInterlock.Shared.IsActive(tab))
+        {
+            GenerationRecoveryInterlock.Shared.RecordSuppressed(0, tab, "transport-recovery");
+            return false;
+        }
 
         await _monitorBrowserRecoveryGate.WaitAsync(cancellationToken);
         try
@@ -771,7 +884,8 @@ public sealed class ChromeDevToolsService
             EditorEnabled: readiness.TryGetProperty("editorEnabled", out var editorEnabledElement) && editorEnabledElement.GetBoolean(),
             SendButtonPresent: readiness.TryGetProperty("sendButtonPresent", out var sendPresentElement) && sendPresentElement.GetBoolean(),
             SendButtonEnabled: readiness.TryGetProperty("sendButtonEnabled", out var sendEnabledElement) && sendEnabledElement.GetBoolean(),
-            HasRenderedError: !string.IsNullOrWhiteSpace(chatState.ErrorText));
+            HasRenderedError: !string.IsNullOrWhiteSpace(chatState.ErrorText)
+                || !string.IsNullOrWhiteSpace(chatState.GlobalRateLimitText));
     }
 
     private async Task<ComposerAutomationDecision> ReadComposerDecisionAsync(
@@ -800,20 +914,319 @@ public sealed class ChromeDevToolsService
         string expected,
         CancellationToken cancellationToken)
     {
-        var expectedLiteral = JsonSerializer.Serialize(expected.Trim());
-        var expression = $$"""
+        var composer = await ReadComposerTextAsync(tab, cancellationToken);
+        return composer.Present && ComposerEvidenceTextEquals(composer.Text, expected);
+    }
+
+    private static string CanonicalizeComposerEvidenceText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+
+        var normalized = text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Replace('\u00a0', ' ');
+        var builder = new StringBuilder(normalized.Length);
+        var pendingWhitespace = false;
+        foreach (var character in normalized)
+        {
+            if (char.IsWhiteSpace(character) || character is '\u200b' or '\ufeff')
+            {
+                pendingWhitespace = builder.Length > 0;
+                continue;
+            }
+
+            if (pendingWhitespace)
+            {
+                builder.Append(' ');
+                pendingWhitespace = false;
+            }
+            builder.Append(character);
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static bool ComposerEvidenceTextEquals(string? actual, string? expected)
+        => string.Equals(
+            CanonicalizeComposerEvidenceText(actual),
+            CanonicalizeComposerEvidenceText(expected),
+            StringComparison.Ordinal);
+
+    private enum ImmediatePhysicalSubmitObservation
+    {
+        ReceiptConfirmed,
+        ClickNotAccepted,
+        Ambiguous
+    }
+
+    private async Task<(bool Present, string Text)> ReadComposerTextAsync(
+        ChromeTab tab,
+        CancellationToken cancellationToken)
+    {
+        const string expression = """
         (() => {
-          const expected = {{expectedLiteral}};
           const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
-          if (!editor) return false;
+          if (!editor) return { present: false, text: '' };
           const text = editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
             ? editor.value
             : (editor.innerText || editor.textContent || '');
-          return (text || '').trim() === expected;
+          return { present: true, text: (text || '').trim() };
         })()
         """;
         var value = await EvaluateAsync(tab, expression, cancellationToken, false);
-        return value.ValueKind == JsonValueKind.True;
+        return (
+            value.TryGetProperty("present", out var present) && present.GetBoolean(),
+            value.TryGetProperty("text", out var text) ? text.GetString() ?? string.Empty : string.Empty);
+    }
+
+    private async Task<ImmediatePhysicalSubmitObservation> ObserveImmediatePhysicalSubmitAsync(
+        ChromeTab tab,
+        string expected,
+        int baselineUserTurnCount,
+        CancellationToken cancellationToken)
+    {
+        var observationDeadline = DateTimeOffset.UtcNow.AddSeconds(4);
+        var stableStillReadyReads = 0;
+        var stableEmptyComposerReads = 0;
+        var observedDifferentUserTurn = false;
+
+        while (DateTimeOffset.UtcNow < observationDeadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var snapshot = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+            if (snapshot.Success && snapshot.Count > baselineUserTurnCount)
+            {
+                if (MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(snapshot.LastText, expected))
+                    return ImmediatePhysicalSubmitObservation.ReceiptConfirmed;
+                observedDifferentUserTurn = true;
+            }
+
+            var readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+            if (readiness.HasRenderedError)
+                return ImmediatePhysicalSubmitObservation.Ambiguous;
+            if (readiness.IsGenerating)
+                return ImmediatePhysicalSubmitObservation.ReceiptConfirmed;
+
+            var composer = await ReadComposerTextAsync(tab, cancellationToken);
+            if (!composer.Present)
+                return ImmediatePhysicalSubmitObservation.Ambiguous;
+
+            if (composer.Text.Length == 0)
+            {
+                stableStillReadyReads = 0;
+                if (readiness.EditorPresent && readiness.EditorEnabled)
+                {
+                    stableEmptyComposerReads++;
+                    if (stableEmptyComposerReads >= 8)
+                    {
+                        VerifiedSendDiagnostics.Record("RetryAuthorized", "composer-cleared-without-user-turn", 0);
+                        return ImmediatePhysicalSubmitObservation.ClickNotAccepted;
+                    }
+                }
+                else
+                {
+                    stableEmptyComposerReads = 0;
+                }
+                await Task.Delay(250, cancellationToken);
+                continue;
+            }
+
+            stableEmptyComposerReads = 0;
+            if (!ComposerEvidenceTextEquals(composer.Text, expected))
+                return ImmediatePhysicalSubmitObservation.Ambiguous;
+
+            if (readiness.SendButtonPresent && readiness.SendButtonEnabled)
+            {
+                stableStillReadyReads++;
+                if (stableStillReadyReads >= 3)
+                    return ImmediatePhysicalSubmitObservation.ClickNotAccepted;
+            }
+            else
+            {
+                stableStillReadyReads = 0;
+            }
+
+            await Task.Delay(250, cancellationToken);
+        }
+
+        if (observedDifferentUserTurn)
+            return ImmediatePhysicalSubmitObservation.Ambiguous;
+
+        return stableStillReadyReads > 0 || stableEmptyComposerReads > 0
+            ? ImmediatePhysicalSubmitObservation.ClickNotAccepted
+            : ImmediatePhysicalSubmitObservation.Ambiguous;
+    }
+
+    private async Task<bool> TryDispatchNativeSendClickAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
+        const string expression = """
+        (() => {
+          const visible = element => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+          };
+          const stop = document.querySelector('button[data-testid="stop-button"]');
+          if (visible(stop)) return { ready: false, x: 0, y: 0 };
+          const sendButton = [...document.querySelectorAll('button')].find(button => {
+            if (!visible(button) || button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
+            if (button.getAttribute('data-testid') === 'send-button') return true;
+            const label = button.getAttribute('aria-label') || '';
+            return /^(send|send message|إرسال|إرسال الرسالة)$/i.test(label.trim());
+          });
+          if (!sendButton)
+            return { ready: false, x: 0, y: 0 };
+          const rect = sendButton.getBoundingClientRect();
+          return { ready: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        })()
+        """;
+
+        var target = await EvaluateAsync(tab, expression, cancellationToken, false);
+        if (!target.TryGetProperty("ready", out var ready) || !ready.GetBoolean()) return false;
+        var x = target.TryGetProperty("x", out var xElement) ? xElement.GetDouble() : double.NaN;
+        var y = target.TryGetProperty("y", out var yElement) ? yElement.GetDouble() : double.NaN;
+        if (double.IsNaN(x) || double.IsNaN(y)) return false;
+
+        await SendCommandAsync(tab, "Input.dispatchMouseEvent", new { type = "mouseMoved", x, y, button = "none", buttons = 0 }, cancellationToken);
+        await SendCommandAsync(tab, "Input.dispatchMouseEvent", new { type = "mousePressed", x, y, button = "left", buttons = 1, clickCount = 1 }, cancellationToken);
+        await SendCommandAsync(tab, "Input.dispatchMouseEvent", new { type = "mouseReleased", x, y, button = "left", buttons = 0, clickCount = 1 }, cancellationToken);
+        RuntimeFlightRecorder.Record("Composer", "NativeSendClickDispatched", "submitted", "cdp-input", tabId: tab.Id, conversationRef: tab.Url);
+        return true;
+    }
+
+    private async Task<bool> TryDispatchNativeEnterSubmitAsync(
+        ChromeTab tab,
+        string expected,
+        CancellationToken cancellationToken)
+    {
+        var readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+        if (readiness.IsGenerating
+            || readiness.HasRenderedError
+            || !readiness.EditorPresent
+            || !readiness.EditorEnabled
+            || !readiness.SendButtonPresent
+            || !readiness.SendButtonEnabled)
+            return false;
+
+        if (!await ComposerEditorMatchesExpectedAsync(tab, expected, cancellationToken))
+            return false;
+
+        const string focusExpression = """
+        (() => {
+          const visible = element => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+          };
+          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
+          if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
+          editor.focus();
+          return document.activeElement === editor || editor.contains(document.activeElement);
+        })()
+        """;
+        var focused = await EvaluateAsync(tab, focusExpression, cancellationToken, false);
+        if (focused.ValueKind != JsonValueKind.True)
+            return false;
+
+        await SendCommandAsync(tab, "Input.dispatchKeyEvent", new
+        {
+            type = "rawKeyDown",
+            key = "Enter",
+            code = "Enter",
+            windowsVirtualKeyCode = 13,
+            nativeVirtualKeyCode = 13,
+            modifiers = 0
+        }, cancellationToken);
+        await SendCommandAsync(tab, "Input.dispatchKeyEvent", new
+        {
+            type = "keyUp",
+            key = "Enter",
+            code = "Enter",
+            windowsVirtualKeyCode = 13,
+            nativeVirtualKeyCode = 13,
+            modifiers = 0
+        }, cancellationToken);
+        RuntimeFlightRecorder.Record("Composer", "NativeEnterSubmitDispatched", "submitted", "cdp-key-input", tabId: tab.Id, conversationRef: tab.Url);
+        return true;
+    }
+
+    public async Task<bool> IsComposerDefinitelyStillAwaitingSubmitAsync(
+        ChromeTab tab,
+        string expected,
+        CancellationToken cancellationToken = default)
+    {
+        const int confirmationsRequired = 3;
+        var confirmations = 0;
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+                var exactComposer = await ComposerEditorMatchesExpectedAsync(tab, expected, cancellationToken);
+                if (!readiness.IsGenerating
+                    && !readiness.HasRenderedError
+                    && readiness.EditorPresent
+                    && readiness.EditorEnabled
+                    && readiness.SendButtonPresent
+                    && readiness.SendButtonEnabled
+                    && exactComposer)
+                {
+                    confirmations++;
+                    if (confirmations >= confirmationsRequired)
+                    {
+                        VerifiedSendDiagnostics.Record("RetryAuthorized", "confirmed-unsent-composer", 0);
+                        return true;
+                    }
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+            {
+                return false;
+            }
+
+            await Task.Delay(200, cancellationToken);
+        }
+
+        return false;
+    }
+
+    private async Task<bool> TryNativeFallbackAfterRejectedDomClickAsync(
+        ChromeTab tab,
+        string expected,
+        CancellationToken cancellationToken)
+    {
+        var stableStillReadyReads = 0;
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(200, cancellationToken);
+            var readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+            if (readiness.HasRenderedError || readiness.IsGenerating) return false;
+            var composer = await ReadComposerTextAsync(tab, cancellationToken);
+            if (!composer.Present || composer.Text.Length == 0) return false;
+            if (!ComposerEvidenceTextEquals(composer.Text, expected)) return false;
+            if (readiness.SendButtonPresent && readiness.SendButtonEnabled)
+                stableStillReadyReads++;
+            else
+                stableStillReadyReads = 0;
+
+            if (stableStillReadyReads >= 3)
+            {
+                VerifiedSendDiagnostics.Record("RetryAuthorized", "dom-click-rejected-native-input-fallback", 0);
+                return await TryDispatchNativeSendClickAsync(tab, cancellationToken);
+            }
+        }
+
+        return false;
     }
 
     private async Task<bool> RefreshStuckComposerAsync(ChromeTab tab, CancellationToken cancellationToken)
@@ -870,86 +1283,107 @@ public sealed class ChromeDevToolsService
 
     public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default)
     {
-        var preparationDecision = await ReadComposerDecisionAsync(tab, requireSendReady: false, cancellationToken);
-        if (preparationDecision != ComposerAutomationDecision.ReadyToPrepare)
-            return false;
-
-        var textLiteral = JsonSerializer.Serialize(message);
-        var setEditorExpression = $$"""
-        (() => {
-          const text = {{textLiteral}};
-          const visible = element => {
-            if (!element) return false;
-            const rect = element.getBoundingClientRect();
-            const style = getComputedStyle(element);
-            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-          };
-          const stop = document.querySelector('button[data-testid="stop-button"]');
-          if (visible(stop)) return false;
-          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
-          if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
-          editor.focus();
-          if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
-            const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set;
-            setter?.call(editor, text);
-            editor.dispatchEvent(new Event('input', { bubbles: true }));
-            editor.dispatchEvent(new Event('change', { bubbles: true }));
-          } else {
-            const selection = window.getSelection();
-            const range = document.createRange();
-            range.selectNodeContents(editor);
-            selection?.removeAllRanges();
-            selection?.addRange(range);
-            document.execCommand('insertText', false, text);
-            editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-          }
-          return true;
-        })()
-        """;
-
-        var editorPrepared = await EvaluateAsync(tab, setEditorExpression, cancellationToken, false);
-        if (editorPrepared.ValueKind != JsonValueKind.True) return false;
-
-        for (var readinessAttempt = 0; readinessAttempt < 6; readinessAttempt++)
+        if (!await EnsureStableConversationTransportAsync(tab, cancellationToken, stableReadsRequired: 3).ConfigureAwait(false))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var submitDecision = await ReadComposerDecisionAsync(tab, requireSendReady: true, cancellationToken);
-            if (submitDecision == ComposerAutomationDecision.ReadyToSend)
-                break;
-            if (submitDecision is ComposerAutomationDecision.DeferWhileGenerating or ComposerAutomationDecision.DeferForRenderedError)
-                return false;
-            if (readinessAttempt == 5) return false;
-            await Task.Delay(150, cancellationToken);
+            VerifiedSendDiagnostics.Record("Deferred", "cdp-transport-not-stable-before-composer", 0);
+            return false;
         }
 
-        const string submitExpression = """
-        (() => {
-          const visible = element => {
-            if (!element) return false;
-            const rect = element.getBoundingClientRect();
-            const style = getComputedStyle(element);
-            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-          };
-          const stop = document.querySelector('button[data-testid="stop-button"]');
-          if (visible(stop)) return false;
-          const sendButton = document.querySelector('button[data-testid="send-button"]') ||
-            [...document.querySelectorAll('button')].find(button => {
-              if (!visible(button)) return false;
-              const label = button.getAttribute('aria-label') || '';
-              return /^(send|send message|إرسال|إرسال الرسالة)$/i.test(label.trim());
-            });
-          if (!sendButton || sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true' || !visible(sendButton)) return false;
-          sendButton.click();
-          try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch { }
-          return true;
-        })()
-        """;
+        try
+        {
+            var preparationDecision = await ReadComposerDecisionAsync(tab, requireSendReady: false, cancellationToken);
+            if (preparationDecision != ComposerAutomationDecision.ReadyToPrepare)
+                return false;
 
-        var submitted = await EvaluateAsync(tab, submitExpression, cancellationToken, false);
-        return submitted.ValueKind == JsonValueKind.True;
+            var textLiteral = JsonSerializer.Serialize(message);
+            var setEditorExpression = $$"""
+            (() => {
+              const text = {{textLiteral}};
+              const visible = element => {
+                if (!element) return false;
+                const rect = element.getBoundingClientRect();
+                const style = getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+              };
+              const stop = document.querySelector('button[data-testid="stop-button"]');
+              if (visible(stop)) return false;
+              const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
+              if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
+              editor.focus();
+              if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
+                const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set;
+                setter?.call(editor, text);
+                editor.dispatchEvent(new Event('input', { bubbles: true }));
+                editor.dispatchEvent(new Event('change', { bubbles: true }));
+              } else {
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(editor);
+                selection?.removeAllRanges();
+                selection?.addRange(range);
+                document.execCommand('insertText', false, text);
+                editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+              }
+              return true;
+            })()
+            """;
+
+            var editorPrepared = await EvaluateAsync(tab, setEditorExpression, cancellationToken, false);
+            if (editorPrepared.ValueKind != JsonValueKind.True) return false;
+
+            for (var readinessAttempt = 0; readinessAttempt < 6; readinessAttempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var submitDecision = await ReadComposerDecisionAsync(tab, requireSendReady: true, cancellationToken);
+                if (submitDecision == ComposerAutomationDecision.ReadyToSend)
+                    break;
+                if (submitDecision is ComposerAutomationDecision.DeferWhileGenerating or ComposerAutomationDecision.DeferForRenderedError)
+                    return false;
+                if (readinessAttempt == 5) return false;
+                await Task.Delay(150, cancellationToken);
+            }
+
+            if (!await EnsureStableConversationTransportAsync(tab, cancellationToken, stableReadsRequired: 3).ConfigureAwait(false))
+            {
+                VerifiedSendDiagnostics.Record("Deferred", "cdp-transport-not-stable-before-physical-input", 0);
+                return false;
+            }
+
+            var composerBeforeSubmit = await ReadComposerTextAsync(tab, cancellationToken);
+            var finalSubmitDecision = await ReadComposerDecisionAsync(tab, requireSendReady: true, cancellationToken);
+            if (!composerBeforeSubmit.Present
+                || !ComposerEvidenceTextEquals(composerBeforeSubmit.Text, message)
+                || finalSubmitDecision != ComposerAutomationDecision.ReadyToSend)
+            {
+                VerifiedSendDiagnostics.Record("RetryAuthorized", "composer-revalidation-required-after-cdp-rebind", 0);
+                return false;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+        {
+            _sessionPool.Invalidate(tab.Id);
+            await EnsureStableConversationTransportAsync(tab, cancellationToken, stableReadsRequired: 3).ConfigureAwait(false);
+            VerifiedSendDiagnostics.Record("RetryAuthorized", "pre-submit-cdp-recovered-before-physical-input", 0);
+            return false;
+        }
+
+        var submitted = await TryDispatchNativeSendClickAsync(tab, cancellationToken);
+        if (!submitted) return false;
+        try
+        {
+            await EvaluateAsync(tab, "(() => { try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch {} return true; })()", cancellationToken, false);
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+        {
+        }
+        return true;
     }
 
-    public async Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default, bool requireNewTurn = false)
+    public async Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default, bool requireNewTurn = false, bool allowRecoveryReload = false)
     {
         var expected = message.Trim();
         if (expected.Length == 0)
@@ -959,16 +1393,13 @@ public sealed class ChromeDevToolsService
         }
 
         const int maxSubmitAttempts = 2;
+        const int maxUnacceptedClickAttempts = 3;
         var receiptGrace = TimeSpan.FromSeconds(3);
+        var maxUnacknowledgedReconciliation = TimeSpan.FromSeconds(90);
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
         VerifiedSendDiagnostics.Record("Baseline", "reading-baseline", 0);
 
-        var before = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
-        while (!before.Success && DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(250, cancellationToken);
-            before = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
-        }
+        var before = await WaitForStableUserMessageBaselineAsync(tab, deadline, cancellationToken);
 
         if (!before.Success)
         {
@@ -976,7 +1407,7 @@ public sealed class ChromeDevToolsService
             return false;
         }
 
-        if (string.Equals(before.LastText, expected, StringComparison.Ordinal))
+        if (MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(before.LastText, expected))
         {
             var deliveryState = await GetChatStateAsync(tab, cancellationToken);
             if (MonitorDeliveryRecoveryPolicy.CanReuseMatchingUserTailAsReceipt(
@@ -994,11 +1425,17 @@ public sealed class ChromeDevToolsService
         DateTimeOffset? unacknowledgedSubmitSinceUtc = null;
         var stuckRefreshUsed = false;
         var submitAttempts = 0;
+        var unacceptedClickAttempts = 0;
+        var preSubmitConflictStableReads = 0;
+        var preSubmitConflictCount = -1;
+        var preSubmitConflictLastText = string.Empty;
 
-        // Before a physical submit the normal deadline still applies. Once a submit has
-        // an unknown outcome, elapsed time alone is never permission to abandon reconciliation: keep
-        // observing/rebinding until receipt, stable absence, a genuine conflict/error, or cancellation.
-        while (DateTimeOffset.UtcNow < deadline || unacknowledgedSubmitSinceUtc is not null)
+        // Before a physical submit the normal deadline still applies. Once a submit has an
+        // unknown outcome, reconciliation gets a bounded liveness budget. Budget exhaustion
+        // fails closed and never authorizes another physical submit.
+        while (DateTimeOffset.UtcNow < deadline
+               || (unacknowledgedSubmitSinceUtc is not null
+                   && DateTimeOffset.UtcNow - unacknowledgedSubmitSinceUtc.Value < maxUnacknowledgedReconciliation))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -1009,7 +1446,7 @@ public sealed class ChromeDevToolsService
                 continue;
             }
 
-            if (current.Count > before.Count && string.Equals(current.LastText, expected, StringComparison.Ordinal))
+            if (current.Count > before.Count && MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(current.LastText, expected))
             {
                 VerifiedSendDiagnostics.Record("ReceiptConfirmed", "new-user-turn-observed", submitAttempts);
                 return true;
@@ -1018,10 +1455,46 @@ public sealed class ChromeDevToolsService
             // Before any physical submit an unexpected user turn is a real conflict. After an
             // unacknowledged submit, however, a reload/rebind can expose a partially hydrated turn
             // list. Let reconciliation require stable evidence instead of failing on one DOM read.
-            if (current.Count != before.Count && unacknowledgedSubmitSinceUtc is null)
+            if (unacknowledgedSubmitSinceUtc is null && current.Count < before.Count)
             {
+                preSubmitConflictStableReads = 0;
+                preSubmitConflictCount = -1;
+                preSubmitConflictLastText = string.Empty;
+                VerifiedSendDiagnostics.Record("Baseline", "pre-submit-hydration-observed", submitAttempts);
+                await Task.Delay(400, cancellationToken);
+                continue;
+            }
+
+            if (unacknowledgedSubmitSinceUtc is null && current.Count > before.Count)
+            {
+                if (current.Count == preSubmitConflictCount
+                    && string.Equals(current.LastText, preSubmitConflictLastText, StringComparison.Ordinal))
+                {
+                    preSubmitConflictStableReads++;
+                }
+                else
+                {
+                    preSubmitConflictStableReads = 1;
+                    preSubmitConflictCount = current.Count;
+                    preSubmitConflictLastText = current.LastText;
+                }
+
+                if (preSubmitConflictStableReads < 3)
+                {
+                    VerifiedSendDiagnostics.Record("Baseline", "pre-submit-user-turn-change-awaiting-stability", submitAttempts);
+                    await Task.Delay(400, cancellationToken);
+                    continue;
+                }
+
                 VerifiedSendDiagnostics.Record("FailedClosed", "unexpected-user-turn-change", submitAttempts);
                 return false;
+            }
+
+            if (unacknowledgedSubmitSinceUtc is null)
+            {
+                preSubmitConflictStableReads = 0;
+                preSubmitConflictCount = -1;
+                preSubmitConflictLastText = string.Empty;
             }
 
             if (unacknowledgedSubmitSinceUtc is not null)
@@ -1060,15 +1533,34 @@ public sealed class ChromeDevToolsService
                 }
 
                 VerifiedSendDiagnostics.Record("Reconciling", "receipt-not-observed-after-grace", submitAttempts);
-                var reconciliation = await ReconcileUnacknowledgedSubmitAsync(
-                    tab,
-                    expected,
-                    before.Count,
-                    cancellationToken);
+                var reconciliationRemaining = maxUnacknowledgedReconciliation
+                    - (DateTimeOffset.UtcNow - unacknowledgedSubmitSinceUtc.Value);
+                if (reconciliationRemaining <= TimeSpan.Zero)
+                {
+                    VerifiedSendDiagnostics.Record("FailedClosed", "post-submit-reconciliation-time-budget-exhausted", submitAttempts);
+                    return false;
+                }
+
+                using var reconciliationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                reconciliationCts.CancelAfter(reconciliationRemaining);
+                UnacknowledgedSubmitReconciliationResult reconciliation;
+                try
+                {
+                    reconciliation = await ReconcileUnacknowledgedSubmitAsync(
+                        tab,
+                        expected,
+                        before.Count,
+                        reconciliationCts.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && reconciliationCts.IsCancellationRequested)
+                {
+                    VerifiedSendDiagnostics.Record("FailedClosed", "post-submit-reconciliation-time-budget-exhausted", submitAttempts);
+                    return false;
+                }
 
                 if (reconciliation == UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed)
                 {
-                    VerifiedSendDiagnostics.Record("ReceiptConfirmed", "receipt-confirmed-after-refresh", submitAttempts);
+                    VerifiedSendDiagnostics.Record("ReceiptConfirmed", "receipt-confirmed-after-rebind", submitAttempts);
                     return true;
                 }
 
@@ -1082,7 +1574,8 @@ public sealed class ChromeDevToolsService
 
                     unacknowledgedSubmitSinceUtc = null;
                     sendBlockedSinceUtc = null;
-                    VerifiedSendDiagnostics.Record("RetryAuthorized", "stable-absence-after-refresh", submitAttempts);
+                    unacceptedClickAttempts = 0;
+                    VerifiedSendDiagnostics.Record("RetryAuthorized", "stable-absence-after-rebind", submitAttempts);
                     continue;
                 }
 
@@ -1153,7 +1646,7 @@ public sealed class ChromeDevToolsService
                     var editorMatchesExpected = await ComposerEditorMatchesExpectedAsync(tab, expected, cancellationToken);
                     var blockedFor = now - sendBlockedSinceUtc.Value;
 
-                    if (StuckComposerRecoveryPolicy.ShouldRefresh(
+                    if (allowRecoveryReload && StuckComposerRecoveryPolicy.ShouldRefresh(
                             readiness,
                             editorMatchesExpected,
                             blockedFor,
@@ -1162,7 +1655,7 @@ public sealed class ChromeDevToolsService
                         var receiptBeforeRefresh = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
                         if (receiptBeforeRefresh.Success
                             && receiptBeforeRefresh.Count > before.Count
-                            && string.Equals(receiptBeforeRefresh.LastText, expected, StringComparison.Ordinal))
+                            && MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(receiptBeforeRefresh.LastText, expected))
                         {
                             VerifiedSendDiagnostics.Record("ReceiptConfirmed", "receipt-before-stuck-refresh", submitAttempts);
                             return true;
@@ -1175,7 +1668,7 @@ public sealed class ChromeDevToolsService
                             var receiptAfterRefresh = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
                             if (receiptAfterRefresh.Success
                                 && receiptAfterRefresh.Count > before.Count
-                                && string.Equals(receiptAfterRefresh.LastText, expected, StringComparison.Ordinal))
+                                && MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(receiptAfterRefresh.LastText, expected))
                             {
                                 VerifiedSendDiagnostics.Record("ReceiptConfirmed", "receipt-after-stuck-refresh", submitAttempts);
                                 return true;
@@ -1192,21 +1685,192 @@ public sealed class ChromeDevToolsService
                 continue;
             }
 
-            submitAttempts++;
-            unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
-            VerifiedSendDiagnostics.Record("AwaitingReceipt", "physical-submit-unacknowledged", submitAttempts);
-
-            await Task.Delay(300, cancellationToken);
-            var after = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
-            if (after.Success && after.Count > before.Count && string.Equals(after.LastText, expected, StringComparison.Ordinal))
+            ImmediatePhysicalSubmitObservation immediateObservation;
+            try
             {
-                VerifiedSendDiagnostics.Record("ReceiptConfirmed", "immediate-user-turn-observed", submitAttempts);
+                immediateObservation = await ObserveImmediatePhysicalSubmitAsync(
+                    tab,
+                    expected,
+                    before.Count,
+                    cancellationToken);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+            {
+                // The click may have reached ChatGPT but the observation channel failed. This is an
+                // unknown physical outcome, so consume exactly-once authority and reconcile read-only.
+                submitAttempts++;
+                unacceptedClickAttempts = 0;
+                unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
+                _sessionPool.Invalidate(tab.Id);
+                VerifiedSendDiagnostics.Record("AwaitingReceipt", "post-click-observation-unreadable", submitAttempts);
+                await Task.Delay(250, cancellationToken);
+                continue;
+            }
+
+            if (immediateObservation == ImmediatePhysicalSubmitObservation.ReceiptConfirmed)
+            {
+                submitAttempts++;
+                VerifiedSendDiagnostics.Record("ReceiptConfirmed", "physical-submit-confirmed-immediately", submitAttempts);
                 return true;
             }
+
+            if (immediateObservation == ImmediatePhysicalSubmitObservation.ClickNotAccepted)
+            {
+                unacceptedClickAttempts++;
+                VerifiedSendDiagnostics.Record("RetryAuthorized", "physical-input-not-accepted", submitAttempts);
+
+                // Field evidence can show a fully populated, enabled composer after CDP mouse input.
+                // That is authoritative non-delivery evidence. Before another mouse retry, use one
+                // trusted native Enter path while the exact expected text is still present. This is
+                // safe because ClickNotAccepted proves no user turn/generation was created.
+                if (unacceptedClickAttempts == 1
+                    && await TryDispatchNativeEnterSubmitAsync(tab, expected, cancellationToken))
+                {
+                    ImmediatePhysicalSubmitObservation enterObservation;
+                    try
+                    {
+                        enterObservation = await ObserveImmediatePhysicalSubmitAsync(
+                            tab,
+                            expected,
+                            before.Count,
+                            cancellationToken);
+                    }
+                    catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+                    {
+                        submitAttempts++;
+                        unacceptedClickAttempts = 0;
+                        unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
+                        _sessionPool.Invalidate(tab.Id);
+                        VerifiedSendDiagnostics.Record("AwaitingReceipt", "post-enter-observation-unreadable", submitAttempts);
+                        await Task.Delay(250, cancellationToken);
+                        continue;
+                    }
+
+                    if (enterObservation == ImmediatePhysicalSubmitObservation.ReceiptConfirmed)
+                    {
+                        submitAttempts++;
+                        VerifiedSendDiagnostics.Record("ReceiptConfirmed", "native-enter-submit-confirmed", submitAttempts);
+                        return true;
+                    }
+
+                    if (enterObservation == ImmediatePhysicalSubmitObservation.Ambiguous)
+                    {
+                        submitAttempts++;
+                        unacceptedClickAttempts = 0;
+                        unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
+                        VerifiedSendDiagnostics.Record("AwaitingReceipt", "native-enter-submit-ambiguous", submitAttempts);
+                        continue;
+                    }
+
+                    VerifiedSendDiagnostics.Record("RetryAuthorized", "native-enter-not-accepted", submitAttempts);
+                }
+
+                if (unacceptedClickAttempts >= maxUnacceptedClickAttempts)
+                {
+                    VerifiedSendDiagnostics.Record("FailedClosed", "physical-input-retry-limit-reached", submitAttempts);
+                    return false;
+                }
+
+                // No user turn, no generation, and the exact expected text is still sitting in an
+                // enabled composer. The previous physical input did not become a submit, so a bounded
+                // retry is safe and does not consume the exactly-once submit budget.
+                await Task.Delay(350, cancellationToken);
+                continue;
+            }
+
+            // Physical input happened but the UI no longer gives enough evidence to prove either rejection
+            // or acceptance. Fail into read-only reconciliation and never blind-click again.
+            submitAttempts++;
+            unacceptedClickAttempts = 0;
+            unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
+            VerifiedSendDiagnostics.Record("AwaitingReceipt", "physical-submit-ambiguous-after-input", submitAttempts);
+            continue;
         }
 
-        VerifiedSendDiagnostics.Record("FailedClosed", "verified-send-deadline-without-receipt", submitAttempts);
+        VerifiedSendDiagnostics.Record(
+            "FailedClosed",
+            unacknowledgedSubmitSinceUtc is null
+                ? "verified-send-deadline-without-receipt"
+                : "post-submit-reconciliation-time-budget-exhausted",
+            submitAttempts);
         return false;
+    }
+
+    private async Task<(bool Success, int Count, string LastText)> WaitForStableUserMessageBaselineAsync(
+        ChromeTab tab,
+        DateTimeOffset deadline,
+        CancellationToken cancellationToken)
+    {
+        const int stableReadsRequired = 5;
+        var stableReads = 0;
+        var stableCount = -1;
+        var stableLastText = string.Empty;
+        var stableSinceUtc = DateTimeOffset.MinValue;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var snapshot = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+            if (!snapshot.Success)
+            {
+                stableReads = 0;
+                stableSinceUtc = DateTimeOffset.MinValue;
+                await Task.Delay(500, cancellationToken);
+                continue;
+            }
+
+            ComposerReadinessSnapshot readiness;
+            try
+            {
+                readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+            {
+                _sessionPool.Invalidate(tab.Id);
+                await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
+                stableReads = 0;
+                stableSinceUtc = DateTimeOffset.MinValue;
+                await Task.Delay(500, cancellationToken);
+                continue;
+            }
+
+            if (readiness.IsGenerating
+                || !readiness.EditorPresent
+                || !readiness.EditorEnabled
+                || readiness.HasRenderedError)
+            {
+                stableReads = 0;
+                stableSinceUtc = DateTimeOffset.MinValue;
+                await Task.Delay(500, cancellationToken);
+                continue;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (snapshot.Count == stableCount
+                && string.Equals(snapshot.LastText, stableLastText, StringComparison.Ordinal))
+            {
+                stableReads++;
+            }
+            else
+            {
+                stableReads = 1;
+                stableCount = snapshot.Count;
+                stableLastText = snapshot.LastText;
+                stableSinceUtc = now;
+            }
+
+            if (stableReads >= stableReadsRequired
+                && stableSinceUtc != DateTimeOffset.MinValue
+                && now - stableSinceUtc >= TimeSpan.FromSeconds(2))
+            {
+                VerifiedSendDiagnostics.Record("Baseline", "stable-editor-and-user-turn-baseline", 0);
+                return snapshot;
+            }
+
+            await Task.Delay(500, cancellationToken);
+        }
+
+        return (false, 0, string.Empty);
     }
 
     private enum UnacknowledgedSubmitReconciliationResult
@@ -1231,18 +1895,22 @@ public sealed class ChromeDevToolsService
         if (!receiptBeforeRefresh.Success)
             return UnacknowledgedSubmitReconciliationResult.TransientInterruption;
         if (receiptBeforeRefresh.Count > baselineUserTurnCount
-            && string.Equals(receiptBeforeRefresh.LastText, expected, StringComparison.Ordinal))
+            && MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(receiptBeforeRefresh.LastText, expected))
             return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed;
         // Do not classify a single pre-refresh count mismatch as a conflict. Target replacement
         // can briefly expose a partial turn list; the post-refresh loop below requires two stable
         // identical unexpected reads before returning Ambiguous.
 
-        if (!await RefreshStuckComposerAsync(tab, cancellationToken))
-            return UnacknowledgedSubmitReconciliationResult.TransientInterruption;
+        // An uncertain physical submit must never drive a reload loop. Rebind to the same
+        // stable conversation and observe it read-only. Reload remains available only to the
+        // one-shot pre-submit stuck-composer recovery path.
+        await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
         if (!ChatGptConversationIdentity.IsSame(originalUrl, tab.Url))
             return UnacknowledgedSubmitReconciliationResult.Ambiguous;
 
+        RuntimeFlightRecorder.Record("Browser", "PostSubmitReloadSuppressed", "read-only", "rebind-before-reconcile", tabId: tab.Id, conversationRef: tab.Url);
         var stableAbsenceReads = 0;
+        var stableReadyComposerReads = 0;
         var stableUnexpectedReads = 0;
         var lastUnexpectedCount = -1;
         var lastUnexpectedText = string.Empty;
@@ -1250,6 +1918,49 @@ public sealed class ChromeDevToolsService
         {
             cancellationToken.ThrowIfCancellationRequested();
             var receiptAfterRefresh = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
+            if (receiptAfterRefresh.Success
+                && receiptAfterRefresh.Count > baselineUserTurnCount
+                && MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(receiptAfterRefresh.LastText, expected))
+                return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed;
+
+            try
+            {
+                var composerReadiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+                if (receiptAfterRefresh.Success
+                    && receiptAfterRefresh.Count > baselineUserTurnCount
+                    && composerReadiness.IsGenerating)
+                {
+                    VerifiedSendDiagnostics.Record("ReceiptConfirmed", "generation-with-new-rendered-user-turn", 0);
+                    return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed;
+                }
+
+                var composer = await ReadComposerTextAsync(tab, cancellationToken);
+                if (!composerReadiness.IsGenerating
+                    && !composerReadiness.HasRenderedError
+                    && composerReadiness.EditorPresent
+                    && composerReadiness.EditorEnabled
+                    && composerReadiness.SendButtonPresent
+                    && composerReadiness.SendButtonEnabled
+                    && composer.Present
+                    && ComposerEvidenceTextEquals(composer.Text, expected))
+                {
+                    stableReadyComposerReads++;
+                    if (stableReadyComposerReads >= 3)
+                    {
+                        VerifiedSendDiagnostics.Record("RetryAuthorized", "stable-composer-proves-submit-not-accepted", 0);
+                        return UnacknowledgedSubmitReconciliationResult.RetryAuthorized;
+                    }
+                }
+                else
+                {
+                    stableReadyComposerReads = 0;
+                }
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+            {
+                stableReadyComposerReads = 0;
+            }
+
             var observation = MonitorDeliveryRecoveryPolicy.ClassifyPostRefreshUserTurn(
                 receiptAfterRefresh.Success,
                 baselineUserTurnCount,
@@ -1319,7 +2030,7 @@ public sealed class ChromeDevToolsService
             }
 
             stableAbsenceReads++;
-            if (stableAbsenceReads >= 2)
+            if (stableAbsenceReads >= 4)
                 return UnacknowledgedSubmitReconciliationResult.RetryAuthorized;
 
             await Task.Delay(400, cancellationToken);
@@ -1344,10 +2055,148 @@ public sealed class ChromeDevToolsService
         catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
         {
             _sessionPool.Invalidate(tab.Id);
-            await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
+            await EnsureStableConversationTransportAsync(tab, cancellationToken, stableReadsRequired: 3).ConfigureAwait(false);
             return (false, 0, string.Empty);
         }
     }
+    public async Task<bool> EnsureStableConversationTransportAsync(
+        ChromeTab tab,
+        CancellationToken cancellationToken = default,
+        int stableReadsRequired = 3)
+    {
+        ArgumentNullException.ThrowIfNull(tab);
+
+        var originalUrl = tab.Url;
+        var hasStableConversationIdentity = RuntimeHealthPresentation.IsChatGptConversationUrl(originalUrl);
+        if (!hasStableConversationIdentity && !RuntimeHealthPresentation.IsChatGptTabUrl(originalUrl))
+            return false;
+
+        // A brand-new ChatGPT target does not have a durable /c/{conversation-id} until its
+        // first user turn is accepted. Requiring a conversation identity here makes every
+        // fresh-chat follow-up fail closed before physical input. During this pre-first-turn
+        // window the exact target id created by GPTDeskTop is the authority. Once a durable
+        // conversation URL exists, the normal conversation-identity recovery rules apply.
+        var originalTargetId = tab.Id;
+        stableReadsRequired = Math.Clamp(stableReadsRequired, 2, 6);
+        var stableBindingKey = string.Empty;
+        var stableReads = 0;
+        var bindingMode = hasStableConversationIdentity
+            ? "same-conversation-read-rebind"
+            : "fresh-chat-target-anchor";
+
+        RuntimeFlightRecorder.Record("CDP", "StableBindingRequested", "started", bindingMode, tabId: tab.Id, conversationRef: originalUrl);
+
+        for (var attempt = 1; attempt <= 12; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var tabs = await GetTabsAsync(cancellationToken).ConfigureAwait(false);
+                ChromeTab? current;
+                if (hasStableConversationIdentity)
+                {
+                    current = MonitorDeliveryRecoveryPolicy.FindBestBinding(tabs, tab);
+                }
+                else
+                {
+                    current = tabs.FirstOrDefault(candidate =>
+                        string.Equals(candidate.Id, originalTargetId, StringComparison.Ordinal)
+                        && RuntimeHealthPresentation.IsChatGptTabUrl(candidate.Url));
+                }
+
+                var targetMatches = current is not null
+                    && (hasStableConversationIdentity
+                        ? ChatGptConversationIdentity.IsSame(originalUrl, current.Url)
+                        : string.Equals(current.Id, originalTargetId, StringComparison.Ordinal)
+                          && RuntimeHealthPresentation.IsChatGptTabUrl(current.Url));
+
+                if (!targetMatches || current is null)
+                {
+                    stableReads = 0;
+                    stableBindingKey = string.Empty;
+                    _sessionPool.Invalidate(tab.Id);
+                    RuntimeFlightRecorder.Record(
+                        "CDP",
+                        "StableBindingProbe",
+                        "missing",
+                        hasStableConversationIdentity ? "same-conversation-target-not-found" : "fresh-chat-target-not-found",
+                        tabId: tab.Id,
+                        conversationRef: originalUrl);
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000, 200 + attempt * 100)), cancellationToken);
+                    continue;
+                }
+
+                var bindingChanged = !string.Equals(tab.Id, current.Id, StringComparison.Ordinal)
+                                     || !string.Equals(tab.WebSocketDebuggerUrl, current.WebSocketDebuggerUrl, StringComparison.Ordinal);
+                if (bindingChanged)
+                    _sessionPool.Invalidate(tab.Id);
+
+                RebindTab(tab, current);
+
+                const string probeExpression = "(() => ({ href: location.href, ready: document.readyState }))()";
+                var probe = await EvaluateAsync(tab, probeExpression, cancellationToken, false);
+                var href = probe.TryGetProperty("href", out var hrefElement)
+                    ? hrefElement.GetString() ?? string.Empty
+                    : string.Empty;
+                var ready = probe.TryGetProperty("ready", out var readyElement)
+                    ? readyElement.GetString() ?? string.Empty
+                    : string.Empty;
+
+                var probeMatches = hasStableConversationIdentity
+                    ? ChatGptConversationIdentity.IsSame(originalUrl, href)
+                    : string.Equals(tab.Id, originalTargetId, StringComparison.Ordinal)
+                      && RuntimeHealthPresentation.IsChatGptTabUrl(href);
+
+                if (!probeMatches || string.Equals(ready, "loading", StringComparison.OrdinalIgnoreCase))
+                {
+                    stableReads = 0;
+                    stableBindingKey = string.Empty;
+                    await Task.Delay(250, cancellationToken);
+                    continue;
+                }
+
+                var bindingKey = $"{tab.Id}|{tab.WebSocketDebuggerUrl}";
+                if (string.Equals(bindingKey, stableBindingKey, StringComparison.Ordinal))
+                {
+                    stableReads++;
+                }
+                else
+                {
+                    stableBindingKey = bindingKey;
+                    stableReads = 1;
+                }
+
+                if (stableReads >= stableReadsRequired)
+                {
+                    RuntimeFlightRecorder.Record(
+                        "CDP",
+                        "StableBindingCompleted",
+                        "ready",
+                        $"{bindingMode};stable-reads:{stableReads}",
+                        tabId: tab.Id,
+                        conversationRef: tab.Url);
+                    return true;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+            {
+                _sessionPool.Invalidate(tab.Id);
+                stableReads = 0;
+                stableBindingKey = string.Empty;
+                RuntimeFlightRecorder.Record("CDP", "StableBindingProbe", "retry", ex.GetType().Name, tabId: tab.Id, conversationRef: originalUrl);
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000, 200 + attempt * 100)), cancellationToken);
+        }
+
+        RuntimeFlightRecorder.Record("CDP", "StableBindingCompleted", "failed", $"{bindingMode};transport-never-stabilized", tabId: tab.Id, conversationRef: originalUrl);
+        return false;
+    }
+
     private async Task TryRefreshTabBindingAsync(ChromeTab tab, CancellationToken cancellationToken)
     {
         RuntimeFlightRecorder.Record("Browser", "BindingRefreshRequested", "started", "stable-target-search", tabId: tab.Id, conversationRef: tab.Url);
@@ -1376,7 +2225,15 @@ public sealed class ChromeDevToolsService
         }
     }
     private async Task<(int Count, string LastText)> GetUserMessageSnapshotAsync(ChromeTab tab, CancellationToken cancellationToken) { const string expression = """ (() => { const messages = [...document.querySelectorAll('[data-message-author-role="user"]')]; const last = messages.length ? (messages[messages.length - 1].innerText || messages[messages.length - 1].textContent || '').trim() : ''; return { count: messages.length, lastText: last }; })() """; var value = await EvaluateAsync(tab, expression, cancellationToken, false); var count = value.TryGetProperty("count", out var c) ? c.GetInt32() : 0; var last = value.TryGetProperty("lastText", out var t) ? t.GetString() ?? string.Empty : string.Empty; return (count, last); }
-    public async Task ReloadTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) => await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
+    public async Task ReloadTabAsync(ChromeTab tab, CancellationToken cancellationToken = default)
+    {
+        if (GenerationRecoveryInterlock.Shared.IsActive(tab))
+        {
+            GenerationRecoveryInterlock.Shared.RecordSuppressed(0, tab, "page-reload");
+            return;
+        }
+        await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
+    }
     private async Task<ChromeTab?> TryGetBrowserTargetAsync(CancellationToken cancellationToken)
     {
         try

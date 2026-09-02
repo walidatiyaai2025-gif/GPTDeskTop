@@ -26,6 +26,19 @@ public sealed class DevelopmentTaskState : EventArgs
     public int LastDeliveredMessageIndex { get; set; } = -1;
     public string? LastDeliveredMessageFingerprint { get; set; }
     public Dictionary<string, DevelopmentTaskDeliveryReceipt> DeliveryReceipts { get; set; } = new(StringComparer.Ordinal);
+
+    // Delivery is not completion. After every recipient has a verified outbound receipt,
+    // the exact message position is held here until the monitor reports a stable,
+    // non-generating assistant response. These fields are persisted so restart cannot
+    // duplicate the prompt or skip ahead.
+    public bool AwaitingAssistantResponse { get; set; }
+    public int AwaitingResponseMessageIndex { get; set; } = -1;
+    public DateTimeOffset? AwaitingResponseSince { get; set; }
+    public List<string> AwaitingResponseMonitorIds { get; set; } = [];
+    public List<string> CompletedResponseMonitorIds { get; set; } = [];
+    public string? LastAssistantResponseFingerprint { get; set; }
+    public DateTimeOffset? LastAssistantResponseAt { get; set; }
+
     public string? LastError { get; set; }
     public long Revision { get; set; }
 }
@@ -36,6 +49,13 @@ public sealed class DevelopmentTaskDeliveryReceipt
     public string TabId { get; set; } = string.Empty;
     public int MessageIndex { get; set; } = -1;
     public string Fingerprint { get; set; } = string.Empty;
+
+    // Captured immediately before the verified composer send. Response watchers must
+    // observe a later assistant turn, not simply rediscover the response that existed
+    // before the development-plan prompt was delivered.
+    public int AssistantCountBeforeDelivery { get; set; }
+    public string AssistantFingerprintBeforeDelivery { get; set; } = string.Empty;
+
     public DateTimeOffset DeliveredAt { get; set; }
     public long Revision { get; set; }
 }

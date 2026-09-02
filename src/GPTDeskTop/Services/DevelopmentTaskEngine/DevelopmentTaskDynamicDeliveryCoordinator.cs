@@ -2,9 +2,8 @@ namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
 /// <summary>
 /// Resolves live recipients for every development-plan message instead of keeping
-/// stale ChromeTab objects across Cooling or process restart. This is the runtime
-/// integration point between the persisted monitor registry and the multi-monitor
-/// delivery coordinator.
+/// stale ChromeTab objects across Cooling or process restart. Failures are persisted
+/// into engine state so Start/delivery never appears to do nothing silently.
 /// </summary>
 public sealed class DevelopmentTaskDynamicDeliveryCoordinator : IAsyncDisposable
 {
@@ -38,11 +37,14 @@ public sealed class DevelopmentTaskDynamicDeliveryCoordinator : IAsyncDisposable
             var recipients = await _targetFactory.ResolveEnabledRecipientsAsync().ConfigureAwait(false);
             if (recipients.Count == 0)
             {
+                await _engine.ReportDeliveryFailureAsync(
+                    "No eligible Development Messages recipient is available. Enable a Saved Monitor, check 'Use Development Messages as monitor auto-reply plan', start that monitor, and keep its ChatGPT conversation open.").ConfigureAwait(false);
                 DeliveryFailed?.Invoke(message);
                 return;
             }
 
-            await using var coordinator = new DevelopmentTaskMultiMonitorDeliveryCoordinator(_engine, recipients);
+            await using var coordinator = new DevelopmentTaskMultiMonitorDeliveryCoordinator(
+                _engine, recipients, subscribeToEngine: false);
             var succeeded = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             coordinator.DeliverySucceeded += _ => succeeded.TrySetResult(true);
             coordinator.DeliveryFailed += _ => succeeded.TrySetResult(false);
@@ -52,8 +54,10 @@ public sealed class DevelopmentTaskDynamicDeliveryCoordinator : IAsyncDisposable
             if (result) DeliverySucceeded?.Invoke(message);
             else DeliveryFailed?.Invoke(message);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            await _engine.ReportDeliveryFailureAsync(
+                $"Development message delivery failed: {ex.Message}").ConfigureAwait(false);
             DeliveryFailed?.Invoke(message);
         }
         finally

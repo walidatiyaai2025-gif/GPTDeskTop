@@ -5,14 +5,15 @@ namespace GPTDeskTop.Services.DevelopmentTaskEngine;
 
 /// <summary>
 /// Bridges DevelopmentTaskEngine message emission to a verified chat sender.
-/// A task advances only after the sender confirms that the message was accepted.
-/// At most one verified message is delivered during each work window.
+/// Verified delivery is only the outbound half of a plan step; the plan advances
+/// later when the canonical monitor reports a stable assistant response.
 /// </summary>
 public sealed class DevelopmentTaskDeliveryCoordinator : IAsyncDisposable
 {
     private readonly DevelopmentTaskEngine _engine;
     private readonly Func<string, CancellationToken, Task<bool>> _verifiedSender;
     private readonly Func<string, CancellationToken, Task>? _checkpointAfterDelivery;
+    private readonly string? _responseMonitorId;
     private readonly SemaphoreSlim _deliveryGate = new(1, 1);
     private bool _messageDeliveredThisWindow;
     private bool _disposed;
@@ -23,11 +24,13 @@ public sealed class DevelopmentTaskDeliveryCoordinator : IAsyncDisposable
     public DevelopmentTaskDeliveryCoordinator(
         DevelopmentTaskEngine engine,
         Func<string, CancellationToken, Task<bool>> verifiedSender,
-        Func<string, CancellationToken, Task>? checkpointAfterDelivery = null)
+        Func<string, CancellationToken, Task>? checkpointAfterDelivery = null,
+        string? responseMonitorId = null)
     {
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _verifiedSender = verifiedSender ?? throw new ArgumentNullException(nameof(verifiedSender));
         _checkpointAfterDelivery = checkpointAfterDelivery;
+        _responseMonitorId = responseMonitorId;
         _engine.MessageReady += OnMessageReady;
         _engine.CoolingCompleted += OnCoolingCompleted;
     }
@@ -50,23 +53,24 @@ public sealed class DevelopmentTaskDeliveryCoordinator : IAsyncDisposable
             var sent = await _verifiedSender(message, CancellationToken.None).ConfigureAwait(false);
             if (!sent)
             {
+                await _engine.ReportDeliveryFailureAsync("Development message delivery could not be verified; the plan position was preserved for retry.").ConfigureAwait(false);
                 DeliveryFailed?.Invoke(message);
                 return;
             }
 
-            // Delivery is already externally observable at this point. Mark the
-            // current work window before any asynchronous checkpoint/advance so
-            // a fast engine loop cannot schedule the next message in this window.
             _messageDeliveredThisWindow = true;
 
             if (_checkpointAfterDelivery is not null)
                 await _checkpointAfterDelivery(message, CancellationToken.None).ConfigureAwait(false);
 
-            await _engine.AdvanceAsync().ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(_responseMonitorId))
+                await _engine.MarkAwaitingAssistantResponseAsync([_responseMonitorId]).ConfigureAwait(false);
+
             DeliverySucceeded?.Invoke(message);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            await _engine.ReportDeliveryFailureAsync(ex.Message).ConfigureAwait(false);
             DeliveryFailed?.Invoke(message);
         }
         finally
