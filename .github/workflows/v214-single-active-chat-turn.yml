@@ -1,0 +1,82 @@
+name: v2.0.14 Single Active Chat Turn
+
+on:
+  push:
+    branches:
+      - hotfix/v2.0.14-single-active-chat-turn
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-single-active-turn:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact head
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim()
+          $expected = '${{ github.sha }}'
+          Write-Host "EXPECTED_SOURCE_SHA=$expected"
+          Write-Host "ACTUAL_SOURCE_SHA=$actual"
+          if ($actual -ne $expected) { throw "Exact-head mismatch." }
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet restore GPTDeskTop.sln
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -p:EnableWindowsTargeting=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Focused single-turn regression tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj `
+            --configuration Release --no-restore -p:EnableWindowsTargeting=true `
+            --filter "FullyQualifiedName~GlobalChatTurnFenceTests|FullyQualifiedName~GlobalChatOperationGateTests|FullyQualifiedName~GenerationRecoverySafetyHotfixTests|FullyQualifiedName~GlobalOutboundSafetyRegressionTests|FullyQualifiedName~StrictWallClockSendGapRegressionTests" `
+            --verbosity normal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Full runtime regression suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj `
+            --configuration Release --no-restore -p:EnableWindowsTargeting=true `
+            --verbosity minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Release x64 build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build src/GPTDeskTop/GPTDeskTop.csproj `
+            --configuration Release --no-restore -p:EnableWindowsTargeting=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify v2.0.14 metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $app = Get-Content src/GPTDeskTop/GPTDeskTop.csproj -Raw
+          $setup = Get-Content src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -Raw
+          $build = Get-Content src/GPTDeskTop.Build/GPTDeskTop.Build.csproj -Raw
+          if ($app -notmatch '<Version>2\.0\.14</Version>') { throw 'Application version is not 2.0.14.' }
+          if ($setup -notmatch '<Version>2\.0\.14</Version>') { throw 'Setup version is not 2.0.14.' }
+          if ($build -notmatch 'GPTDeskTop v2\.0\.14') { throw 'Release metadata is not 2.0.14.' }
