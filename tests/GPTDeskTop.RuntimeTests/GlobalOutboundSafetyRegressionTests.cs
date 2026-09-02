@@ -129,7 +129,7 @@ public sealed class GlobalOutboundSafetyRegressionTests
     [InlineData("We have temporarily limited access to your conversations")]
     public void RateLimitMarkers_AreDetectedCaseInsensitively(string text)
     {
-        Assert.True(GlobalChatGptRateLimitCircuitBreaker.ContainsRateLimitMarker(text.ToUpperInvariant()));
+        Assert.True(GlobalChatGptRateLimitCircuitBreaker.IsRateLimitText(text.ToUpperInvariant()));
     }
 
     [Fact]
