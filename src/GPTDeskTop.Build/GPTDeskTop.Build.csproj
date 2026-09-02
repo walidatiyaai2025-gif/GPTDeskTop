@@ -22,7 +22,7 @@
     <MakeDir Directories="$(PublishRoot)" />
     <Exec Command="dotnet publish &quot;$(AppProject)&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o &quot;$(PublishRoot)&quot;" />
     <Error Condition="!Exists('$(PublishRoot)\GPTDeskTop.exe')" Text="GPTDeskTop publish did not produce $(PublishRoot)\GPTDeskTop.exe" />
-    <WriteLinesToFile File="$(PublishRoot)\Version.txt" Lines="GPTDeskTop v2.0.0&#x0D;&#x0A;Runtime: win-x64 self-contained&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
-    <WriteLinesToFile File="$(PublishRoot)\ReleaseNotes.txt" Lines="GPTDeskTop v2.0.0&#x0D;&#x0A;- Development task engine worker lifecycle hardened&#x0D;&#x0A;- Runtime state persistence and cooling resume regression coverage added&#x0D;&#x0A;- Release helper renamed to GPTDeskTop.Build&#x0D;&#x0A;- No ProjectReference to the desktop application&#x0D;&#x0A;- Setup publishes application payload directly by project path" Overwrite="true" Encoding="UTF-8" />
+    <WriteLinesToFile File="$(PublishRoot)\Version.txt" Lines="GPTDeskTop v$(GPTDeskTopVersion)&#x0D;&#x0A;Runtime: win-x64 self-contained&#x0D;&#x0A;Generated: $([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))" Overwrite="true" Encoding="UTF-8" />
+    <WriteLinesToFile File="$(PublishRoot)\ReleaseNotes.txt" Lines="GPTDeskTop v$(GPTDeskTopVersion)&#x0D;&#x0A;- Development task engine worker lifecycle hardened&#x0D;&#x0A;- Runtime state persistence and cooling resume regression coverage added&#x0D;&#x0A;- Release helper renamed to GPTDeskTop.Build&#x0D;&#x0A;- No ProjectReference to the desktop application&#x0D;&#x0A;- Setup publishes application payload directly by project path" Overwrite="true" Encoding="UTF-8" />
   </Target>
 </Project>
