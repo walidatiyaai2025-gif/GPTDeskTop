@@ -989,6 +989,7 @@ public sealed class ChromeDevToolsService
         var observationDeadline = DateTimeOffset.UtcNow.AddSeconds(4);
         var stableStillReadyReads = 0;
         var stableEmptyComposerReads = 0;
+        var observedDifferentUserTurn = false;
 
         while (DateTimeOffset.UtcNow < observationDeadline)
         {
@@ -997,9 +998,9 @@ public sealed class ChromeDevToolsService
             var snapshot = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
             if (snapshot.Success && snapshot.Count > baselineUserTurnCount)
             {
-                if (ComposerEvidenceTextEquals(snapshot.LastText, expected))
+                if (MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(snapshot.LastText, expected))
                     return ImmediatePhysicalSubmitObservation.ReceiptConfirmed;
-                return ImmediatePhysicalSubmitObservation.Ambiguous;
+                observedDifferentUserTurn = true;
             }
 
             var readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
@@ -1049,6 +1050,9 @@ public sealed class ChromeDevToolsService
 
             await Task.Delay(250, cancellationToken);
         }
+
+        if (observedDifferentUserTurn)
+            return ImmediatePhysicalSubmitObservation.Ambiguous;
 
         return stableStillReadyReads > 0 || stableEmptyComposerReads > 0
             ? ImmediatePhysicalSubmitObservation.ClickNotAccepted
@@ -1301,7 +1305,7 @@ public sealed class ChromeDevToolsService
             return false;
         }
 
-        if (string.Equals(before.LastText, expected, StringComparison.Ordinal))
+        if (MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(before.LastText, expected))
         {
             var deliveryState = await GetChatStateAsync(tab, cancellationToken);
             if (MonitorDeliveryRecoveryPolicy.CanReuseMatchingUserTailAsReceipt(
@@ -1340,7 +1344,7 @@ public sealed class ChromeDevToolsService
                 continue;
             }
 
-            if (current.Count > before.Count && ComposerEvidenceTextEquals(current.LastText, expected))
+            if (current.Count > before.Count && MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(current.LastText, expected))
             {
                 VerifiedSendDiagnostics.Record("ReceiptConfirmed", "new-user-turn-observed", submitAttempts);
                 return true;
@@ -1549,7 +1553,7 @@ public sealed class ChromeDevToolsService
                         var receiptBeforeRefresh = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
                         if (receiptBeforeRefresh.Success
                             && receiptBeforeRefresh.Count > before.Count
-                            && string.Equals(receiptBeforeRefresh.LastText, expected, StringComparison.Ordinal))
+                            && MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(receiptBeforeRefresh.LastText, expected))
                         {
                             VerifiedSendDiagnostics.Record("ReceiptConfirmed", "receipt-before-stuck-refresh", submitAttempts);
                             return true;
@@ -1562,7 +1566,7 @@ public sealed class ChromeDevToolsService
                             var receiptAfterRefresh = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
                             if (receiptAfterRefresh.Success
                                 && receiptAfterRefresh.Count > before.Count
-                                && string.Equals(receiptAfterRefresh.LastText, expected, StringComparison.Ordinal))
+                                && MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(receiptAfterRefresh.LastText, expected))
                             {
                                 VerifiedSendDiagnostics.Record("ReceiptConfirmed", "receipt-after-stuck-refresh", submitAttempts);
                                 return true;
@@ -1742,7 +1746,7 @@ public sealed class ChromeDevToolsService
         if (!receiptBeforeRefresh.Success)
             return UnacknowledgedSubmitReconciliationResult.TransientInterruption;
         if (receiptBeforeRefresh.Count > baselineUserTurnCount
-            && string.Equals(receiptBeforeRefresh.LastText, expected, StringComparison.Ordinal))
+            && MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(receiptBeforeRefresh.LastText, expected))
             return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed;
         // Do not classify a single pre-refresh count mismatch as a conflict. Target replacement
         // can briefly expose a partial turn list; the post-refresh loop below requires two stable
@@ -1767,12 +1771,20 @@ public sealed class ChromeDevToolsService
             var receiptAfterRefresh = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
             if (receiptAfterRefresh.Success
                 && receiptAfterRefresh.Count > baselineUserTurnCount
-                && string.Equals(receiptAfterRefresh.LastText, expected, StringComparison.Ordinal))
+                && MonitorDeliveryRecoveryPolicy.IsMatchingUserTurnEvidence(receiptAfterRefresh.LastText, expected))
                 return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed;
 
             try
             {
                 var composerReadiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+                if (receiptAfterRefresh.Success
+                    && receiptAfterRefresh.Count > baselineUserTurnCount
+                    && composerReadiness.IsGenerating)
+                {
+                    VerifiedSendDiagnostics.Record("ReceiptConfirmed", "generation-with-new-rendered-user-turn", 0);
+                    return UnacknowledgedSubmitReconciliationResult.ReceiptConfirmed;
+                }
+
                 var composer = await ReadComposerTextAsync(tab, cancellationToken);
                 if (!composerReadiness.IsGenerating
                     && !composerReadiness.HasRenderedError
