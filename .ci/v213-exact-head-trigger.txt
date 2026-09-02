@@ -1,0 +1,2 @@
+GPTDeskTop v2.0.13 exact-head validation trigger.
+Base patch commit: cc3107b06de663ccfc42751907af75a9e286385e
