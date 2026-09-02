@@ -8,12 +8,11 @@ namespace GPTDeskTop.UI;
 internal static class ProjectMonitorUiBootstrap
 {
     private static readonly HashSet<nint> InstalledMainForms = new();
-    private static ProjectMonitorDashboardForm? _dashboardForm;
     private static RuntimeInspectorForm? _runtimeInspectorForm;
 
     /// <summary>
-    /// Explicit one-time installation owned by Program/MainForm startup. This intentionally avoids
-    /// ModuleInitializer/Application.Idle scanning and post-startup tree mutation loops.
+    /// Explicit one-time installation owned by Program/MainForm startup. Projects are routed into
+    /// the premium content host; Runtime Inspector retains its existing canonical diagnostic path.
     /// </summary>
     internal static void Install(MainForm main)
     {
@@ -30,6 +29,17 @@ internal static class ProjectMonitorUiBootstrap
         if (main.IsHandleCreated) InstalledMainForms.Add(main.Handle);
     }
 
+    internal static Control CreateEmbeddedProjectsSurface(MainForm owner)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        return new ProjectMonitorDashboardControl(() => StartNewProjectMonitorAsync(owner))
+        {
+            Name = "PremiumProjectsWorkspace",
+            AccessibleName = "Projects workspace",
+            AccessibleDescription = "Registered projects, real repository and branch context, task progress and monitoring evidence."
+        };
+    }
+
     private static bool InjectProjectsButton(MainForm main)
     {
         var settingsButton = FindDescendants(main).OfType<Button>()
@@ -43,10 +53,10 @@ internal static class ProjectMonitorUiBootstrap
             Text = "Projects",
             AutoSize = true,
             AccessibleName = "Open Projects Hub",
-            AccessibleDescription = $"Open the canonical project monitoring hub. Running build: {version}."
+            AccessibleDescription = $"Open the canonical project monitoring workspace. Running build: {version}."
         };
         FluentTheme.StyleButton(button, primary: true);
-        button.Click += (_, _) => ShowProjectsHub(main);
+        button.Click += (_, _) => PremiumRuntimeShellExperience.NavigateTo(main, "Projects");
         settingsButton.Parent.Controls.Add(button);
         var settingsIndex = settingsButton.Parent.Controls.GetChildIndex(settingsButton);
         settingsButton.Parent.Controls.SetChildIndex(button, Math.Max(0, settingsIndex));
@@ -83,7 +93,7 @@ internal static class ProjectMonitorUiBootstrap
             {
                 button.Visible = false;
                 button.TabStop = false;
-                button.AccessibleDescription = "Legacy navigation retired; use Projects Hub.";
+                button.AccessibleDescription = "Legacy navigation retired; use the premium Saved Monitors destination.";
             }
         }
 
@@ -113,22 +123,6 @@ internal static class ProjectMonitorUiBootstrap
         return (database, monitor, chrome);
     }
 
-    private static void ShowProjectsHub(MainForm owner)
-    {
-        if (_dashboardForm is null || _dashboardForm.IsDisposed)
-        {
-            _dashboardForm = new ProjectMonitorDashboardForm(() => StartNewProjectMonitorAsync(owner));
-            _dashboardForm.FormClosed += (_, _) => _dashboardForm = null;
-            _dashboardForm.Show(owner);
-        }
-        else
-        {
-            if (_dashboardForm.WindowState == FormWindowState.Minimized) _dashboardForm.WindowState = FormWindowState.Normal;
-            _dashboardForm.BringToFront();
-            _dashboardForm.Activate();
-        }
-    }
-
     private static void ShowRuntimeInspector(MainForm owner)
     {
         var (_, monitor, _) = GetRuntime(owner);
@@ -156,13 +150,13 @@ internal static class ProjectMonitorUiBootstrap
         {
             await ExceptionLogService.LogAsync(ex, "ProjectsHub.LoadRepositoryOptions");
             MessageBox.Show(owner, "Saved GitHub repository profiles could not be loaded. Open Git Settings and verify the repository credentials.", "New Project Monitor", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            ShowGitSettings(owner, database); return;
+            ShowGitSettings(owner); return;
         }
 
         if (options.Count == 0)
         {
             MessageBox.Show(owner, "No saved GitHub repository profile is available. Configure a repository once; after that project creation is silent.", "New Project Monitor", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            ShowGitSettings(owner, database); return;
+            ShowGitSettings(owner); return;
         }
 
         using var wizard = new NewProjectMonitorWizardForm(options);
@@ -179,7 +173,7 @@ internal static class ProjectMonitorUiBootstrap
         if (!preflight.Success)
         {
             MessageBox.Show(owner, preflight.Message + "\r\n\r\nNo ChatGPT conversation was created.", "GitHub validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            if (preflight.RequiresCredentialUi) ShowGitSettings(owner, database);
+            if (preflight.RequiresCredentialUi) ShowGitSettings(owner);
             return;
         }
 
@@ -199,15 +193,8 @@ internal static class ProjectMonitorUiBootstrap
         }
     }
 
-    private static void ShowGitSettings(IWin32Window owner, LocalDatabase database)
-    {
-        var control = new GitHubIntegrationControl(database);
-        using var form = new Form { Text = "GPTDeskTop · Git Settings", StartPosition = FormStartPosition.CenterParent, MinimumSize = new Size(900, 700), Size = new Size(1040, 820), AutoScaleMode = AutoScaleMode.Dpi, BackColor = FluentTheme.Background };
-        form.Controls.Add(control);
-        form.Shown += async (_, _) => { try { await control.LoadAsync(); } catch (Exception ex) { await ExceptionLogService.LogAsync(ex, "ProjectsHub.GitSettings.Load"); } };
-        FluentTheme.Apply(form);
-        form.ShowDialog(owner);
-    }
+    private static void ShowGitSettings(MainForm owner)
+        => _ = GitHubIntegrationUiBootstrap.ShowGitSettingsAsync(owner);
 
     private static IEnumerable<ToolStripItem> FindToolStripItems(Control root)
     {
