@@ -776,7 +776,7 @@ public sealed class ChatGptMonitorService
   }
         }
     }
-    private static bool IsTransientChromeException(Exception ex) => ex is WebSocketException || ex is TimeoutException || ex is TaskCanceledException || ex is IOException || ex.Message.Contains("Chrome closed the DevTools connection", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("Promise was collected", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("connection was forcibly closed", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("unable to connect", StringComparison.OrdinalIgnoreCase);
+    private static bool IsTransientChromeException(Exception ex) => ChromeTransportFailureClassifier.IsTransient(ex);
     private static string GetEffectiveResponse(ChatPageState state) => !string.IsNullOrWhiteSpace(state.ErrorText) ? state.ErrorText.Trim() : state.LastAssistantText.Trim();
     private static bool IsDeliveryTimeout(string text) => text.Contains("message delivery timed out", StringComparison.OrdinalIgnoreCase);
     private static bool IsConversationContextLimit(string text) { if (string.IsNullOrWhiteSpace(text)) return false; string[] markers = { "conversation is too long", "conversation is too large", "context length", "context window", "maximum context", "conversation limit", "start a new chat", "this conversation has reached", "reached the maximum length", "المحادثة طويلة جدًا", "طول المحادثة", "حد المحادثة", "ابدأ محادثة جديدة" }; return markers.Any(marker => text.Contains(marker, StringComparison.OrdinalIgnoreCase)); }
