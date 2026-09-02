@@ -15,6 +15,8 @@ public sealed record GenerationLeaseSnapshot(
 /// <summary>
 /// Process-wide recovery authority for monitored ChatGPT generations. An active lease never
 /// expires with time. Only two fresh authoritative non-generating observations release it.
+/// The global post-response quiet period is also treated as a destructive-automation interlock,
+/// so fresh-chat creation/reload/model mutation cannot race the required 15-second turn gap.
 /// </summary>
 public sealed class GenerationRecoveryInterlock
 {
@@ -68,21 +70,38 @@ public sealed class GenerationRecoveryInterlock
 
     public bool IsActive(long monitorId)
     {
-        lock (_sync) return _leases.TryGetValue(monitorId, out var lease) && lease.IsGenerationActive;
+        lock (_sync)
+        {
+            if (_leases.TryGetValue(monitorId, out var lease) && lease.IsGenerationActive)
+                return true;
+        }
+        return GlobalChatTurnFence.Shared.CooldownUntilUtc is not null;
     }
 
     public bool IsActive(ChromeTab tab)
     {
         ArgumentNullException.ThrowIfNull(tab);
         lock (_sync)
-            return _leases.Values.Any(lease => lease.IsGenerationActive
+        {
+            if (_leases.Values.Any(lease => lease.IsGenerationActive
                 && (string.Equals(lease.TargetId, tab.Id, StringComparison.Ordinal)
-                    || ChatGptConversationIdentity.IsSame(lease.ConversationIdentity, tab.Url)));
+                    || ChatGptConversationIdentity.IsSame(lease.ConversationIdentity, tab.Url))))
+                return true;
+        }
+        return GlobalChatTurnFence.Shared.CooldownUntilUtc is not null;
     }
 
     public bool HasAnyActiveLease
     {
-        get { lock (_sync) return _leases.Values.Any(lease => lease.IsGenerationActive); }
+        get
+        {
+            lock (_sync)
+            {
+                if (_leases.Values.Any(lease => lease.IsGenerationActive))
+                    return true;
+            }
+            return GlobalChatTurnFence.Shared.CooldownUntilUtc is not null;
+        }
     }
 
     public GenerationLeaseSnapshot? Snapshot(long monitorId)
@@ -121,7 +140,7 @@ public sealed class GenerationRecoveryInterlock
     }
 
     public void RecordSuppressed(long monitorId, ChromeTab tab, string operation)
-        => RuntimeFlightRecorder.Record("Monitor", "RecoverySuppressed", "suppressed", $"active-generation:{operation}", monitorId, tab.Id, tab.Url);
+        => RuntimeFlightRecorder.Record("Monitor", "RecoverySuppressed", "suppressed", $"active-generation-or-turn-cooldown:{operation}", monitorId, tab.Id, tab.Url);
 
     public bool ConfirmTargetDestroyed(ChromeTab tab)
     {
