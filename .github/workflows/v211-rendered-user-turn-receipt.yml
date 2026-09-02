@@ -1,0 +1,134 @@
+name: GPTDeskTop v2.0.11 Rendered User Turn Receipt
+
+on:
+  push:
+    branches:
+      - hotfix/v211-rendered-user-turn-receipt
+
+permissions:
+  contents: write
+
+jobs:
+  patch-validate-package:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          ref: hotfix/v211-rendered-user-turn-receipt
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply v2.0.11 rendered receipt patch
+        id: patch
+        shell: pwsh
+        run: |
+          if (Test-Path 'tools/apply_v211_rendered_receipt_fix.py') {
+            python tools/apply_v211_rendered_receipt_fix.py
+            git config user.name "gptdesktop-runtime-worker"
+            git config user.email "actions@users.noreply.github.com"
+            git rm tools/apply_v211_rendered_receipt_fix.py
+            git add src tests
+            git diff --check
+            git commit -m "fix(runtime): recognize rendered large user-turn delivery receipts"
+            git push origin HEAD:hotfix/v211-rendered-user-turn-receipt
+            "changed=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "changed=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Defer validation to exact committed source
+        if: steps.patch.outputs.changed == 'true'
+        shell: pwsh
+        run: Write-Host 'v2.0.11 source committed. The push-triggered exact-head run will validate and package.'
+
+      - name: Setup .NET 8
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet restore GPTDeskTop.sln
+
+      - name: Focused rendered user-turn receipt regressions
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --filter "FullyQualifiedName~RenderedUserTurnReceiptRegressionTests|FullyQualifiedName~PhysicalSubmitAcceptanceRegressionTests|FullyQualifiedName~VerifiedSendTransportRecoveryRegressionTests|FullyQualifiedName~FreshChatPerResponseRegressionTests|FullyQualifiedName~FreshChatGenerationLeaseHandoffRegressionTests|FullyQualifiedName~FreshChatTransportAnchorRegressionTests" --logger "trx;LogFileName=v211-rendered-receipt.trx"
+
+      - name: Full runtime and product suite
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --logger "trx;LogFileName=v211-full-runtime.trx"
+
+      - name: Release x64 build
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release -r win-x64
+
+      - name: Build final Setup EXE
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -c Release -p:RunPackagingTargets=true
+
+      - name: Verify exact head and package final source
+        if: steps.patch.outputs.changed == 'false'
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          git merge-base --is-ancestor 7a04aa5ba9944633f8ce553eec4ec7aa7054f2fd HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'v2.0.11 lost v2.0.10 ancestry.' }
+          if (Test-Path 'tools/apply_v211_rendered_receipt_fix.py') { throw 'One-shot patch applicator leaked into final source.' }
+          $policy = Get-Content 'src/GPTDeskTop/Services/MonitorDeliveryRecoveryPolicy.cs' -Raw
+          $chrome = Get-Content 'src/GPTDeskTop/Services/ChromeDevToolsService.cs' -Raw
+          $app = Get-Content 'src/GPTDeskTop/GPTDeskTop.csproj' -Raw
+          $setup = Get-Content 'src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj' -Raw
+          $setupProgram = Get-Content 'src/GPTDeskTop.Setup/Program.cs' -Raw
+          if (!$policy.Contains('IsMatchingUserTurnEvidence')) { throw 'Rendered user-turn matcher missing.' }
+          if (!$policy.Contains('collapsedPrefixEvidenceLength = 256')) { throw 'Collapsed large-turn evidence rule missing.' }
+          if (!$chrome.Contains('generation-with-new-rendered-user-turn')) { throw 'Generation receipt bridge missing.' }
+          if (!$app.Contains('<Version>2.0.11</Version>')) { throw 'App version mismatch.' }
+          if (!$setup.Contains('<Version>2.0.11</Version>')) { throw 'Setup version mismatch.' }
+          if (!$setupProgram.Contains('Version = "2.0.11"')) { throw 'Setup program version mismatch.' }
+          $exe = 'Output/Setup/GPTDeskTop-Setup.exe'
+          if (!(Test-Path $exe)) { throw 'Setup EXE missing.' }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Setup EXE is not PE/MZ.' }
+          $setupSha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $setupSize = (Get-Item $exe).Length
+          git archive --format=zip --output GPTDeskTop-v2.0.11-FINAL-SOURCE.zip HEAD
+          $sourceSha = (Get-FileHash GPTDeskTop-v2.0.11-FINAL-SOURCE.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "FINAL_HEAD=$head`nBASE_V210_HEAD=7a04aa5ba9944633f8ce553eec4ec7aa7054f2fd`nVERSION=2.0.11`nBEHAVIOR=RENDERED_MARKDOWN_AND_COLLAPSED_LARGE_USER_TURN_RECEIPT`nSETUP_SHA256=$setupSha`nSETUP_SIZE=$setupSize`nSOURCE_ZIP_SHA256=$sourceSha" | Set-Content FINAL-V211-IDENTITY.txt
+          Write-Host "FINAL_HEAD=$head"
+          Write-Host "SETUP_SHA256=$setupSha"
+          Write-Host "SOURCE_ZIP_SHA256=$sourceSha"
+
+      - name: Upload v2.0.11 final source
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.11-FINAL-SOURCE
+          path: |
+            GPTDeskTop-v2.0.11-FINAL-SOURCE.zip
+            FINAL-V211-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload v2.0.11 final setup
+        if: steps.patch.outputs.changed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTDeskTop-v2.0.11-FINAL-SETUP
+          path: |
+            Output/Setup/GPTDeskTop-Setup.exe
+            Output/Setup/Version.txt
+            FINAL-V211-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 30
