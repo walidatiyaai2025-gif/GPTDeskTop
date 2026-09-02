@@ -29,6 +29,7 @@ public sealed class SimpleMonitorModeRegressionTests
     public void AlternateFormExposesOnlyTheRequestedSimpleMonitorBusiness()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "SimpleMonitorForm.cs");
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
 
         Assert.Contains("Monitor Only — Same Chat", source, StringComparison.Ordinal);
         Assert.Contains("Chrome profile", source, StringComparison.Ordinal);
@@ -37,7 +38,14 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("Rotation = OFF", source, StringComparison.Ordinal);
         Assert.Contains("Minimum = 15", source, StringComparison.Ordinal);
         Assert.Contains("Stored message sequence", source, StringComparison.Ordinal);
-        Assert.Contains("(messageIndex + 1) % messages.Count", ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs"), StringComparison.Ordinal);
+        Assert.Contains("Load JSON Plan", source, StringComparison.Ordinal);
+        Assert.Contains("Download Sample JSON", source, StringComparison.Ordinal);
+        Assert.Contains("Copy ChatGPT Prompt", source, StringComparison.Ordinal);
+        Assert.Contains("Preview / Validate", source, StringComparison.Ordinal);
+        Assert.Contains("if (!loop)", runner, StringComparison.Ordinal);
+        Assert.Contains("messageIndex = 0", runner, StringComparison.Ordinal);
+        Assert.Contains("messageIndex++", runner, StringComparison.Ordinal);
+        Assert.Contains("Step.EffectiveDelaySeconds", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -83,9 +91,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointSeventeen()
+    public void ProductVersionIsBumpedToTwoPointZeroPointEighteen()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.17</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.18</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
