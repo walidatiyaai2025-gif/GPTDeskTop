@@ -131,10 +131,9 @@ jobs:
         run: |
           $publishDir = Join-Path $env:RUNNER_TEMP 'gptdesktop-stable-publish'
           $projectPath = 'src/GPTDeskTop/GPTDeskTop.csproj'
-          [xml]$project = Get-Content $projectPath
-          $productVersion = [string]($project.Project.PropertyGroup.Version | Select-Object -First 1)
+          $productVersion = (dotnet msbuild $projectPath -nologo -getProperty:Version).Trim()
           if ([string]::IsNullOrWhiteSpace($productVersion)) {
-            throw 'GPTDeskTop.csproj does not define a product Version.'
+            throw 'Could not resolve GPTDeskTop product version through MSBuild.'
           }
 
           $source = '${{ steps.source.outputs.target_sha }}'
