@@ -2,5 +2,11 @@
   <PropertyGroup>
     <!-- Allow cross-platform CI runners to restore/build the Windows desktop projects. -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <!-- Canonical product/release identity. All executable projects inherit this version. -->
+    <GPTDeskTopVersion>2.0.14</GPTDeskTopVersion>
+    <Version>$(GPTDeskTopVersion)</Version>
+    <AssemblyVersion>$(GPTDeskTopVersion).0</AssemblyVersion>
+    <FileVersion>$(GPTDeskTopVersion).0</FileVersion>
   </PropertyGroup>
 </Project>
