@@ -1,0 +1,39 @@
+name: GPTDeskTop v2.0.13 Release
+
+on:
+  push:
+    branches:
+      - hotfix/v213-stuck-composer-click-retry
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hotfix/v213-stuck-composer-click-retry
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build Setup
+        shell: pwsh
+        run: |
+          dotnet restore GPTDeskTop.sln
+          dotnet build src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj -c Release -p:RunPackagingTargets=true
+          if (!(Test-Path 'Output/Setup/GPTDeskTop-Setup.exe')) { throw 'Setup missing' }
+          Copy-Item 'Output/Setup/GPTDeskTop-Setup.exe' 'GPTDeskTop-v2.0.13-Setup.exe'
+      - name: Publish release asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag='gptdesktop-v2.0.13'
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag 'GPTDeskTop-v2.0.13-Setup.exe' --title 'GPTDeskTop v2.0.13' --notes 'Fixes fresh-chat stuck composer delivery: bounded safe retry when the exact prompt remains parked after a physical click.' --target $env:GITHUB_SHA
+          } else {
+            gh release upload $tag 'GPTDeskTop-v2.0.13-Setup.exe' --clobber
+          }
