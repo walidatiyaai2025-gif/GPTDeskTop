@@ -95,7 +95,7 @@ public sealed class OperatorWorkspaceV2RegressionTests
     }
 
     [Fact]
-    public void ReleaseIdentityUsesCanonicalVersionTwoPointZeroPointFifteen()
+    public void ReleaseIdentityUsesCanonicalVersionFromDirectoryBuildProps()
     {
         var props = ReadSource("Directory.Build.props");
         var app = ReadSource("src", "GPTDeskTop", "GPTDeskTop.csproj");
@@ -103,7 +103,17 @@ public sealed class OperatorWorkspaceV2RegressionTests
         var build = ReadSource("src", "GPTDeskTop.Build", "GPTDeskTop.Build.csproj");
         var releaseWorkflow = ReadSource(".github", "workflows", "release-artifact.yml");
 
-        Assert.Contains("<GPTDeskTopVersion>2.0.15</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        const string versionStartTag = "<GPTDeskTopVersion>";
+        const string versionEndTag = "</GPTDeskTopVersion>";
+        var versionStart = props.IndexOf(versionStartTag, StringComparison.Ordinal);
+        Assert.True(versionStart >= 0, "Directory.Build.props must define GPTDeskTopVersion.");
+        versionStart += versionStartTag.Length;
+        var versionEnd = props.IndexOf(versionEndTag, versionStart, StringComparison.Ordinal);
+        Assert.True(versionEnd > versionStart, "GPTDeskTopVersion must have a non-empty value.");
+        var canonicalVersion = props[versionStart..versionEnd].Trim();
+        Assert.True(Version.TryParse(canonicalVersion, out _), $"GPTDeskTopVersion '{canonicalVersion}' must be a valid version.");
+        Assert.NotEqual("2.0.0", canonicalVersion);
+
         Assert.Contains("<Version>$(GPTDeskTopVersion)</Version>", props, StringComparison.Ordinal);
         Assert.Contains("<AssemblyVersion>$(GPTDeskTopVersion).0</AssemblyVersion>", props, StringComparison.Ordinal);
         Assert.Contains("<FileVersion>$(GPTDeskTopVersion).0</FileVersion>", props, StringComparison.Ordinal);
