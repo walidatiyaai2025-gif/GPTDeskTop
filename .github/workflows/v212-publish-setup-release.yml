@@ -19,11 +19,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          New-Item -ItemType Directory -Path staging | Out-Null
-          gh run download 33595935585 --repo ${{ github.repository }} --name GPTDeskTop-v2.0.12-FINAL-SETUP --dir staging
-          $source = 'staging/GPTDeskTop-Setup.exe'
-          if (!(Test-Path $source)) { throw 'Validated setup EXE not found in artifact.' }
-          Copy-Item $source 'GPTDeskTop-v2.0.12-Setup.exe'
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          Invoke-WebRequest -Uri 'https://api.github.com/repos/walidatiyaai2025-gif/GPTDeskTop/actions/artifacts/9833422779/zip' -Headers $headers -OutFile 'validated-setup-artifact.zip'
+          Expand-Archive -Path 'validated-setup-artifact.zip' -DestinationPath 'staging' -Force
+          $source = Get-ChildItem -Path 'staging' -Filter 'GPTDeskTop-Setup.exe' -Recurse | Select-Object -First 1
+          if ($null -eq $source) { throw 'Validated setup EXE not found in artifact.' }
+          Copy-Item $source.FullName 'GPTDeskTop-v2.0.12-Setup.exe'
           $bytes = [System.IO.File]::ReadAllBytes('GPTDeskTop-v2.0.12-Setup.exe')
           if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Setup EXE is not PE/MZ.' }
           $sha = (Get-FileHash 'GPTDeskTop-v2.0.12-Setup.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
