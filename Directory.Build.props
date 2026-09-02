@@ -4,7 +4,7 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
 
     <!-- Canonical product/release identity. All executable projects inherit this version. -->
-    <GPTDeskTopVersion>2.0.17</GPTDeskTopVersion>
+    <GPTDeskTopVersion>2.0.18</GPTDeskTopVersion>
     <Version>$(GPTDeskTopVersion)</Version>
     <AssemblyVersion>$(GPTDeskTopVersion).0</AssemblyVersion>
     <FileVersion>$(GPTDeskTopVersion).0</FileVersion>
