@@ -25,14 +25,55 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         int delaySeconds,
         CancellationToken cancellationToken = default)
     {
+        if (messages is null)
+            throw new ArgumentNullException(nameof(messages));
+
+        var steps = messages.Select(message => new SimpleMonitorMessageStep
+        {
+            Text = message,
+            Enabled = true
+        }).ToArray();
+
+        return StartAsync(
+            session,
+            conversationUrl,
+            steps,
+            delaySeconds,
+            loop: true,
+            cancellationToken);
+    }
+
+    public Task StartAsync(
+        SimpleMonitorProfileSession session,
+        string conversationUrl,
+        IReadOnlyList<SimpleMonitorMessageStep> messages,
+        int defaultDelaySeconds,
+        bool loop,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(session);
         if (!SimpleMonitorProfileSession.TryGetConversationId(conversationUrl, out _))
             throw new ArgumentException("A stable ChatGPT /c/{conversation-id} URL is required.", nameof(conversationUrl));
-        if (messages is null || messages.Count == 0 || messages.Any(string.IsNullOrWhiteSpace))
-            throw new ArgumentException("At least one non-empty stored message is required.", nameof(messages));
+        if (messages is null || messages.Count == 0)
+            throw new ArgumentException("At least one stored message is required.", nameof(messages));
 
-        var normalizedDelay = Math.Clamp(delaySeconds, 15, 3600);
-        var exactMessages = messages.ToArray();
+        var normalizedDefaultDelay = Math.Clamp(defaultDelaySeconds, 15, 3600);
+        var enabledMessages = messages
+            .Where(message => message is not null && message.Enabled)
+            .Select(message => new SimpleMonitorMessageStep
+            {
+                Label = message.Label,
+                Text = message.Text,
+                Enabled = true,
+                DelaySeconds = message.DelaySeconds is null
+                    ? null
+                    : Math.Clamp(message.DelaySeconds.Value, 15, 3600)
+            })
+            .ToArray();
+
+        if (enabledMessages.Length == 0 || enabledMessages.Any(message => string.IsNullOrWhiteSpace(message.Text)))
+            throw new ArgumentException("At least one enabled, non-empty stored message is required.", nameof(messages));
+
         lock (_sync)
         {
             if (_worker is { IsCompleted: false })
@@ -41,7 +82,9 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             _cancellation?.Dispose();
             _cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var token = _cancellation.Token;
-            _worker = Task.Run(() => RunLoopAsync(session, conversationUrl, exactMessages, normalizedDelay, token), token);
+            _worker = Task.Run(
+                () => RunLoopAsync(session, conversationUrl, enabledMessages, normalizedDefaultDelay, loop, token),
+                token);
         }
         return Task.CompletedTask;
     }
@@ -74,8 +117,9 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
     private async Task RunLoopAsync(
         SimpleMonitorProfileSession session,
         string conversationUrl,
-        IReadOnlyList<string> messages,
-        int delaySeconds,
+        IReadOnlyList<SimpleMonitorMessageStep> messages,
+        int defaultDelaySeconds,
+        bool loop,
         CancellationToken cancellationToken)
     {
         try
@@ -90,7 +134,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             if (initial.IsGenerating)
             {
                 StatusChanged?.Invoke("The selected chat is already generating. Waiting for it to finish...");
-                await WaitForExistingGenerationAsync(session, conversationUrl, delaySeconds, cancellationToken).ConfigureAwait(false);
+                await WaitForExistingGenerationAsync(session, conversationUrl, defaultDelaySeconds, cancellationToken).ConfigureAwait(false);
             }
 
             var messageIndex = 0;
@@ -102,11 +146,12 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 if (before.IsGenerating)
                 {
                     StatusChanged?.Invoke("ChatGPT is generating. Send is blocked until the response finishes.");
-                    await WaitForExistingGenerationAsync(session, conversationUrl, delaySeconds, cancellationToken).ConfigureAwait(false);
+                    await WaitForExistingGenerationAsync(session, conversationUrl, defaultDelaySeconds, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
-                var message = messages[messageIndex];
+                var step = messages[messageIndex];
+                var message = step.Text;
                 MessageChanged?.Invoke(messageIndex + 1, messages.Count, message);
                 StatusChanged?.Invoke($"Sending stored message {messageIndex + 1}/{messages.Count} to the same chat...");
 
@@ -125,8 +170,9 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     before,
                     cancellationToken).ConfigureAwait(false);
 
-                StatusChanged?.Invoke($"Response complete. Safety delay: {delaySeconds} seconds.");
-                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken).ConfigureAwait(false);
+                var stepDelaySeconds = step.EffectiveDelaySeconds(defaultDelaySeconds);
+                StatusChanged?.Invoke($"Response complete. Safety delay: {stepDelaySeconds} seconds.");
+                await Task.Delay(TimeSpan.FromSeconds(stepDelaySeconds), cancellationToken).ConfigureAwait(false);
 
                 tab = await RequireSameConversationAsync(session, conversationUrl, cancellationToken).ConfigureAwait(false);
                 var recheck = await ReadPassiveStateAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
@@ -134,11 +180,24 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 if (recheck.IsGenerating)
                 {
                     StatusChanged?.Invoke("A new response started during the delay. Waiting without sending.");
-                    await WaitForExistingGenerationAsync(session, conversationUrl, delaySeconds, cancellationToken).ConfigureAwait(false);
+                    await WaitForExistingGenerationAsync(session, conversationUrl, defaultDelaySeconds, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
-                messageIndex = (messageIndex + 1) % messages.Count;
+                if (messageIndex + 1 >= messages.Count)
+                {
+                    if (!loop)
+                    {
+                        StatusChanged?.Invoke("Plan complete. All enabled JSON messages were sent once; monitor stopped.");
+                        return;
+                    }
+                    messageIndex = 0;
+                    StatusChanged?.Invoke("Plan cycle complete. Loop is ON; restarting from the first enabled message.");
+                }
+                else
+                {
+                    messageIndex++;
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
