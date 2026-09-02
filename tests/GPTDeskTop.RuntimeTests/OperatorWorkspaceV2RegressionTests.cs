@@ -133,16 +133,23 @@ public sealed class OperatorWorkspaceV2RegressionTests
     }
 
     [Fact]
-    public void ReleaseIdentityIsVersionTwo()
+    public void ReleaseIdentityUsesCanonicalVersionTwoPointZeroPointFourteen()
     {
+        var props = ReadSource("Directory.Build.props");
         var app = ReadSource("src", "GPTDeskTop", "GPTDeskTop.csproj");
         var setup = ReadSource("src", "GPTDeskTop.Setup", "GPTDeskTop.Setup.csproj");
         var build = ReadSource("src", "GPTDeskTop.Build", "GPTDeskTop.Build.csproj");
+        var releaseWorkflow = ReadSource(".github", "workflows", "release-artifact.yml");
 
-        Assert.Contains("<Version>2.0.0</Version>", app, StringComparison.Ordinal);
-        Assert.Contains("<AssemblyVersion>2.0.0.0</AssemblyVersion>", app, StringComparison.Ordinal);
-        Assert.Contains("<Version>2.0.0</Version>", setup, StringComparison.Ordinal);
-        Assert.Contains("GPTDeskTop Setup v2.0.0", setup, StringComparison.Ordinal);
-        Assert.Contains("GPTDeskTop v2.0.0", build, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.14</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<Version>$(GPTDeskTopVersion)</Version>", props, StringComparison.Ordinal);
+        Assert.Contains("<AssemblyVersion>$(GPTDeskTopVersion).0</AssemblyVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<FileVersion>$(GPTDeskTopVersion).0</FileVersion>", props, StringComparison.Ordinal);
+        Assert.DoesNotContain("<Version>2.0.0</Version>", app, StringComparison.Ordinal);
+        Assert.DoesNotContain("<Version>2.0.0</Version>", setup, StringComparison.Ordinal);
+        Assert.Contains("GPTDeskTop Setup v$(GPTDeskTopVersion)", setup, StringComparison.Ordinal);
+        Assert.Contains("GPTDeskTop v$(GPTDeskTopVersion)", build, StringComparison.Ordinal);
+        Assert.Contains("-getProperty:Version", releaseWorkflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("v2.0.0-build", releaseWorkflow, StringComparison.Ordinal);
     }
 }

@@ -99,10 +99,8 @@ jobs:
           $versionPath = 'Output/Setup/Version.txt'
           if (-not (Test-Path $versionPath)) { throw "Standalone setup version receipt is missing: $versionPath." }
           $version = Get-Content $versionPath -Raw
-          $projectPath = 'src/GPTDeskTop.Setup/GPTDeskTop.Setup.csproj'
-          [xml]$project = Get-Content $projectPath
-          $expectedVersion = [string]($project.Project.PropertyGroup.Version | Select-Object -First 1)
-          if ([string]::IsNullOrWhiteSpace($expectedVersion)) { throw "$projectPath does not define a Version." }
+          $expectedVersion = (dotnet msbuild 'src/GPTDeskTop/GPTDeskTop.csproj' -nologo -getProperty:Version).Trim()
+          if ([string]::IsNullOrWhiteSpace($expectedVersion)) { throw 'Could not resolve the canonical GPTDeskTop product version.' }
           $expectedReceipt = [regex]::Escape("GPTDeskTop Setup v$expectedVersion")
           if ($version -notmatch $expectedReceipt) { throw "Unexpected setup version receipt. Expected v$expectedVersion, got: $version" }
           Write-Host "Verified standalone setup output: $path"

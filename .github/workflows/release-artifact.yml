@@ -22,6 +22,15 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Resolve release version
+        id: release_version
+        shell: pwsh
+        run: |
+          $version = (dotnet msbuild 'src/GPTDeskTop/GPTDeskTop.csproj' -nologo -getProperty:Version).Trim()
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'Could not resolve GPTDeskTop product version.' }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Resolved GPTDeskTop release version: $version"
+
       - name: Restore
         run: dotnet restore GPTDeskTop.sln
 
@@ -121,11 +130,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "v2.0.0-build.${{ github.run_number }}"
-          $title = "GPTDeskTop v2.0.0 build ${{ github.run_number }}"
+          $version = '${{ steps.release_version.outputs.version }}'
+          $tag = "v$version-build.${{ github.run_number }}"
+          $title = "GPTDeskTop v$version build ${{ github.run_number }}"
           $notes = @"
           Automated verified Windows x64 release from `main`.
 
+          Version: $version
           Commit: ${{ github.sha }}
           Workflow run: ${{ github.run_id }}
 
@@ -150,7 +161,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "v2.0.0-build.${{ github.run_number }}"
+          $version = '${{ steps.release_version.outputs.version }}'
+          $tag = "v$version-build.${{ github.run_number }}"
           $assets = gh release view $tag --repo '${{ github.repository }}' --json assets --jq '.assets[].name'
           $required = @('GPTDeskTop-Setup.exe', 'GPTDeskTop-Windows-x64.zip', 'SHA256SUMS.txt')
           foreach ($name in $required) {
