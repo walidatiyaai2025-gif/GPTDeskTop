@@ -117,6 +117,23 @@ public sealed class OutboundDeliveryCoordinator
         using var flightScope = RuntimeFlightRecorder.BeginScope(monitorId, conversationKey);
         RuntimeFlightRecorder.Record("Delivery", "OperationRequested", reason: "global-serialized-logical-send");
 
+        // Only saved-monitor sends already executing under GlobalChatOperationGate participate
+        // in the full-turn fence. Development Messages has explicit multi-recipient semantics
+        // and remains governed by the physical-send FIFO without being deadlocked by this fence.
+        var governedChatTurn = GlobalChatOperationGate.Shared.ActiveMonitorId == monitorId;
+        if (governedChatTurn
+            && !GlobalChatTurnFence.Shared.CanAttemptSend(monitorId, out var turnWaitReason))
+        {
+            activity?.Invoke($"WAITING_FOR_GLOBAL_SLOT: {turnWaitReason}.");
+            RuntimeFlightRecorder.Record(
+                "ChatTurn",
+                "PhysicalSendYielded",
+                "waiting",
+                turnWaitReason,
+                monitorId);
+            throw new GlobalChatTurnYieldException($"WAITING_FOR_GLOBAL_SLOT: {turnWaitReason}.");
+        }
+
         // Every automated send path, including callers using distinct coordinator instances,
         // enters this one process-wide FIFO authority before it can reach a physical composer mutation.
         using var globalLease = await GlobalAuthority.AcquireAsync(monitorId, cancellationToken).ConfigureAwait(false);
@@ -200,6 +217,13 @@ public sealed class OutboundDeliveryCoordinator
         {
             if (physicalSendAttempted)
             {
+                if (governedChatTurn)
+                {
+                    GlobalChatTurnFence.Shared.Activate(
+                        monitorId,
+                        "governed physical send attempted; awaiting authoritative response");
+                }
+
                 lock (_queueSync) { _isCooldown = true; PublishQueueStatusLocked(); }
                 var cooldownStartedUtc = DateTimeOffset.UtcNow;
                 nextSendUtc = cooldownStartedUtc + _interSendGap;
@@ -255,6 +279,8 @@ public sealed class OutboundDeliveryCoordinator
 
     public void MarkCompleted(long monitorId)
     {
+        GlobalChatTurnFence.Shared.Complete(monitorId, "stable response observed");
+
         if (!_snapshots.TryGetValue(monitorId, out var state)
             || state.Phase is not (OutboundDeliveryPhase.Accepted or OutboundDeliveryPhase.ReconcileRequired))
             return;
