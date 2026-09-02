@@ -1037,11 +1037,19 @@ public sealed class ChromeDevToolsService
             if (!ComposerEvidenceTextEquals(composer.Text, expected))
                 return ImmediatePhysicalSubmitObservation.Ambiguous;
 
-            if (readiness.SendButtonPresent && readiness.SendButtonEnabled)
+            // Field evidence can leave the exact expected prompt visibly parked in an enabled
+            // composer while ChatGPT transiently changes/rehydrates the send button markup.
+            // Exact text + unchanged user-turn count + idle editor over repeated authoritative
+            // reads proves that the physical click was not accepted. Do not require the send
+            // button selector itself to remain stable before authorizing a bounded retry.
+            if (readiness.EditorPresent && readiness.EditorEnabled)
             {
                 stableStillReadyReads++;
-                if (stableStillReadyReads >= 3)
+                if (stableStillReadyReads >= 6)
+                {
+                    VerifiedSendDiagnostics.Record("RetryAuthorized", "exact-composer-still-present-after-click", 0);
                     return ImmediatePhysicalSubmitObservation.ClickNotAccepted;
+                }
             }
             else
             {
@@ -1790,15 +1798,13 @@ public sealed class ChromeDevToolsService
                     && !composerReadiness.HasRenderedError
                     && composerReadiness.EditorPresent
                     && composerReadiness.EditorEnabled
-                    && composerReadiness.SendButtonPresent
-                    && composerReadiness.SendButtonEnabled
                     && composer.Present
                     && ComposerEvidenceTextEquals(composer.Text, expected))
                 {
                     stableReadyComposerReads++;
-                    if (stableReadyComposerReads >= 3)
+                    if (stableReadyComposerReads >= 6)
                     {
-                        VerifiedSendDiagnostics.Record("RetryAuthorized", "stable-composer-proves-submit-not-accepted", 0);
+                        VerifiedSendDiagnostics.Record("RetryAuthorized", "stable-exact-composer-proves-submit-not-accepted", 0);
                         return UnacknowledgedSubmitReconciliationResult.RetryAuthorized;
                     }
                 }
