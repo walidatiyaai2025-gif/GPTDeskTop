@@ -1,0 +1,37 @@
+name: Finalize CDP startup hotfix
+
+on:
+  push:
+    branches:
+      - fix/cdp-startup-recovery-v2.0.16
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/cdp-startup-recovery-v2.0.16
+          fetch-depth: 0
+      - name: Use canonical Chrome transport classifier
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'src/GPTDeskTop/Services/ChatGptMonitorService.cs'
+          $source = Get-Content $path -Raw
+          $old = '    private static bool IsTransientChromeException(Exception ex) => ex is WebSocketException || ex is TimeoutException || ex is TaskCanceledException || ex is IOException || ex.Message.Contains("Chrome closed the DevTools connection", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("Promise was collected", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("connection was forcibly closed", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("unable to connect", StringComparison.OrdinalIgnoreCase);'
+          $new = '    private static bool IsTransientChromeException(Exception ex) => ChromeTransportFailureClassifier.IsTransient(ex);'
+          if (-not $source.Contains($old)) { throw 'Expected legacy monitor transport classifier was not found.' }
+          $source = $source.Replace($old, $new)
+          Set-Content -Path $path -Value $source -NoNewline -Encoding utf8
+
+          git rm '.github/workflows/finalize-cdp-startup-hotfix.yml'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add $path
+          git commit -m 'Use canonical Chrome transport failure classifier'
+          git push origin HEAD:fix/cdp-startup-recovery-v2.0.16
