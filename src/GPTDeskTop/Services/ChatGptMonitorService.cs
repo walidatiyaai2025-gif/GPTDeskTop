@@ -1353,6 +1353,12 @@ public sealed class ChatGptMonitorService
                 return SendWhenReadyOutcome.Accepted;
             }
 
+            if (await _chrome.IsComposerDefinitelyStillAwaitingSubmitAsync(tab, message, cancellationToken))
+            {
+                Activity?.Invoke(monitorId, "Composer still contains the exact pending message with Send enabled. No delivery evidence exists; safe retry remains authorized.");
+                return SendWhenReadyOutcome.DeferredBeforePhysicalSubmit;
+            }
+
             Activity?.Invoke(monitorId, "Composer delivery was not confirmed. Exactly-once guard suppressed blind resend; monitoring will reconcile from observed ChatGPT state.");
             return SendWhenReadyOutcome.ReconcileRequired;
         }

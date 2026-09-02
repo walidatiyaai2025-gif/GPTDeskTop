@@ -1071,13 +1071,13 @@ public sealed class ChromeDevToolsService
           };
           const stop = document.querySelector('button[data-testid="stop-button"]');
           if (visible(stop)) return { ready: false, x: 0, y: 0 };
-          const sendButton = document.querySelector('button[data-testid="send-button"]') ||
-            [...document.querySelectorAll('button')].find(button => {
-              if (!visible(button)) return false;
-              const label = button.getAttribute('aria-label') || '';
-              return /^(send|send message|إرسال|إرسال الرسالة)$/i.test(label.trim());
-            });
-          if (!sendButton || sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true' || !visible(sendButton))
+          const sendButton = [...document.querySelectorAll('button')].find(button => {
+            if (!visible(button) || button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
+            if (button.getAttribute('data-testid') === 'send-button') return true;
+            const label = button.getAttribute('aria-label') || '';
+            return /^(send|send message|إرسال|إرسال الرسالة)$/i.test(label.trim());
+          });
+          if (!sendButton)
             return { ready: false, x: 0, y: 0 };
           const rect = sendButton.getBoundingClientRect();
           return { ready: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -1095,6 +1095,108 @@ public sealed class ChromeDevToolsService
         await SendCommandAsync(tab, "Input.dispatchMouseEvent", new { type = "mouseReleased", x, y, button = "left", buttons = 0, clickCount = 1 }, cancellationToken);
         RuntimeFlightRecorder.Record("Composer", "NativeSendClickDispatched", "submitted", "cdp-input", tabId: tab.Id, conversationRef: tab.Url);
         return true;
+    }
+
+    private async Task<bool> TryDispatchNativeEnterSubmitAsync(
+        ChromeTab tab,
+        string expected,
+        CancellationToken cancellationToken)
+    {
+        var readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+        if (readiness.IsGenerating
+            || readiness.HasRenderedError
+            || !readiness.EditorPresent
+            || !readiness.EditorEnabled
+            || !readiness.SendButtonPresent
+            || !readiness.SendButtonEnabled)
+            return false;
+
+        if (!await ComposerEditorMatchesExpectedAsync(tab, expected, cancellationToken))
+            return false;
+
+        const string focusExpression = """
+        (() => {
+          const visible = element => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+          };
+          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
+          if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
+          editor.focus();
+          return document.activeElement === editor || editor.contains(document.activeElement);
+        })()
+        """;
+        var focused = await EvaluateAsync(tab, focusExpression, cancellationToken, false);
+        if (focused.ValueKind != JsonValueKind.True)
+            return false;
+
+        await SendCommandAsync(tab, "Input.dispatchKeyEvent", new
+        {
+            type = "rawKeyDown",
+            key = "Enter",
+            code = "Enter",
+            windowsVirtualKeyCode = 13,
+            nativeVirtualKeyCode = 13,
+            modifiers = 0
+        }, cancellationToken);
+        await SendCommandAsync(tab, "Input.dispatchKeyEvent", new
+        {
+            type = "keyUp",
+            key = "Enter",
+            code = "Enter",
+            windowsVirtualKeyCode = 13,
+            nativeVirtualKeyCode = 13,
+            modifiers = 0
+        }, cancellationToken);
+        RuntimeFlightRecorder.Record("Composer", "NativeEnterSubmitDispatched", "submitted", "cdp-key-input", tabId: tab.Id, conversationRef: tab.Url);
+        return true;
+    }
+
+    public async Task<bool> IsComposerDefinitelyStillAwaitingSubmitAsync(
+        ChromeTab tab,
+        string expected,
+        CancellationToken cancellationToken = default)
+    {
+        const int confirmationsRequired = 3;
+        var confirmations = 0;
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var readiness = await ReadComposerReadinessAsync(tab, cancellationToken);
+                var exactComposer = await ComposerEditorMatchesExpectedAsync(tab, expected, cancellationToken);
+                if (!readiness.IsGenerating
+                    && !readiness.HasRenderedError
+                    && readiness.EditorPresent
+                    && readiness.EditorEnabled
+                    && readiness.SendButtonPresent
+                    && readiness.SendButtonEnabled
+                    && exactComposer)
+                {
+                    confirmations++;
+                    if (confirmations >= confirmationsRequired)
+                    {
+                        VerifiedSendDiagnostics.Record("RetryAuthorized", "confirmed-unsent-composer", 0);
+                        return true;
+                    }
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+            {
+                return false;
+            }
+
+            await Task.Delay(200, cancellationToken);
+        }
+
+        return false;
     }
 
     private async Task<bool> TryNativeFallbackAfterRejectedDomClickAsync(
@@ -1616,6 +1718,53 @@ public sealed class ChromeDevToolsService
             {
                 unacceptedClickAttempts++;
                 VerifiedSendDiagnostics.Record("RetryAuthorized", "physical-input-not-accepted", submitAttempts);
+
+                // Field evidence can show a fully populated, enabled composer after CDP mouse input.
+                // That is authoritative non-delivery evidence. Before another mouse retry, use one
+                // trusted native Enter path while the exact expected text is still present. This is
+                // safe because ClickNotAccepted proves no user turn/generation was created.
+                if (unacceptedClickAttempts == 1
+                    && await TryDispatchNativeEnterSubmitAsync(tab, expected, cancellationToken))
+                {
+                    ImmediatePhysicalSubmitObservation enterObservation;
+                    try
+                    {
+                        enterObservation = await ObserveImmediatePhysicalSubmitAsync(
+                            tab,
+                            expected,
+                            before.Count,
+                            cancellationToken);
+                    }
+                    catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+                    {
+                        submitAttempts++;
+                        unacceptedClickAttempts = 0;
+                        unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
+                        _sessionPool.Invalidate(tab.Id);
+                        VerifiedSendDiagnostics.Record("AwaitingReceipt", "post-enter-observation-unreadable", submitAttempts);
+                        await Task.Delay(250, cancellationToken);
+                        continue;
+                    }
+
+                    if (enterObservation == ImmediatePhysicalSubmitObservation.ReceiptConfirmed)
+                    {
+                        submitAttempts++;
+                        VerifiedSendDiagnostics.Record("ReceiptConfirmed", "native-enter-submit-confirmed", submitAttempts);
+                        return true;
+                    }
+
+                    if (enterObservation == ImmediatePhysicalSubmitObservation.Ambiguous)
+                    {
+                        submitAttempts++;
+                        unacceptedClickAttempts = 0;
+                        unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
+                        VerifiedSendDiagnostics.Record("AwaitingReceipt", "native-enter-submit-ambiguous", submitAttempts);
+                        continue;
+                    }
+
+                    VerifiedSendDiagnostics.Record("RetryAuthorized", "native-enter-not-accepted", submitAttempts);
+                }
+
                 if (unacceptedClickAttempts >= maxUnacceptedClickAttempts)
                 {
                     VerifiedSendDiagnostics.Record("FailedClosed", "physical-input-retry-limit-reached", submitAttempts);
@@ -1623,8 +1772,8 @@ public sealed class ChromeDevToolsService
                 }
 
                 // No user turn, no generation, and the exact expected text is still sitting in an
-                // enabled composer. The previous DOM click did not become a physical submit, so one
-                // bounded click retry is safe and does not consume the exactly-once submit budget.
+                // enabled composer. The previous physical input did not become a submit, so a bounded
+                // retry is safe and does not consume the exactly-once submit budget.
                 await Task.Delay(350, cancellationToken);
                 continue;
             }
