@@ -1,4 +1,5 @@
 using GPTDeskTop.Models;
+using GPTDeskTop.Runtime;
 
 namespace GPTDeskTop.Services;
 
@@ -95,7 +96,14 @@ public sealed class GenerationRecoveryInterlock
         lock (_sync)
         {
             if (!_leases.Remove(monitorId, out removed))
-                return false;
+            {
+                // A verified physical send can activate the global turn fence before the next
+                // authoritative generating observation exists. Stopping that monitor must still
+                // release the process-wide turn instead of leaving every other monitor parked.
+                return GlobalChatTurnFence.Shared.Complete(
+                    monitorId,
+                    $"monitor worker ended before generation lease materialized: {reason}");
+            }
         }
 
         RuntimeFlightRecorder.Record(
@@ -106,6 +114,9 @@ public sealed class GenerationRecoveryInterlock
             monitorId,
             removed.TargetId,
             removed.ConversationIdentity);
+        GlobalChatTurnFence.Shared.Complete(
+            monitorId,
+            $"monitor worker released generation ownership: {reason}");
         return true;
     }
 
@@ -131,7 +142,12 @@ public sealed class GenerationRecoveryInterlock
             }
         }
         foreach (var monitorId in released)
+        {
             RuntimeFlightRecorder.Record("Monitor", "GenerationLeaseReleased", "target-destroyed", "target-positively-confirmed-missing", monitorId, tab.Id, tab.Url);
+            GlobalChatTurnFence.Shared.Complete(
+                monitorId,
+                "generation target positively confirmed destroyed");
+        }
         return released.Count > 0;
     }
 
