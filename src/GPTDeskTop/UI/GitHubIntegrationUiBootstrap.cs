@@ -6,8 +6,8 @@ using GPTDeskTop.Services;
 namespace GPTDeskTop.UI;
 
 /// <summary>
-/// Exposes GitHub settings as a dedicated stable dialog. The control is never injected into an
-/// already-visible SettingsForm; callers such as Projects Hub open the same dedicated dialog.
+/// Routes GitHub/Git settings into the premium single-content workspace. The underlying
+/// GitHubIntegrationControl and encrypted credential store remain the only configuration path.
 /// </summary>
 internal static class GitHubIntegrationUiBootstrap
 {
@@ -45,9 +45,9 @@ internal static class GitHubIntegrationUiBootstrap
 
         var gitSettings = new ToolStripMenuItem("Git Settings")
         {
-            ToolTipText = "Open GitHub integration settings in a dedicated stable window."
+            ToolTipText = "Open GitHub integration settings in the premium workspace."
         };
-        gitSettings.Click += async (_, _) => await ShowGitSettingsAsync(main, database);
+        gitSettings.Click += async (_, _) => await ShowGitSettingsAsync(main);
 
         var settingsIndex = applicationMenu.DropDownItems.Cast<ToolStripItem>()
             .Select((item, index) => new { item, index })
@@ -73,13 +73,23 @@ internal static class GitHubIntegrationUiBootstrap
             return;
         }
 
-        var database = ResolveDatabase(main);
-        if (database is null)
+        if (ResolveDatabase(main) is null)
         {
             MessageBox.Show(owner, "GitHub settings storage is not available.", "Git Settings", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
-        await ShowGitSettingsAsync(main, database);
+
+        if (!PremiumRuntimeShellExperience.NavigateTo(main, "GitHub / Git Settings"))
+            MessageBox.Show(owner, "The premium GitHub / Git Settings workspace is not available.", "Git Settings", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        await Task.CompletedTask;
+    }
+
+    internal static Control CreateEmbeddedGitSettingsSurface(MainForm main)
+    {
+        ArgumentNullException.ThrowIfNull(main);
+        var database = ResolveDatabase(main)
+            ?? throw new InvalidOperationException("GitHub settings storage is not available.");
+        return new EmbeddedGitSettingsSurface(database);
     }
 
     private static LocalDatabase? ResolveDatabase(MainForm main)
@@ -110,57 +120,6 @@ internal static class GitHubIntegrationUiBootstrap
         return null;
     }
 
-    private static async Task ShowGitSettingsAsync(MainForm owner, LocalDatabase database)
-    {
-        if (owner.IsDisposed || owner.Disposing) return;
-        using var dialog = BuildGitSettingsDialog(database);
-        var control = dialog.Controls.Cast<Control>().SelectMany(DescendantsAndSelf).OfType<GitHubIntegrationControl>().First();
-        dialog.Shown += async (_, _) =>
-        {
-            try { await control.LoadAsync(); }
-            catch (Exception ex)
-            {
-                await ExceptionLogService.LogAsync(ex, "GitHubIntegrationUiBootstrap.LoadDedicatedDialog");
-                if (!dialog.IsDisposed)
-                    MessageBox.Show(dialog, $"GitHub settings could not be loaded.\n\n{ex.Message}", "Git Settings", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-        };
-        dialog.ShowDialog(owner);
-        await Task.CompletedTask;
-    }
-
-    private static Form BuildGitSettingsDialog(LocalDatabase database)
-    {
-        var dialog = new Form
-        {
-            Text = "GPTDeskTop — Git Settings",
-            StartPosition = FormStartPosition.CenterParent,
-            FormBorderStyle = FormBorderStyle.Sizable,
-            MinimizeBox = false,
-            MaximizeBox = true,
-            ShowInTaskbar = false,
-            AutoScaleMode = AutoScaleMode.Dpi,
-            MinimumSize = new Size(860, 620),
-            ClientSize = new Size(980, 720),
-            BackColor = FluentTheme.Background
-        };
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(16), BackColor = FluentTheme.Background };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = FluentTheme.Background };
-        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-        header.Controls.Add(new Label { Text = "Git Settings", Dock = DockStyle.Fill, Font = new Font("Segoe UI Variable Display", 16F, FontStyle.Bold), ForeColor = FluentTheme.Text, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
-        header.Controls.Add(FluentTheme.CreateMutedLabel("Configure GitHub repositories, branches and integration behavior independently from Application Settings."), 0, 1);
-        var host = new Panel { Dock = DockStyle.Fill, BackColor = FluentTheme.Surface, BorderStyle = BorderStyle.FixedSingle, Padding = new Padding(12) };
-        host.Controls.Add(new GitHubIntegrationControl(database) { Dock = DockStyle.Fill });
-        root.Controls.Add(header, 0, 0);
-        root.Controls.Add(host, 0, 1);
-        dialog.Controls.Add(root);
-        FluentTheme.Apply(dialog);
-        return dialog;
-    }
-
     private static IEnumerable<Control> Descendants(Control root)
     {
         foreach (Control child in root.Controls)
@@ -170,11 +129,107 @@ internal static class GitHubIntegrationUiBootstrap
         }
     }
 
-    private static IEnumerable<Control> DescendantsAndSelf(Control root)
-    {
-        yield return root;
-        foreach (var descendant in Descendants(root)) yield return descendant;
-    }
-
     private sealed class InstallationState { internal bool Installed { get; set; } }
+
+    private sealed class EmbeddedGitSettingsSurface : UserControl
+    {
+        private readonly GitHubIntegrationControl _control;
+        private readonly Label _loadState = new()
+        {
+            Text = "Loading saved GitHub configuration…",
+            Dock = DockStyle.Fill,
+            ForeColor = FluentTheme.Muted,
+            TextAlign = ContentAlignment.MiddleRight,
+            AutoEllipsis = true
+        };
+        private bool _loaded;
+        private bool _loading;
+
+        internal EmbeddedGitSettingsSurface(LocalDatabase database)
+        {
+            Name = "PremiumGitSettingsWorkspace";
+            AccessibleName = "GitHub and Git Settings workspace";
+            AccessibleDescription = "Repository, branch and encrypted GitHub credential settings on the single premium content surface.";
+            Dock = DockStyle.Fill;
+            AutoScaleMode = AutoScaleMode.Dpi;
+            BackColor = FluentTheme.Background;
+            Padding = new Padding(14);
+
+            _control = new GitHubIntegrationControl(database) { Dock = DockStyle.Fill };
+            BuildUi();
+            VisibleChanged += async (_, _) =>
+            {
+                if (Visible) await EnsureLoadedAsync();
+            };
+        }
+
+        private void BuildUi()
+        {
+            var root = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 2,
+                BackColor = FluentTheme.Background,
+                Padding = Padding.Empty,
+                Margin = Padding.Empty
+            };
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, BackColor = FluentTheme.Background, Margin = Padding.Empty };
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
+            header.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            header.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            header.Controls.Add(new Label
+            {
+                Text = "GitHub / Git Settings",
+                Dock = DockStyle.Fill,
+                Font = new Font("Segoe UI Variable Display", 17F, FontStyle.Bold),
+                ForeColor = FluentTheme.Text,
+                TextAlign = ContentAlignment.MiddleLeft
+            }, 0, 0);
+            header.Controls.Add(_loadState, 1, 0);
+            var subtitle = FluentTheme.CreateMutedLabel("Configure real repository scope, branch context and protected credentials without leaving the main product surface.");
+            header.Controls.Add(subtitle, 0, 1);
+            header.SetColumnSpan(subtitle, 2);
+
+            var host = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = FluentTheme.Surface,
+                BorderStyle = BorderStyle.FixedSingle,
+                Padding = new Padding(12),
+                Margin = new Padding(0, 4, 0, 0)
+            };
+            host.Controls.Add(_control);
+            root.Controls.Add(header, 0, 0);
+            root.Controls.Add(host, 0, 1);
+            Controls.Add(root);
+        }
+
+        private async Task EnsureLoadedAsync()
+        {
+            if (_loaded || _loading || IsDisposed || Disposing) return;
+            _loading = true;
+            try
+            {
+                await _control.LoadAsync();
+                _loaded = true;
+                _loadState.Text = $"Saved configuration loaded · {DateTime.Now:t}";
+                _loadState.ForeColor = FluentTheme.Success;
+            }
+            catch (Exception ex)
+            {
+                await ExceptionLogService.LogAsync(ex, "GitHubIntegrationUiBootstrap.LoadEmbeddedWorkspace");
+                _loadState.Text = "Saved configuration could not be loaded.";
+                _loadState.ForeColor = FluentTheme.Danger;
+            }
+            finally
+            {
+                _loading = false;
+            }
+        }
+    }
 }

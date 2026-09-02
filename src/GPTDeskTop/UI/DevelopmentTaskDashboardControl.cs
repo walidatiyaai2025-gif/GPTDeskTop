@@ -45,6 +45,8 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
 
     public event EventHandler? ExpandedChanged;
 
+    internal DevelopmentTaskRuntimeBinding RuntimeBinding => _binding;
+
     public string FooterSummary
     {
         get
@@ -179,6 +181,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
 
         FluentTheme.StyleButton(_start, primary: true);
         FluentTheme.StyleButton(_stop, danger: true);
+        FluentTheme.StyleButton(_messagesButton);
         FluentTheme.StyleButton(_settingsButton);
         FluentTheme.StyleButton(_toggle);
     }
@@ -189,8 +192,8 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         _pause.Click += async (_, _) => await RunAsync(() => _binding.PauseAsync());
         _resume.Click += async (_, _) => await RunAsync(() => _binding.ResumeAsync());
         _stop.Click += async (_, _) => await RunAsync(() => _binding.StopAsync());
-        _messagesButton.Click += (_, _) => OpenMessageCatalog();
-        _settingsButton.Click += (_, _) => OpenScheduleSettings();
+        _messagesButton.Click += (_, _) => NavigateToDevelopmentMessages();
+        _settingsButton.Click += (_, _) => NavigateToDevelopmentMessages();
         _toggle.Click += (_, _) => ToggleExpanded();
         VisibleChanged += (_, _) => Render();
         _binding.Engine.StateChanged += OnStateChanged;
@@ -210,32 +213,15 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         Render();
     }
 
-    private void OpenMessageCatalog()
+    private void NavigateToDevelopmentMessages()
     {
-        using var dialog = new Form
-        {
-            Text = "Development Message Catalog",
-            StartPosition = FormStartPosition.CenterParent,
-            MinimumSize = new Size(900, 600),
-            Size = new Size(1100, 720),
-            AutoScaleMode = AutoScaleMode.Dpi
-        };
-        dialog.Controls.Add(new DevelopmentMessageCatalogControl { Dock = DockStyle.Fill });
-        dialog.ShowDialog(FindForm());
-    }
+        // The premium Development Messages destination hosts the canonical
+        // DevelopmentTaskScheduleSettingsControl alongside the message catalog and receipts.
+        var main = FindForm() as MainForm;
+        if (main is not null && PremiumRuntimeShellExperience.NavigateTo(main, "Development Messages"))
+            return;
 
-    private void OpenScheduleSettings()
-    {
-        using var dialog = new Form
-        {
-            Text = "Development Schedule",
-            StartPosition = FormStartPosition.CenterParent,
-            MinimumSize = new Size(560, 260),
-            Size = new Size(620, 300),
-            AutoScaleMode = AutoScaleMode.Dpi
-        };
-        dialog.Controls.Add(new DevelopmentTaskScheduleSettingsControl { Dock = DockStyle.Fill });
-        dialog.ShowDialog(FindForm());
+        MessageBox.Show(FindForm(), "The premium Development Messages workspace is not available yet.", "Development Messages", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void OnStateChanged(object? sender, DevelopmentTaskState e) => Ui(Render);
@@ -275,7 +261,6 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
         if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
         _countdown.Text = remaining > TimeSpan.Zero ? remaining.ToString(@"mm\:ss") : "—";
 
-        // Keep the established lifecycle action contract unchanged.
         _start.Enabled = state.Status is DevelopmentTaskEngineStatus.Stopped or DevelopmentTaskEngineStatus.Paused;
         _pause.Enabled = state.Status == DevelopmentTaskEngineStatus.Working;
         _resume.Enabled = state.Status is DevelopmentTaskEngineStatus.Paused or DevelopmentTaskEngineStatus.Stopped;
@@ -306,6 +291,7 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
             DevelopmentTaskEngineStatus.Working => (FluentTheme.Success, FluentTheme.SuccessSubtle),
             DevelopmentTaskEngineStatus.Cooling => (FluentTheme.Warning, FluentTheme.WarningSubtle),
             DevelopmentTaskEngineStatus.Paused => (FluentTheme.Warning, FluentTheme.WarningSubtle),
+            DevelopmentTaskEngineStatus.Faulted => (FluentTheme.Danger, FluentTheme.DangerSubtle),
             DevelopmentTaskEngineStatus.Completed => (FluentTheme.Accent, FluentTheme.AccentSubtle),
             _ => (FluentTheme.Muted, FluentTheme.SurfaceAlt)
         };

@@ -7,6 +7,7 @@ on:
       - 'data/development-task-messages.json'
       - 'src/GPTDeskTop/UI/DevelopmentMessageCatalogControl.cs'
       - 'src/GPTDeskTop/UI/DevelopmentTaskDashboardControl.cs'
+      - 'src/GPTDeskTop/UI/DevelopmentMessagesWorkspaceControl.cs'
       - 'tests/GPTDeskTop.RuntimeTests/DevelopmentMessageCatalogTests.cs'
       - '.github/workflows/development-message-catalog.yml'
   pull_request:
@@ -15,6 +16,7 @@ on:
       - 'data/development-task-messages.json'
       - 'src/GPTDeskTop/UI/DevelopmentMessageCatalogControl.cs'
       - 'src/GPTDeskTop/UI/DevelopmentTaskDashboardControl.cs'
+      - 'src/GPTDeskTop/UI/DevelopmentMessagesWorkspaceControl.cs'
       - 'tests/GPTDeskTop.RuntimeTests/DevelopmentMessageCatalogTests.cs'
       - '.github/workflows/development-message-catalog.yml'
   workflow_dispatch:
@@ -39,13 +41,16 @@ jobs:
         run: |
           $control = Get-Content src/GPTDeskTop/UI/DevelopmentMessageCatalogControl.cs -Raw
           $dashboard = Get-Content src/GPTDeskTop/UI/DevelopmentTaskDashboardControl.cs -Raw
+          $workspace = Get-Content src/GPTDeskTop/UI/DevelopmentMessagesWorkspaceControl.cs -Raw
           $tests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentMessageCatalogTests.cs -Raw
           foreach ($name in @('Add','Update','Remove','Move Up','Move Down','Save')) {
             if ($control -notmatch [regex]::Escape($name)) { throw "Message editor control '$name' is missing." }
           }
           if ($control -notmatch 'File.Move\(temp, _catalogPath, true\)') { throw 'Atomic catalog save is missing.' }
           if ($control -notmatch 'At least one development message must remain') { throw 'Minimum-message protection is missing.' }
-          if ($dashboard -notmatch 'DevelopmentMessageCatalogControl') { throw 'Dashboard is not connected to message editor.' }
+          if ($dashboard -notmatch 'NavigateTo\(main, "Development Messages"\)') { throw 'Dashboard is not connected to the premium Development Messages workspace.' }
+          if ($workspace -notmatch 'DevelopmentMessageCatalogControl') { throw 'Premium Development Messages workspace does not host the message editor.' }
+          if ($workspace -notmatch 'DevelopmentTaskScheduleSettingsControl') { throw 'Premium Development Messages workspace does not host schedule settings.' }
           if ($tests -notmatch 'CatalogSupportsMoreThanTenMessages') { throw 'Extensibility test is missing.' }
           if ($tests -notmatch 'CatalogRejectsEmptyMessages') { throw 'Empty-message test is missing.' }
           if ($tests -notmatch 'CatalogJsonRoundTripsMessageOrder') { throw 'Order test is missing.' }

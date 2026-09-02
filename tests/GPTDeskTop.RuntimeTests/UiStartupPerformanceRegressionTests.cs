@@ -30,15 +30,22 @@ public sealed class UiStartupPerformanceRegressionTests
     [Fact]
     public void ProjectsAndGitHubHeavyUiRemainLazyUntilOperatorInvocation()
     {
-        var projects = ReadSource("src", "GPTDeskTop", "UI", "ProjectMonitorUiBootstrap.cs");
+        var program = ReadSource("src", "GPTDeskTop", "Program.cs");
+        var shell = ReadSource("src", "GPTDeskTop", "UI", "PremiumRuntimeShellExperience.cs");
 
-        var showHubIndex = projects.IndexOf("private static void ShowProjectsHub", StringComparison.Ordinal);
-        var dashboardIndex = projects.IndexOf("new ProjectMonitorDashboardForm", StringComparison.Ordinal);
-        Assert.True(showHubIndex >= 0 && dashboardIndex > showHubIndex);
+        Assert.DoesNotContain("new ProjectMonitorDashboardControl", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new GitHubIntegrationControl", program, StringComparison.Ordinal);
 
-        var showGitIndex = projects.IndexOf("private static void ShowGitSettings", StringComparison.Ordinal);
-        var githubControlIndex = projects.IndexOf("new GitHubIntegrationControl(database)", StringComparison.Ordinal);
-        Assert.True(showGitIndex >= 0 && githubControlIndex > showGitIndex);
+        var projectsCaseIndex = shell.IndexOf("case ProjectsDestination:", StringComparison.Ordinal);
+        var projectsFactoryIndex = shell.IndexOf("ProjectMonitorUiBootstrap.CreateEmbeddedProjectsSurface(main)", projectsCaseIndex, StringComparison.Ordinal);
+        Assert.True(projectsCaseIndex >= 0 && projectsFactoryIndex > projectsCaseIndex);
+
+        var gitCaseIndex = shell.IndexOf("case GitSettingsDestination:", StringComparison.Ordinal);
+        var gitFactoryIndex = shell.IndexOf("GitHubIntegrationUiBootstrap.CreateEmbeddedGitSettingsSurface(main)", gitCaseIndex, StringComparison.Ordinal);
+        Assert.True(gitCaseIndex >= 0 && gitFactoryIndex > gitCaseIndex);
+
+        Assert.Contains("GetOrCreate(registration, ProjectsDestination", shell, StringComparison.Ordinal);
+        Assert.Contains("GetOrCreate(registration, GitSettingsDestination", shell, StringComparison.Ordinal);
     }
 
     [Fact]
