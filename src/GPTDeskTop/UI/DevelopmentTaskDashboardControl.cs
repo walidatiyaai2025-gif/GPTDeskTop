@@ -215,6 +215,8 @@ public sealed class DevelopmentTaskDashboardControl : UserControl
 
     private void NavigateToDevelopmentMessages()
     {
+        // The premium Development Messages destination hosts the canonical
+        // DevelopmentTaskScheduleSettingsControl alongside the message catalog and receipts.
         var main = FindForm() as MainForm;
         if (main is not null && PremiumRuntimeShellExperience.NavigateTo(main, "Development Messages"))
             return;
