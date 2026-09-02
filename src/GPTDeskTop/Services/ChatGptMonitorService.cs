@@ -20,6 +20,7 @@ public sealed class ChatGptMonitorService
 
     private static readonly TimeSpan RuntimeSettingsRefreshInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan MinimumStableSendDwell = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan MonitorChatStateReadTimeout = TimeSpan.FromSeconds(12);
     private readonly ChromeDevToolsService _chrome;
     private readonly LocalDatabase _database;
     private readonly MonitoringConfig _config;
@@ -443,7 +444,7 @@ public sealed class ChatGptMonitorService
                     }
 
                     using var pollFlightScope = RuntimeFlightRecorder.BeginScope(monitor.Id, tab.Id, tab.Url);
-                    var state = await _chrome.GetChatStateAsync(tab, cancellationToken);
+                    var state = await GetChatStateWithRetryAsync(monitor.Id, tab, cancellationToken);
                     GenerationRecoveryInterlock.Shared.Observe(monitor.Id, tab, state.IsGenerating);
                     var runtimeDecision = ChatGptRuntimeStateEngine.Classify(ToRuntimeEvidence(state));
                     SetRuntimeDecision(monitor.Id, runtimeDecision);
@@ -1387,10 +1388,22 @@ public sealed class ChatGptMonitorService
 
     private async Task<ChatPageState> GetChatStateWithRetryAsync(long monitorId, ChromeTab tab, CancellationToken cancellationToken)
     {
+        var recoveredTransport = false;
         for (var attempt = 1; ; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            try { return await _chrome.GetChatStateAsync(tab, cancellationToken); }
+            try
+            {
+                var state = await ReadChatStateBoundedAsync(tab, cancellationToken);
+                if (recoveredTransport)
+                {
+                    RuntimeFlightRecorder.Record(
+                        "Monitor", "TransportRecoveryResume", "resumed", "bounded-authoritative-state-read",
+                        monitorId, tab.Id, tab.Url);
+                    Activity?.Invoke(monitorId, "Chrome/CDP recovery read verified; monitor polling resumed.");
+                }
+                return state;
+            }
             catch (Exception ex) when (IsTransientChromeException(ex))
             {
                 if (attempt <= 3 || attempt % 12 == 0)
@@ -1402,6 +1415,7 @@ public sealed class ChatGptMonitorService
                     stableReadsRequired: 3);
                 if (recovered)
                 {
+                    recoveredTransport = true;
                     Activity?.Invoke(monitorId, "Chrome/CDP recovery complete: same conversation target is stable.");
                     attempt = 0;
                     await Task.Delay(150, cancellationToken);
@@ -1410,6 +1424,20 @@ public sealed class ChatGptMonitorService
 
                 await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(5000, 500 * attempt)), cancellationToken);
             }
+        }
+    }
+
+    private async Task<ChatPageState> ReadChatStateBoundedAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
+        using var readCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        readCancellation.CancelAfter(MonitorChatStateReadTimeout);
+        try
+        {
+            return await _chrome.GetChatStateAsync(tab, readCancellation.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && readCancellation.IsCancellationRequested)
+        {
+            throw new TimeoutException($"ChatGPT state read exceeded the {MonitorChatStateReadTimeout.TotalSeconds:0}-second monitor recovery deadline.");
         }
     }
 
