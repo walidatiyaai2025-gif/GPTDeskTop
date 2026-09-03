@@ -1,4 +1,5 @@
 using System.Reflection;
+using GPTDeskTop.Models;
 using GPTDeskTop.Services;
 
 namespace GPTDeskTop.UI;
