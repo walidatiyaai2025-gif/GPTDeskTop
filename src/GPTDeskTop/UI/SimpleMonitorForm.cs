@@ -44,7 +44,7 @@ public sealed class SimpleMonitorForm : Form
     };
     private readonly Button _addMessageButton = new() { Text = "Add", AutoSize = true };
     private readonly Button _updateMessageButton = new() { Text = "Update", AutoSize = true };
-    private readonly Button _removeMessageButton = new() { Text = "Remove", AutoSize = true };
+    private readonly Button _removeMessageButton = new() { Text = "Delete Selected", AutoSize = true };
     private readonly Button _moveUpButton = new() { Text = "Move Up", AutoSize = true };
     private readonly Button _moveDownButton = new() { Text = "Move Down", AutoSize = true };
 
@@ -296,8 +296,8 @@ public sealed class SimpleMonitorForm : Form
 
         _messageSplit.Dock = DockStyle.Fill;
         _messageSplit.Orientation = Orientation.Vertical;
-        _messageSplit.Panel1MinSize = 260;
-        _messageSplit.Panel2MinSize = 300;
+        _messageSplit.Panel1MinSize = 0;
+        _messageSplit.Panel2MinSize = 0;
 
         var left = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -397,22 +397,65 @@ public sealed class SimpleMonitorForm : Form
 
     private void ApplyResponsiveLayout()
     {
-        if (IsDisposed) return;
+        if (IsDisposed || Disposing) return;
+
         var compact = ClientSize.Width < 1080;
         _root.Padding = compact ? new Padding(8) : new Padding(14);
-        _messageSplit.Orientation = compact ? Orientation.Horizontal : Orientation.Vertical;
-        if (_messageSplit.Width > 0 && _messageSplit.Height > 0)
+        var targetOrientation = compact ? Orientation.Horizontal : Orientation.Vertical;
+
+        try
         {
-            try
+            // Orientation changes validate SplitterDistance against the new axis immediately.
+            // Temporarily remove panel minimums and reset the distance before changing axis so
+            // small windows / high DPI can never violate Panel1MinSize/Panel2MinSize constraints.
+            _messageSplit.Panel1MinSize = 0;
+            _messageSplit.Panel2MinSize = 0;
+            if (_messageSplit.SplitterDistance != 0)
+                _messageSplit.SplitterDistance = 0;
+            if (_messageSplit.Orientation != targetOrientation)
+                _messageSplit.Orientation = targetOrientation;
+
+            var total = targetOrientation == Orientation.Vertical
+                ? _messageSplit.ClientSize.Width
+                : _messageSplit.ClientSize.Height;
+            var available = total - _messageSplit.SplitterWidth;
+            if (available <= 2)
             {
-                _messageSplit.SplitterDistance = compact
-                    ? Math.Max(_messageSplit.Panel1MinSize, _messageSplit.Height / 2)
-                    : Math.Max(_messageSplit.Panel1MinSize, (int)(_messageSplit.Width * 0.42));
+                _planSummaryLabel.AutoEllipsis = true;
+                return;
             }
-            catch (InvalidOperationException) { }
-            catch (ArgumentOutOfRangeException) { }
+
+            var desiredDistance = compact
+                ? available / 2
+                : (int)Math.Round(available * 0.42d);
+            desiredDistance = Math.Clamp(desiredDistance, 1, available - 1);
+            _messageSplit.SplitterDistance = desiredDistance;
+
+            var panel2Space = Math.Max(0, available - desiredDistance);
+            _messageSplit.Panel1MinSize = Math.Min(compact ? 120 : 260, desiredDistance);
+            _messageSplit.Panel2MinSize = Math.Min(compact ? 120 : 300, panel2Space);
         }
+        catch (InvalidOperationException)
+        {
+            ResetSplitMinimums();
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            ResetSplitMinimums();
+        }
+
         _planSummaryLabel.AutoEllipsis = true;
+    }
+
+    private void ResetSplitMinimums()
+    {
+        try
+        {
+            _messageSplit.Panel1MinSize = 0;
+            _messageSplit.Panel2MinSize = 0;
+        }
+        catch (InvalidOperationException) { }
+        catch (ArgumentOutOfRangeException) { }
     }
 
     private void WireEvents()
@@ -432,12 +475,18 @@ public sealed class SimpleMonitorForm : Form
             UpdateMessageActionStates();
         };
         _messagesList.DrawItem += DrawMessageItem;
+        _messagesList.KeyDown += async (_, e) =>
+        {
+            if (e.KeyCode != Keys.Delete) return;
+            e.SuppressKeyPress = true;
+            await RemoveMessageAsync();
+        };
         _messageEditor.TextChanged += (_, _) => UpdateMessageActionStates();
-        _addMessageButton.Click += (_, _) => AddMessage();
-        _updateMessageButton.Click += (_, _) => UpdateMessage();
-        _removeMessageButton.Click += (_, _) => RemoveMessage();
-        _moveUpButton.Click += (_, _) => MoveMessage(-1);
-        _moveDownButton.Click += (_, _) => MoveMessage(1);
+        _addMessageButton.Click += async (_, _) => await AddMessageAsync();
+        _updateMessageButton.Click += async (_, _) => await UpdateMessageAsync();
+        _removeMessageButton.Click += async (_, _) => await RemoveMessageAsync();
+        _moveUpButton.Click += async (_, _) => await MoveMessageAsync(-1);
+        _moveDownButton.Click += async (_, _) => await MoveMessageAsync(1);
         _loadPlanButton.Click += async (_, _) => await LoadJsonPlanAsync();
         _downloadSampleButton.Click += async (_, _) => await SaveSampleJsonAsync();
         _copyPromptButton.Click += (_, _) => CopyChatGptPrompt();
@@ -470,6 +519,7 @@ public sealed class SimpleMonitorForm : Form
         _conversationCombo.AccessibleName = "ChatGPT conversation URL";
         _messagesList.AccessibleName = "Stored message sequence";
         _messageEditor.AccessibleName = "Stored message editor";
+        _removeMessageButton.AccessibleName = "Delete selected stored or JSON plan message";
         _loadPlanButton.AccessibleName = "Load JSON message plan";
         _downloadSampleButton.AccessibleName = "Download sample JSON message plan";
         _copyPromptButton.AccessibleName = "Copy ChatGPT JSON plan prompt";
@@ -511,8 +561,9 @@ public sealed class SimpleMonitorForm : Form
 
         if (_loadedPlan is null)
         {
-            var messages = DeserializeMessages(await _database.GetSettingAsync(MessagesSetting));
-            if (messages.Count == 0) messages.Add("كمل");
+            var savedMessagesJson = await _database.GetSettingAsync(MessagesSetting);
+            var messages = DeserializeMessages(savedMessagesJson);
+            if (savedMessagesJson is null && messages.Count == 0) messages.Add("كمل");
             ShowManualMessages(messages);
             _statusLabel.Text = "Ready. Select Connect Profile, then choose the same ChatGPT conversation to monitor.";
         }
@@ -605,7 +656,7 @@ public sealed class SimpleMonitorForm : Form
             ApplyJsonPlan(plan);
             await _database.SetSettingAsync(PlanSetting, SimpleMonitorMessagePlanService.Serialize(plan));
             await _database.SetSettingAsync(DelaySetting, plan.DefaultDelaySeconds.ToString());
-            _statusLabel.Text = $"JSON plan loaded and validated: {plan.Name}.";
+            _statusLabel.Text = $"JSON plan loaded and validated: {plan.Name}. Select any row and use Delete Selected if it should not run.";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
         {
@@ -667,8 +718,8 @@ public sealed class SimpleMonitorForm : Form
         var defaultDelay = _loadedPlan.DefaultDelaySeconds;
         _loadedPlan = null;
         _delaySeconds.Value = Math.Clamp(defaultDelay, 15, 3600);
-        ShowManualMessages(pendingManual.Count == 0 ? ["كمل"] : pendingManual);
-        await _database.SetSettingAsync(PlanSetting, string.Empty);
+        ShowManualMessages(pendingManual);
+        await PersistManualMessagesAsync();
         _statusLabel.Text = "JSON plan cleared. Only unsent enabled messages were retained as manual messages.";
     }
 
@@ -704,10 +755,12 @@ public sealed class SimpleMonitorForm : Form
         foreach (var message in messages.Where(message => !string.IsNullOrWhiteSpace(message)))
             _messagesList.Items.Add(message);
         if (_messagesList.Items.Count > 0) _messagesList.SelectedIndex = 0;
+        else _messageEditor.Clear();
         _planSummaryLabel.Text = "Manual message mode — or load a JSON plan generated from the sample.";
         _previewPlanButton.Enabled = false;
         _clearPlanButton.Enabled = false;
         _messageEditor.ReadOnly = _runner.IsRunning;
+        UpdateMessageActionStates();
     }
 
     private async Task StartMonitorAsync()
@@ -816,39 +869,87 @@ public sealed class SimpleMonitorForm : Form
         await _database.SetSettingAsync(PlanSetting, planJson);
     }
 
+    private async Task PersistManualMessagesAsync()
+    {
+        var messages = _messagesList.Items
+            .OfType<string>()
+            .Where(message => !string.IsNullOrWhiteSpace(message))
+            .ToArray();
+        await _database.SetSettingAsync(MessagesSetting, JsonSerializer.Serialize(messages));
+        await _database.SetSettingAsync(PlanSetting, string.Empty);
+    }
+
     private string GetConversationUrl()
         => _conversationCombo.SelectedItem is ConversationChoice choice ? choice.Tab.Url : _conversationCombo.Text.Trim();
 
-    private void AddMessage()
+    private async Task AddMessageAsync()
     {
-        if (_loadedPlan is not null || string.IsNullOrWhiteSpace(_messageEditor.Text)) return;
+        if (_runner.IsRunning || _loadedPlan is not null || string.IsNullOrWhiteSpace(_messageEditor.Text)) return;
         _messagesList.Items.Add(_messageEditor.Text);
         _messagesList.SelectedIndex = _messagesList.Items.Count - 1;
+        await PersistManualMessagesAsync();
+        _statusLabel.Text = "Message added and saved.";
     }
 
-    private void UpdateMessage()
+    private async Task UpdateMessageAsync()
     {
-        if (_loadedPlan is not null) return;
+        if (_runner.IsRunning || _loadedPlan is not null) return;
         var index = _messagesList.SelectedIndex;
         if (index < 0 || string.IsNullOrWhiteSpace(_messageEditor.Text)) return;
         _messagesList.Items[index] = _messageEditor.Text;
         _messagesList.SelectedIndex = index;
+        await PersistManualMessagesAsync();
+        _statusLabel.Text = "Message updated and saved.";
     }
 
-    private void RemoveMessage()
+    private async Task RemoveMessageAsync()
     {
-        if (_loadedPlan is not null) return;
+        if (_runner.IsRunning) return;
         var index = _messagesList.SelectedIndex;
         if (index < 0) return;
-        _messagesList.Items.RemoveAt(index);
-        if (_messagesList.Items.Count > 0) _messagesList.SelectedIndex = Math.Min(index, _messagesList.Items.Count - 1);
-        else _messageEditor.Clear();
+
+        if (_loadedPlan is not null)
+        {
+            if (index >= _loadedPlan.Messages.Count) return;
+            var removed = _loadedPlan.Messages[index];
+            _loadedPlan.Messages.RemoveAt(index);
+
+            if (_loadedPlan.Messages.Count == 0 || !_loadedPlan.Messages.Any(step => step.Enabled))
+            {
+                var remaining = _loadedPlan.Messages.Select(step => step.Text).ToArray();
+                _loadedPlan = null;
+                ShowManualMessages(remaining);
+                await PersistManualMessagesAsync();
+                _statusLabel.Text = remaining.Length == 0
+                    ? "Last JSON message deleted. The JSON plan is now cleared."
+                    : "JSON message deleted. No enabled JSON steps remain, so the remaining rows were preserved as manual messages.";
+            }
+            else
+            {
+                await _database.SetSettingAsync(PlanSetting, SimpleMonitorMessagePlanService.Serialize(_loadedPlan));
+                var nextSelection = Math.Min(index, _loadedPlan.Messages.Count - 1);
+                ApplyJsonPlan(_loadedPlan);
+                _messagesList.SelectedIndex = nextSelection;
+                _statusLabel.Text = $"Deleted JSON message: {SingleLine(removed.Text)}. Updated plan saved.";
+            }
+        }
+        else
+        {
+            _messagesList.Items.RemoveAt(index);
+            if (_messagesList.Items.Count > 0)
+                _messagesList.SelectedIndex = Math.Min(index, _messagesList.Items.Count - 1);
+            else
+                _messageEditor.Clear();
+            await PersistManualMessagesAsync();
+            _statusLabel.Text = "Message deleted and saved.";
+        }
+
         UpdateMessageActionStates();
     }
 
-    private void MoveMessage(int offset)
+    private async Task MoveMessageAsync(int offset)
     {
-        if (_loadedPlan is not null) return;
+        if (_runner.IsRunning || _loadedPlan is not null) return;
         var index = _messagesList.SelectedIndex;
         var target = index + offset;
         if (index < 0 || target < 0 || target >= _messagesList.Items.Count) return;
@@ -856,18 +957,21 @@ public sealed class SimpleMonitorForm : Form
         _messagesList.Items.RemoveAt(index);
         _messagesList.Items.Insert(target, item);
         _messagesList.SelectedIndex = target;
+        await PersistManualMessagesAsync();
+        _statusLabel.Text = "Message order updated and saved.";
     }
 
     private void UpdateMessageActionStates()
     {
         var selected = _messagesList.SelectedIndex;
         var hasText = !string.IsNullOrWhiteSpace(_messageEditor.Text);
-        var editable = !_runner.IsRunning && _loadedPlan is null;
-        _addMessageButton.Enabled = editable && hasText;
-        _updateMessageButton.Enabled = editable && selected >= 0 && hasText;
-        _removeMessageButton.Enabled = editable && selected >= 0;
-        _moveUpButton.Enabled = editable && selected > 0;
-        _moveDownButton.Enabled = editable && selected >= 0 && selected < _messagesList.Items.Count - 1;
+        var manualEditable = !_runner.IsRunning && _loadedPlan is null;
+        var canDelete = !_runner.IsRunning && selected >= 0;
+        _addMessageButton.Enabled = manualEditable && hasText;
+        _updateMessageButton.Enabled = manualEditable && selected >= 0 && hasText;
+        _removeMessageButton.Enabled = canDelete;
+        _moveUpButton.Enabled = manualEditable && selected > 0;
+        _moveDownButton.Enabled = manualEditable && selected >= 0 && selected < _messagesList.Items.Count - 1;
         _previewPlanButton.Enabled = _loadedPlan is not null;
         _clearPlanButton.Enabled = _loadedPlan is not null && !_runner.IsRunning;
     }
