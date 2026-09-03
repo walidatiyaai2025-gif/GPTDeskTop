@@ -25,13 +25,21 @@ public sealed class SimpleMonitorForm : Form
     private readonly Button _refreshChatsButton = new() { Text = "Refresh Chats", AutoSize = true };
     private readonly ComboBox _conversationCombo = new() { DropDownStyle = ComboBoxStyle.DropDown, Dock = DockStyle.Fill };
 
-    private readonly ListBox _messagesList = new() { Dock = DockStyle.Fill, IntegralHeight = false };
+    private readonly ListBox _messagesList = new()
+    {
+        Dock = DockStyle.Fill,
+        IntegralHeight = false,
+        DrawMode = DrawMode.OwnerDrawFixed,
+        ItemHeight = 24,
+        HorizontalScrollbar = true
+    };
     private readonly TextBox _messageEditor = new()
     {
         Dock = DockStyle.Fill,
         Multiline = true,
         AcceptsReturn = true,
-        ScrollBars = ScrollBars.Vertical,
+        ScrollBars = ScrollBars.Both,
+        WordWrap = true,
         MinimumSize = new Size(0, 100)
     };
     private readonly Button _addMessageButton = new() { Text = "Add", AutoSize = true };
@@ -54,7 +62,7 @@ public sealed class SimpleMonitorForm : Form
         AutoEllipsis = true
     };
 
-    private readonly NumericUpDown _delaySeconds = new() { Minimum = 15, Maximum = 3600, Value = 15, Width = 110 };
+    private readonly NumericUpDown _delaySeconds = new() { Minimum = 15, Maximum = 3600, Value = 15, Width = 90 };
     private readonly Button _startButton = new() { Text = "Start Monitor", AutoSize = true };
     private readonly Button _stopButton = new() { Text = "Stop", AutoSize = true, Enabled = false };
     private readonly Label _statusLabel = new()
@@ -72,6 +80,23 @@ public sealed class SimpleMonitorForm : Form
         TextAlign = ContentAlignment.MiddleRight
     };
 
+    private readonly Label _inspectorState = InspectorValue("State: Idle");
+    private readonly Label _inspectorMessage = InspectorValue("Current: —");
+    private readonly Label _inspectorProgress = InspectorValue("Sent: 0  •  Pending: 0");
+    private readonly Label _inspectorRetries = InspectorValue("CDP retries: 0");
+    private readonly Label _inspectorCdp = InspectorValue("Last CDP: Idle");
+    private readonly Label _inspectorError = new()
+    {
+        Dock = DockStyle.Fill,
+        AutoEllipsis = true,
+        ForeColor = FluentTheme.Muted,
+        Text = "Last error: —",
+        TextAlign = ContentAlignment.MiddleLeft
+    };
+
+    private readonly TableLayoutPanel _root = new();
+    private readonly FlowLayoutPanel _planButtons = new();
+    private readonly SplitContainer _messageSplit = new();
     private bool _closing;
 
     public SimpleMonitorForm(LocalDatabase database)
@@ -82,8 +107,8 @@ public sealed class SimpleMonitorForm : Form
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
-        MinimumSize = new Size(980, 760);
-        ClientSize = new Size(1180, 860);
+        MinimumSize = new Size(860, 640);
+        ClientSize = new Size(1280, 900);
 
         BuildUi();
         WireEvents();
@@ -96,8 +121,15 @@ public sealed class SimpleMonitorForm : Form
 
         _runner.StatusChanged += OnRunnerStatusChanged;
         _runner.MessageChanged += OnRunnerMessageChanged;
+        _runner.MessageSent += OnRunnerMessageSent;
+        _runner.InspectorChanged += OnInspectorChanged;
 
-        Shown += async (_, _) => await LoadSavedStateAsync();
+        Resize += (_, _) => ApplyResponsiveLayout();
+        Shown += async (_, _) =>
+        {
+            ApplyResponsiveLayout();
+            await LoadSavedStateAsync();
+        };
         FormClosed += async (_, _) =>
         {
             _closing = true;
@@ -109,26 +141,26 @@ public sealed class SimpleMonitorForm : Form
 
     private void BuildUi()
     {
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 5,
-            Padding = new Padding(18),
-            BackColor = FluentTheme.Background
-        };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 174));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        _root.Dock = DockStyle.Fill;
+        _root.ColumnCount = 1;
+        _root.RowCount = 6;
+        _root.Padding = new Padding(14);
+        _root.BackColor = FluentTheme.Background;
+        _root.AutoScroll = true;
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 154));
+        _root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 86));
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 118));
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
 
-        root.Controls.Add(BuildHeader(), 0, 0);
-        root.Controls.Add(BuildTargetCard(), 0, 1);
-        root.Controls.Add(BuildMessagesCard(), 0, 2);
-        root.Controls.Add(BuildRuntimeCard(), 0, 3);
-        root.Controls.Add(BuildStatusBar(), 0, 4);
-        Controls.Add(root);
+        _root.Controls.Add(BuildHeader(), 0, 0);
+        _root.Controls.Add(BuildTargetCard(), 0, 1);
+        _root.Controls.Add(BuildMessagesCard(), 0, 2);
+        _root.Controls.Add(BuildRuntimeCard(), 0, 3);
+        _root.Controls.Add(BuildInspectorCard(), 0, 4);
+        _root.Controls.Add(BuildStatusBar(), 0, 5);
+        Controls.Add(_root);
     }
 
     private Control BuildHeader()
@@ -138,12 +170,12 @@ public sealed class SimpleMonitorForm : Form
             Dock = DockStyle.Fill,
             BackColor = FluentTheme.Surface,
             BorderStyle = BorderStyle.FixedSingle,
-            Padding = new Padding(16, 10, 16, 10),
-            Margin = new Padding(0, 0, 0, 10)
+            Padding = new Padding(14, 8, 14, 8),
+            Margin = new Padding(0, 0, 0, 8)
         };
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = FluentTheme.Surface };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
 
         var title = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, BackColor = FluentTheme.Surface };
         title.RowStyles.Add(new RowStyle(SizeType.Percent, 60));
@@ -157,23 +189,23 @@ public sealed class SimpleMonitorForm : Form
         }, 0, 0);
         title.Controls.Add(new Label
         {
-            Text = "Stored messages or JSON plan • selected Chrome profile • same ChatGPT conversation only",
+            Text = "Durable message plan • sent-state resume • same ChatGPT conversation only",
             Dock = DockStyle.Fill,
             ForeColor = FluentTheme.Muted,
-            TextAlign = ContentAlignment.TopLeft
+            TextAlign = ContentAlignment.TopLeft,
+            AutoEllipsis = true
         }, 0, 1);
 
         var modes = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.RightToLeft,
-            WrapContents = false,
+            WrapContents = true,
             BackColor = FluentTheme.Surface,
-            Padding = new Padding(0, 13, 0, 0)
+            Padding = new Padding(0, 12, 0, 0)
         };
         modes.Controls.Add(_monitorModeRadio);
         modes.Controls.Add(_currentModeRadio);
-
         layout.Controls.Add(title, 0, 0);
         layout.Controls.Add(modes, 1, 0);
         panel.Controls.Add(layout);
@@ -186,28 +218,29 @@ public sealed class SimpleMonitorForm : Form
         {
             Text = "1. Chrome profile and same-chat target",
             Dock = DockStyle.Fill,
-            Padding = new Padding(12),
-            Margin = new Padding(0, 0, 0, 10)
+            Padding = new Padding(10),
+            Margin = new Padding(0, 0, 0, 8)
         };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 4 };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 165));
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4 };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 155));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         layout.Controls.Add(CreateRowLabel("Chrome profile"), 0, 0);
-        layout.Controls.Add(_profileCombo, 1, 0);
-        var profileButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        profileButtons.Controls.Add(_connectButton);
-        profileButtons.Controls.Add(_refreshChatsButton);
-        layout.Controls.Add(profileButtons, 2, 0);
+        var profileRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1 };
+        profileRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        profileRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        profileRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        profileRow.Controls.Add(_profileCombo, 0, 0);
+        profileRow.Controls.Add(_connectButton, 1, 0);
+        profileRow.Controls.Add(_refreshChatsButton, 2, 0);
+        layout.Controls.Add(profileRow, 1, 0);
 
         layout.Controls.Add(CreateRowLabel("ChatGPT conversation"), 0, 1);
         layout.Controls.Add(_conversationCombo, 1, 1);
-        layout.SetColumnSpan(_conversationCombo, 2);
 
         var hardRule = new Label
         {
@@ -215,20 +248,21 @@ public sealed class SimpleMonitorForm : Form
             Dock = DockStyle.Fill,
             Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold),
             ForeColor = FluentTheme.Success,
-            TextAlign = ContentAlignment.MiddleLeft
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true
         };
         layout.Controls.Add(hardRule, 0, 2);
-        layout.SetColumnSpan(hardRule, 3);
+        layout.SetColumnSpan(hardRule, 2);
 
-        var securityNote = new Label
+        var note = new Label
         {
-            Text = "GPTDeskTop keeps an automation-safe persistent Chrome session for each selected profile. On first use, sign in to ChatGPT once in the Chrome window that opens; that managed profile retains the login.",
+            Text = "GPTDeskTop keeps an automation-safe persistent Chrome session for the selected profile. Confirmed RUN ONCE messages are checkpointed before any later browser read, so a restart resumes from the next unsent message.",
             Dock = DockStyle.Fill,
             ForeColor = FluentTheme.Muted,
             AutoEllipsis = true
         };
-        layout.Controls.Add(securityNote, 0, 3);
-        layout.SetColumnSpan(securityNote, 3);
+        layout.Controls.Add(note, 0, 3);
+        layout.SetColumnSpan(note, 2);
         group.Controls.Add(layout);
         return group;
     }
@@ -239,43 +273,54 @@ public sealed class SimpleMonitorForm : Form
         {
             Text = "2. Message sequence / JSON Message Plan",
             Dock = DockStyle.Fill,
-            Padding = new Padding(12),
-            Margin = new Padding(0, 0, 0, 10)
+            Padding = new Padding(10),
+            Margin = new Padding(0, 0, 0, 8)
         };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4 };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
 
-        var planButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 3, 0, 0) };
-        planButtons.Controls.Add(_loadPlanButton);
-        planButtons.Controls.Add(_downloadSampleButton);
-        planButtons.Controls.Add(_copyPromptButton);
-        planButtons.Controls.Add(_previewPlanButton);
-        planButtons.Controls.Add(_clearPlanButton);
-        layout.Controls.Add(planButtons, 0, 0);
-        layout.SetColumnSpan(planButtons, 2);
-
+        _planButtons.Dock = DockStyle.Fill;
+        _planButtons.WrapContents = true;
+        _planButtons.AutoSize = true;
+        _planButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _planButtons.Padding = new Padding(0, 2, 0, 3);
+        _planButtons.Controls.Add(_loadPlanButton);
+        _planButtons.Controls.Add(_downloadSampleButton);
+        _planButtons.Controls.Add(_copyPromptButton);
+        _planButtons.Controls.Add(_previewPlanButton);
+        _planButtons.Controls.Add(_clearPlanButton);
+        layout.Controls.Add(_planButtons, 0, 0);
         layout.Controls.Add(_planSummaryLabel, 0, 1);
-        layout.SetColumnSpan(_planSummaryLabel, 2);
 
-        layout.Controls.Add(_messagesList, 0, 2);
-        layout.Controls.Add(_messageEditor, 1, 2);
+        _messageSplit.Dock = DockStyle.Fill;
+        _messageSplit.Orientation = Orientation.Vertical;
+        _messageSplit.Panel1MinSize = 260;
+        _messageSplit.Panel2MinSize = 300;
 
-        var listButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 7, 0, 0) };
+        var left = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
+        left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        left.Controls.Add(_messagesList, 0, 0);
+        var listButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, AutoSize = true, Padding = new Padding(0, 5, 0, 0) };
         listButtons.Controls.Add(_moveUpButton);
         listButtons.Controls.Add(_moveDownButton);
-        layout.Controls.Add(listButtons, 0, 3);
+        left.Controls.Add(listButtons, 0, 1);
 
-        var editButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 7, 0, 0) };
+        var right = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
+        right.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        right.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        right.Controls.Add(_messageEditor, 0, 0);
+        var editButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, AutoSize = true, Padding = new Padding(0, 5, 0, 0) };
         editButtons.Controls.Add(_addMessageButton);
         editButtons.Controls.Add(_updateMessageButton);
         editButtons.Controls.Add(_removeMessageButton);
-        layout.Controls.Add(editButtons, 1, 3);
+        right.Controls.Add(editButtons, 0, 1);
 
+        _messageSplit.Panel1.Controls.Add(left);
+        _messageSplit.Panel2.Controls.Add(right);
+        layout.Controls.Add(_messageSplit, 0, 2);
         group.Controls.Add(layout);
         return group;
     }
@@ -286,48 +331,61 @@ public sealed class SimpleMonitorForm : Form
         {
             Text = "3. Runtime",
             Dock = DockStyle.Fill,
-            Padding = new Padding(12),
+            Padding = new Padding(10),
             Margin = new Padding(0, 0, 0, 8)
         };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 2 };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 125));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 245));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        layout.Controls.Add(CreateRowLabel("Default post-response delay"), 0, 0);
-        layout.Controls.Add(_delaySeconds, 1, 0);
-        layout.Controls.Add(new Label
-        {
-            Text = "seconds — minimum 15. JSON plans may override this per message.",
-            Dock = DockStyle.Fill,
-            ForeColor = FluentTheme.Muted,
-            TextAlign = ContentAlignment.MiddleLeft
-        }, 2, 0);
-
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
-        actions.Controls.Add(_stopButton);
-        actions.Controls.Add(_startButton);
-        layout.Controls.Add(actions, 3, 0);
+        var controls = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, AutoSize = true };
+        controls.Controls.Add(CreateInlineLabel("Default post-response delay"));
+        controls.Controls.Add(_delaySeconds);
+        controls.Controls.Add(CreateInlineMuted("seconds — minimum 15. JSON plans may override this per message."));
+        controls.Controls.Add(_startButton);
+        controls.Controls.Add(_stopButton);
+        layout.Controls.Add(controls, 0, 0);
 
         var logic = new Label
         {
-            Text = "Send message → wait for the assistant response to finish → wait its safety delay → revalidate the same chat → send the next enabled message. JSON loop=false stops after one complete sequence.",
+            Text = "Send → checkpoint confirmed delivery → wait for response completion → safety delay → revalidate same chat → next pending message. Passive Runtime.evaluate timeouts are retried safely without resending.",
             Dock = DockStyle.Fill,
             ForeColor = FluentTheme.Muted,
-            TextAlign = ContentAlignment.MiddleLeft
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true
         };
         layout.Controls.Add(logic, 0, 1);
-        layout.SetColumnSpan(logic, 4);
+        group.Controls.Add(layout);
+        return group;
+    }
+
+    private Control BuildInspectorCard()
+    {
+        var group = new GroupBox
+        {
+            Text = "4. Runtime Inspector — live",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(10),
+            Margin = new Padding(0, 0, 0, 8)
+        };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 58));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 42));
+        var metrics = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, AutoScroll = true };
+        metrics.Controls.Add(_inspectorState);
+        metrics.Controls.Add(_inspectorMessage);
+        metrics.Controls.Add(_inspectorProgress);
+        metrics.Controls.Add(_inspectorRetries);
+        metrics.Controls.Add(_inspectorCdp);
+        layout.Controls.Add(metrics, 0, 0);
+        layout.Controls.Add(_inspectorError, 0, 1);
         group.Controls.Add(layout);
         return group;
     }
 
     private Control BuildStatusBar()
     {
-        var panel = new Panel { Dock = DockStyle.Fill, BackColor = FluentTheme.Surface, Padding = new Padding(12, 6, 12, 6) };
+        var panel = new Panel { Dock = DockStyle.Fill, BackColor = FluentTheme.Surface, Padding = new Padding(10, 5, 10, 5) };
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = FluentTheme.Surface };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 72));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 28));
@@ -337,13 +395,25 @@ public sealed class SimpleMonitorForm : Form
         return panel;
     }
 
-    private static Label CreateRowLabel(string text) => new()
+    private void ApplyResponsiveLayout()
     {
-        Text = text,
-        Dock = DockStyle.Fill,
-        TextAlign = ContentAlignment.MiddleLeft,
-        Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold)
-    };
+        if (IsDisposed) return;
+        var compact = ClientSize.Width < 1080;
+        _root.Padding = compact ? new Padding(8) : new Padding(14);
+        _messageSplit.Orientation = compact ? Orientation.Horizontal : Orientation.Vertical;
+        if (_messageSplit.Width > 0 && _messageSplit.Height > 0)
+        {
+            try
+            {
+                _messageSplit.SplitterDistance = compact
+                    ? Math.Max(_messageSplit.Panel1MinSize, _messageSplit.Height / 2)
+                    : Math.Max(_messageSplit.Panel1MinSize, (int)(_messageSplit.Width * 0.42));
+            }
+            catch (InvalidOperationException) { }
+            catch (ArgumentOutOfRangeException) { }
+        }
+        _planSummaryLabel.AutoEllipsis = true;
+    }
 
     private void WireEvents()
     {
@@ -361,6 +431,7 @@ public sealed class SimpleMonitorForm : Form
                 _messageEditor.Text = planChoice.Step.Text;
             UpdateMessageActionStates();
         };
+        _messagesList.DrawItem += DrawMessageItem;
         _messageEditor.TextChanged += (_, _) => UpdateMessageActionStates();
         _addMessageButton.Click += (_, _) => AddMessage();
         _updateMessageButton.Click += (_, _) => UpdateMessage();
@@ -374,17 +445,27 @@ public sealed class SimpleMonitorForm : Form
         _clearPlanButton.Click += async (_, _) => await ClearJsonPlanAsync();
         _startButton.Click += async (_, _) => await StartMonitorAsync();
         _stopButton.Click += async (_, _) => await StopMonitorAsync();
-        _profileCombo.SelectedIndexChanged += (_, _) =>
-        {
-            if (!_runner.IsRunning) _statusLabel.Text = "Profile selected. Choose Connect Profile to open/attach its managed Chrome session.";
-        };
         UpdateMessageActionStates();
+    }
+
+    private void DrawMessageItem(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || e.Index >= _messagesList.Items.Count) return;
+        e.DrawBackground();
+        var item = _messagesList.Items[e.Index];
+        var sent = item is PlanMessageChoice choice && choice.Step.Sent;
+        var disabled = item is PlanMessageChoice disabledChoice && !disabledChoice.Step.Enabled;
+        var text = item?.ToString() ?? string.Empty;
+        using var brush = new SolidBrush(sent ? FluentTheme.Success : disabled ? FluentTheme.Muted : e.ForeColor);
+        using var font = sent ? new Font(e.Font, FontStyle.Bold) : new Font(e.Font, e.Font.Style);
+        e.Graphics.DrawString(text, font, brush, e.Bounds.Left + 4, e.Bounds.Top + 3);
+        e.DrawFocusRectangle();
     }
 
     private void ConfigureAccessibility()
     {
         AccessibleName = "GPTDeskTop Monitor Only";
-        AccessibleDescription = "Standalone same-chat monitor for stored messages and JSON message plans.";
+        AccessibleDescription = "Standalone same-chat monitor for stored messages and JSON message plans with durable sent checkpoints and Runtime Inspector.";
         _profileCombo.AccessibleName = "Chrome profile";
         _conversationCombo.AccessibleName = "ChatGPT conversation URL";
         _messagesList.AccessibleName = "Stored message sequence";
@@ -430,14 +511,18 @@ public sealed class SimpleMonitorForm : Form
 
         if (_loadedPlan is null)
         {
-            var messagesJson = await _database.GetSettingAsync(MessagesSetting);
-            var messages = DeserializeMessages(messagesJson);
+            var messages = DeserializeMessages(await _database.GetSettingAsync(MessagesSetting));
             if (messages.Count == 0) messages.Add("كمل");
             ShowManualMessages(messages);
-        }
-
-        if (_loadedPlan is null)
             _statusLabel.Text = "Ready. Select Connect Profile, then choose the same ChatGPT conversation to monitor.";
+        }
+        else
+        {
+            var sent = _loadedPlan.Messages.Count(step => step.Enabled && step.Sent);
+            _statusLabel.Text = sent == 0
+                ? "Saved JSON plan loaded. Ready to start."
+                : $"Saved JSON plan resumed with {sent} confirmed message(s) already checkpointed; they will not repeat in RUN ONCE mode.";
+        }
         UpdateMessageActionStates();
     }
 
@@ -469,10 +554,7 @@ public sealed class SimpleMonitorForm : Form
             _statusLabel.Text = $"Connection failed: {ex.Message}";
             MessageBox.Show(this, ex.Message, "Chrome profile", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
-        finally
-        {
-            SetBusy(false, null);
-        }
+        finally { SetBusy(false, null); }
     }
 
     private async Task RefreshConversationsAsync()
@@ -498,17 +580,11 @@ public sealed class SimpleMonitorForm : Form
                 _conversationCombo.Text = preservedUrl;
 
             _statusLabel.Text = tabs.Count == 0
-                ? "No stable ChatGPT conversations are open yet. Sign in/open the target chat in the selected Chrome window, then Refresh Chats."
+                ? "No stable ChatGPT conversations are open yet. Sign in/open the target chat, then Refresh Chats."
                 : $"Found {tabs.Count} stable ChatGPT conversation(s) in {_session.Profile.DisplayLabel}.";
         }
-        catch (Exception ex)
-        {
-            _statusLabel.Text = $"Refresh failed: {ex.Message}";
-        }
-        finally
-        {
-            SetBusy(false, null);
-        }
+        catch (Exception ex) { _statusLabel.Text = $"Refresh failed: {ex.Message}"; }
+        finally { SetBusy(false, null); }
     }
 
     private async Task LoadJsonPlanAsync()
@@ -525,8 +601,7 @@ public sealed class SimpleMonitorForm : Form
 
         try
         {
-            var json = await File.ReadAllTextAsync(dialog.FileName);
-            var plan = SimpleMonitorMessagePlanService.ParseAndValidate(json);
+            var plan = SimpleMonitorMessagePlanService.ParseAndValidate(await File.ReadAllTextAsync(dialog.FileName));
             ApplyJsonPlan(plan);
             await _database.SetSettingAsync(PlanSetting, SimpleMonitorMessagePlanService.Serialize(plan));
             await _database.SetSettingAsync(DelaySetting, plan.DefaultDelaySeconds.ToString());
@@ -551,7 +626,6 @@ public sealed class SimpleMonitorForm : Form
             OverwritePrompt = true
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-
         try
         {
             await File.WriteAllTextAsync(dialog.FileName, SimpleMonitorMessagePlanService.CreateSampleJson());
@@ -568,12 +642,9 @@ public sealed class SimpleMonitorForm : Form
         try
         {
             Clipboard.SetText(SimpleMonitorMessagePlanService.CreateChatGptPrompt());
-            _statusLabel.Text = "ChatGPT JSON-generation prompt copied. Attach the downloaded sample JSON and paste the prompt.";
+            _statusLabel.Text = "ChatGPT JSON-generation prompt copied. Attach the sample JSON and paste the prompt.";
         }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, ex.Message, "Clipboard", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Clipboard", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
     }
 
     private void PreviewPlan()
@@ -583,29 +654,22 @@ public sealed class SimpleMonitorForm : Form
             ShowValidation("Load a JSON message plan first.");
             return;
         }
-
-        MessageBox.Show(
-            this,
-            SimpleMonitorMessagePlanService.BuildPreview(_loadedPlan),
-            "JSON Message Plan — Validated Preview",
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Information);
+        MessageBox.Show(this, SimpleMonitorMessagePlanService.BuildPreview(_loadedPlan), "JSON Message Plan — Validated Preview", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private async Task ClearJsonPlanAsync()
     {
         if (_loadedPlan is null || _runner.IsRunning) return;
-        var manualMessages = _loadedPlan.Messages
-            .Where(step => step.Enabled)
+        var pendingManual = _loadedPlan.Messages
+            .Where(step => step.Enabled && !step.Sent)
             .Select(step => step.Text)
             .ToList();
         var defaultDelay = _loadedPlan.DefaultDelaySeconds;
         _loadedPlan = null;
         _delaySeconds.Value = Math.Clamp(defaultDelay, 15, 3600);
-        ShowManualMessages(manualMessages.Count == 0 ? ["كمل"] : manualMessages);
+        ShowManualMessages(pendingManual.Count == 0 ? ["كمل"] : pendingManual);
         await _database.SetSettingAsync(PlanSetting, string.Empty);
-        _statusLabel.Text = "JSON plan cleared. Enabled plan messages were retained as manual messages.";
-        UpdateMessageActionStates();
+        _statusLabel.Text = "JSON plan cleared. Only unsent enabled messages were retained as manual messages.";
     }
 
     private void ApplyJsonPlan(SimpleMonitorMessagePlan plan)
@@ -616,11 +680,21 @@ public sealed class SimpleMonitorForm : Form
         for (var index = 0; index < plan.Messages.Count; index++)
             _messagesList.Items.Add(new PlanMessageChoice(index + 1, plan.Messages[index], plan.DefaultDelaySeconds));
         if (_messagesList.Items.Count > 0) _messagesList.SelectedIndex = 0;
-        _planSummaryLabel.Text = $"JSON: {plan.Name} • {(plan.Loop ? "LOOP" : "RUN ONCE")} • {plan.Messages.Count(step => step.Enabled)} enabled/{plan.Messages.Count} total • default {plan.DefaultDelaySeconds}s";
+        UpdatePlanSummary();
         _previewPlanButton.Enabled = true;
         _clearPlanButton.Enabled = true;
         _messageEditor.ReadOnly = true;
+        _messagesList.Refresh();
         UpdateMessageActionStates();
+    }
+
+    private void UpdatePlanSummary()
+    {
+        if (_loadedPlan is null) return;
+        var enabled = _loadedPlan.Messages.Count(step => step.Enabled);
+        var sent = _loadedPlan.Messages.Count(step => step.Enabled && step.Sent);
+        var pending = _loadedPlan.Loop ? enabled : _loadedPlan.Messages.Count(step => step.Enabled && !step.Sent);
+        _planSummaryLabel.Text = $"JSON: {_loadedPlan.Name} • {(_loadedPlan.Loop ? "LOOP" : "RUN ONCE / RESUME")} • {enabled} enabled • {sent} sent • {pending} pending • default {_loadedPlan.DefaultDelaySeconds}s";
     }
 
     private void ShowManualMessages(IReadOnlyList<string> messages)
@@ -646,6 +720,11 @@ public sealed class SimpleMonitorForm : Form
             ShowValidation("Add at least one stored message or load a valid JSON message plan.");
             return;
         }
+        if (_loadedPlan is { Loop: false } plan && !plan.Messages.Any(step => step.Enabled && !step.Sent))
+        {
+            _statusLabel.Text = "Plan already complete. Every enabled message is checkpointed SENT; nothing will be resent.";
+            return;
+        }
 
         var url = GetConversationUrl();
         if (!SimpleMonitorProfileSession.TryGetConversationId(url, out _))
@@ -653,13 +732,11 @@ public sealed class SimpleMonitorForm : Form
             ShowValidation("Select or paste a stable ChatGPT conversation URL containing /c/{conversation-id}.");
             return;
         }
-
         if (_profileCombo.SelectedItem is not ChromeProfileInfo selectedProfile)
         {
             ShowValidation("Select a Chrome profile first.");
             return;
         }
-
         if (_session is null || !string.Equals(_session.Profile.Key, selectedProfile.Key, StringComparison.OrdinalIgnoreCase))
         {
             await ConnectSelectedProfileAsync(refreshConversations: false);
@@ -685,8 +762,9 @@ public sealed class SimpleMonitorForm : Form
                     target.Url,
                     _loadedPlan.Messages,
                     _loadedPlan.DefaultDelaySeconds,
-                    _loadedPlan.Loop);
-                _statusLabel.Text = $"JSON plan running: {_loadedPlan.Name}. Same chat only.";
+                    _loadedPlan.Loop,
+                    CheckpointPlanMessageSentAsync);
+                _statusLabel.Text = $"JSON plan running: {_loadedPlan.Name}. Same chat only; sent checkpoints are durable.";
             }
             else
             {
@@ -695,7 +773,6 @@ public sealed class SimpleMonitorForm : Form
                 await _runner.StartAsync(_session, target.Url, manualMessages, delay);
                 _statusLabel.Text = "Monitor running. Waiting for a safe same-chat send opportunity.";
             }
-
             SetRunningUi(true);
         }
         catch (Exception ex)
@@ -705,19 +782,31 @@ public sealed class SimpleMonitorForm : Form
         }
     }
 
+    private async Task CheckpointPlanMessageSentAsync(int originalIndex, int total, string message, CancellationToken cancellationToken)
+    {
+        var plan = _loadedPlan;
+        if (plan is null || originalIndex < 0 || originalIndex >= plan.Messages.Count) return;
+
+        // Deliberately do not let a later monitor cancellation erase a confirmed send.
+        plan.Messages[originalIndex].Sent = true;
+        await _database.SetSettingAsync(PlanSetting, SimpleMonitorMessagePlanService.Serialize(plan));
+        PostToUi(() =>
+        {
+            UpdatePlanSummary();
+            _messagesList.Refresh();
+            _cycleLabel.Text = $"SENT ✓ {originalIndex + 1}/{total}: {SingleLine(message)}";
+        });
+    }
+
     private async Task StopMonitorAsync()
     {
         _stopButton.Enabled = false;
         await _runner.StopAsync();
         SetRunningUi(false);
-        _statusLabel.Text = "Monitor stopped.";
+        _statusLabel.Text = "Monitor stopped. Confirmed sent checkpoints are preserved.";
     }
 
-    private async Task PersistStateAsync(
-        string conversationUrl,
-        IReadOnlyList<string> messages,
-        int delay,
-        string planJson)
+    private async Task PersistStateAsync(string conversationUrl, IReadOnlyList<string> messages, int delay, string planJson)
     {
         if (_profileCombo.SelectedItem is ChromeProfileInfo profile)
             await _database.SetSettingAsync(ProfileSetting, profile.Key);
@@ -728,9 +817,7 @@ public sealed class SimpleMonitorForm : Form
     }
 
     private string GetConversationUrl()
-        => _conversationCombo.SelectedItem is ConversationChoice choice
-            ? choice.Tab.Url
-            : _conversationCombo.Text.Trim();
+        => _conversationCombo.SelectedItem is ConversationChoice choice ? choice.Tab.Url : _conversationCombo.Text.Trim();
 
     private void AddMessage()
     {
@@ -826,7 +913,26 @@ public sealed class SimpleMonitorForm : Form
     }
 
     private void OnRunnerMessageChanged(int index, int count, string message)
-        => PostToUi(() => _cycleLabel.Text = $"Message {index}/{count}: {SingleLine(message)}");
+        => PostToUi(() =>
+        {
+            _cycleLabel.Text = $"Message {index}/{count}: {SingleLine(message)}";
+            if (index > 0 && index <= _messagesList.Items.Count) _messagesList.SelectedIndex = index - 1;
+        });
+
+    private void OnRunnerMessageSent(int index, int count, string message)
+        => PostToUi(() => _cycleLabel.Text = $"CONFIRMED ✓ {index}/{count}: {SingleLine(message)}");
+
+    private void OnInspectorChanged(SimpleMonitorInspectorSnapshot snapshot)
+        => PostToUi(() =>
+        {
+            _inspectorState.Text = $"State: {snapshot.State}";
+            _inspectorMessage.Text = snapshot.CurrentMessage <= 0 ? "Current: —" : $"Current: {snapshot.CurrentMessage}/{snapshot.TotalMessages}";
+            _inspectorProgress.Text = $"Sent: {snapshot.SentMessages}  •  Pending: {snapshot.PendingMessages}";
+            _inspectorRetries.Text = $"CDP retries: {snapshot.PassiveReadRetries}";
+            _inspectorCdp.Text = $"Last CDP: {snapshot.LastCdpEvent}";
+            _inspectorError.Text = string.IsNullOrWhiteSpace(snapshot.LastError) ? "Last error: —" : $"Last error: {snapshot.LastError}";
+            _inspectorError.ForeColor = string.IsNullOrWhiteSpace(snapshot.LastError) ? FluentTheme.Muted : Color.OrangeRed;
+        });
 
     private void PostToUi(Action action)
     {
@@ -848,15 +954,42 @@ public sealed class SimpleMonitorForm : Form
         if (string.IsNullOrWhiteSpace(json)) return [];
         try
         {
-            return JsonSerializer.Deserialize<List<string>>(json)?
-                .Where(message => !string.IsNullOrWhiteSpace(message))
-                .ToList() ?? [];
+            return JsonSerializer.Deserialize<List<string>>(json)?.Where(message => !string.IsNullOrWhiteSpace(message)).ToList() ?? [];
         }
-        catch (JsonException)
-        {
-            return [];
-        }
+        catch (JsonException) { return []; }
     }
+
+    private static Label CreateRowLabel(string text) => new()
+    {
+        Text = text,
+        Dock = DockStyle.Fill,
+        TextAlign = ContentAlignment.MiddleLeft,
+        Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold)
+    };
+
+    private static Label CreateInlineLabel(string text) => new()
+    {
+        Text = text,
+        AutoSize = true,
+        Margin = new Padding(0, 6, 8, 0),
+        Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold)
+    };
+
+    private static Label CreateInlineMuted(string text) => new()
+    {
+        Text = text,
+        AutoSize = true,
+        Margin = new Padding(4, 6, 14, 0),
+        ForeColor = FluentTheme.Muted
+    };
+
+    private static Label InspectorValue(string text) => new()
+    {
+        Text = text,
+        AutoSize = true,
+        Margin = new Padding(0, 5, 18, 3),
+        Font = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold)
+    };
 
     private static string SingleLine(string value)
     {
@@ -875,7 +1008,7 @@ public sealed class SimpleMonitorForm : Form
         public override string ToString()
         {
             var label = string.IsNullOrWhiteSpace(Step.Label) ? $"Message {Index}" : Step.Label;
-            var status = Step.Enabled ? "ON" : "OFF";
+            var status = Step.Sent ? "SENT ✓" : Step.Enabled ? "ON" : "OFF";
             return $"[{status}] {label} • {Step.EffectiveDelaySeconds(DefaultDelaySeconds)}s • {SingleLine(Step.Text)}";
         }
     }

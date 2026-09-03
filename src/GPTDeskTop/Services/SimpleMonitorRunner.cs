@@ -3,6 +3,16 @@ using GPTDeskTop.Models;
 
 namespace GPTDeskTop.Services;
 
+public sealed record SimpleMonitorInspectorSnapshot(
+    string State,
+    int CurrentMessage,
+    int TotalMessages,
+    int SentMessages,
+    int PendingMessages,
+    int PassiveReadRetries,
+    string LastCdpEvent,
+    string LastError);
+
 public sealed class SimpleMonitorRunner : IAsyncDisposable
 {
     private static readonly MethodInfo PassiveStateReader = typeof(ChromeDevToolsService).GetMethod(
@@ -13,9 +23,18 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
     private readonly object _sync = new();
     private CancellationTokenSource? _cancellation;
     private Task? _worker;
+    private int _passiveReadRetries;
+    private int _sentMessages;
+    private int _pendingMessages;
+    private int _currentMessage;
+    private int _totalMessages;
+    private string _lastCdpEvent = "Idle";
+    private string _lastError = string.Empty;
 
     public event Action<string>? StatusChanged;
     public event Action<int, int, string>? MessageChanged;
+    public event Action<int, int, string>? MessageSent;
+    public event Action<SimpleMonitorInspectorSnapshot>? InspectorChanged;
     public bool IsRunning { get { lock (_sync) return _worker is { IsCompleted: false }; } }
 
     public Task StartAsync(
@@ -31,7 +50,8 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         var steps = messages.Select(message => new SimpleMonitorMessageStep
         {
             Text = message,
-            Enabled = true
+            Enabled = true,
+            Sent = false
         }).ToArray();
 
         return StartAsync(
@@ -40,6 +60,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             steps,
             delaySeconds,
             loop: true,
+            checkpoint: null,
             cancellationToken);
     }
 
@@ -50,6 +71,16 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         int defaultDelaySeconds,
         bool loop,
         CancellationToken cancellationToken = default)
+        => StartAsync(session, conversationUrl, messages, defaultDelaySeconds, loop, checkpoint: null, cancellationToken);
+
+    public Task StartAsync(
+        SimpleMonitorProfileSession session,
+        string conversationUrl,
+        IReadOnlyList<SimpleMonitorMessageStep> messages,
+        int defaultDelaySeconds,
+        bool loop,
+        Func<int, int, string, CancellationToken, Task>? checkpoint,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(session);
         if (!SimpleMonitorProfileSession.TryGetConversationId(conversationUrl, out _))
@@ -58,21 +89,23 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             throw new ArgumentException("At least one stored message is required.", nameof(messages));
 
         var normalizedDefaultDelay = Math.Clamp(defaultDelaySeconds, 15, 3600);
-        var enabledMessages = messages
-            .Where(message => message is not null && message.Enabled)
-            .Select(message => new SimpleMonitorMessageStep
-            {
-                Label = message.Label,
-                Text = message.Text,
-                Enabled = true,
-                DelaySeconds = message.DelaySeconds is null
-                    ? null
-                    : Math.Clamp(message.DelaySeconds.Value, 15, 3600)
-            })
+        var runtimeMessages = messages
+            .Select((message, index) => new { message, index })
+            .Where(item => item.message is not null && item.message.Enabled && (loop || !item.message.Sent))
+            .Select(item => new RuntimeMessage(
+                item.index,
+                new SimpleMonitorMessageStep
+                {
+                    Label = item.message.Label,
+                    Text = item.message.Text,
+                    Enabled = true,
+                    DelaySeconds = item.message.DelaySeconds,
+                    Sent = item.message.Sent
+                }))
             .ToArray();
 
-        if (enabledMessages.Length == 0 || enabledMessages.Any(message => string.IsNullOrWhiteSpace(message.Text)))
-            throw new ArgumentException("At least one enabled, non-empty stored message is required.", nameof(messages));
+        if (runtimeMessages.Any(message => string.IsNullOrWhiteSpace(message.Step.Text)))
+            throw new ArgumentException("Every enabled stored message must contain text.", nameof(messages));
 
         lock (_sync)
         {
@@ -82,10 +115,30 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             _cancellation?.Dispose();
             _cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var token = _cancellation.Token;
-            _worker = Task.Run(
-                () => RunLoopAsync(session, conversationUrl, enabledMessages, normalizedDefaultDelay, loop, token),
-                token);
+            _passiveReadRetries = 0;
+            _sentMessages = messages.Count(message => message is not null && message.Enabled && message.Sent);
+            _pendingMessages = runtimeMessages.Length;
+            _currentMessage = 0;
+            _totalMessages = messages.Count;
+            _lastCdpEvent = "Starting";
+            _lastError = string.Empty;
+
+            if (runtimeMessages.Length == 0)
+            {
+                _worker = Task.Run(() =>
+                {
+                    StatusChanged?.Invoke("Plan complete. All enabled RUN ONCE messages are already checkpointed; nothing will be resent.");
+                    PublishInspector("Complete");
+                }, token);
+            }
+            else
+            {
+                _worker = Task.Run(
+                    () => RunLoopAsync(session, conversationUrl, runtimeMessages, normalizedDefaultDelay, loop, checkpoint, token),
+                    token);
+            }
         }
+        PublishInspector("Starting");
         return Task.CompletedTask;
     }
 
@@ -117,23 +170,24 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
     private async Task RunLoopAsync(
         SimpleMonitorProfileSession session,
         string conversationUrl,
-        IReadOnlyList<SimpleMonitorMessageStep> messages,
+        IReadOnlyList<RuntimeMessage> messages,
         int defaultDelaySeconds,
         bool loop,
+        Func<int, int, string, CancellationToken, Task>? checkpoint,
         CancellationToken cancellationToken)
     {
         try
         {
-            StatusChanged?.Invoke("Connecting to the selected Chrome profile...");
+            SetStatus("Connecting to the selected Chrome profile...", "Connecting");
             await session.EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
             var tab = await session.ResolveConversationAsync(conversationUrl, openIfMissing: true, cancellationToken).ConfigureAwait(false)
                 ?? throw new SimpleMonitorBlockedException("The selected ChatGPT conversation could not be opened in this profile.");
 
-            var initial = await ReadPassiveStateAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+            var initial = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
             ThrowIfUnsafe(initial);
             if (initial.IsGenerating)
             {
-                StatusChanged?.Invoke("The selected chat is already generating. Waiting for it to finish...");
+                SetStatus("The selected chat is already generating. Waiting for it to finish...", "WaitingExistingResponse");
                 await WaitForExistingGenerationAsync(session, conversationUrl, defaultDelaySeconds, cancellationToken).ConfigureAwait(false);
             }
 
@@ -141,19 +195,23 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             while (!cancellationToken.IsCancellationRequested)
             {
                 tab = await RequireSameConversationAsync(session, conversationUrl, cancellationToken).ConfigureAwait(false);
-                var before = await ReadPassiveStateAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+                var before = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
                 ThrowIfUnsafe(before);
                 if (before.IsGenerating)
                 {
-                    StatusChanged?.Invoke("ChatGPT is generating. Send is blocked until the response finishes.");
+                    SetStatus("ChatGPT is generating. Send is blocked until the response finishes.", "WaitingResponse");
                     await WaitForExistingGenerationAsync(session, conversationUrl, defaultDelaySeconds, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
-                var step = messages[messageIndex];
+                var runtimeMessage = messages[messageIndex];
+                var step = runtimeMessage.Step;
                 var message = step.Text;
-                MessageChanged?.Invoke(messageIndex + 1, messages.Count, message);
-                StatusChanged?.Invoke($"Sending stored message {messageIndex + 1}/{messages.Count} to the same chat...");
+                _currentMessage = runtimeMessage.OriginalIndex + 1;
+                MessageChanged?.Invoke(_currentMessage, _totalMessages, message);
+                SetStatus($"Sending stored message {_currentMessage}/{_totalMessages} to the same chat...", "Sending");
+                _lastCdpEvent = "SendChatMessageVerifiedAsync";
+                PublishInspector("Sending");
 
                 var sent = await session.Chrome.SendChatMessageVerifiedAsync(
                     tab,
@@ -163,7 +221,18 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 if (!sent)
                     throw new SimpleMonitorBlockedException("The exact stored message was not safely confirmed as sent. Automatic retry is blocked to prevent a duplicate.");
 
-                StatusChanged?.Invoke("Message accepted. Monitoring the same chat until the assistant response is complete...");
+                // Durability rule: checkpoint confirmed delivery before waiting on any later CDP read.
+                // If Runtime.evaluate fails after this point, Stop/Start or app restart resumes at
+                // the next unsent RUN ONCE message and never repeats this confirmed message.
+                MessageSent?.Invoke(_currentMessage, _totalMessages, message);
+                if (checkpoint is not null)
+                    await checkpoint(runtimeMessage.OriginalIndex, _totalMessages, message, cancellationToken).ConfigureAwait(false);
+                _sentMessages++;
+                _pendingMessages = Math.Max(0, _pendingMessages - 1);
+                _lastCdpEvent = "Delivery checkpoint committed";
+                PublishInspector("WaitingResponse");
+
+                SetStatus("Message accepted and checkpointed. Monitoring the same chat until the assistant response is complete...", "WaitingResponse");
                 await WaitForNewResponseCompletionAsync(
                     session,
                     conversationUrl,
@@ -171,15 +240,15 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     cancellationToken).ConfigureAwait(false);
 
                 var stepDelaySeconds = step.EffectiveDelaySeconds(defaultDelaySeconds);
-                StatusChanged?.Invoke($"Response complete. Safety delay: {stepDelaySeconds} seconds.");
+                SetStatus($"Response complete. Safety delay: {stepDelaySeconds} seconds.", "SafetyDelay");
                 await Task.Delay(TimeSpan.FromSeconds(stepDelaySeconds), cancellationToken).ConfigureAwait(false);
 
                 tab = await RequireSameConversationAsync(session, conversationUrl, cancellationToken).ConfigureAwait(false);
-                var recheck = await ReadPassiveStateAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+                var recheck = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
                 ThrowIfUnsafe(recheck);
                 if (recheck.IsGenerating)
                 {
-                    StatusChanged?.Invoke("A new response started during the delay. Waiting without sending.");
+                    SetStatus("A new response started during the delay. Waiting without sending.", "WaitingResponse");
                     await WaitForExistingGenerationAsync(session, conversationUrl, defaultDelaySeconds, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -188,11 +257,12 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 {
                     if (!loop)
                     {
-                        StatusChanged?.Invoke("Plan complete. All enabled JSON messages were sent once; monitor stopped.");
+                        SetStatus("Plan complete. All enabled JSON messages were sent once and checkpointed; monitor stopped.", "Complete");
                         return;
                     }
                     messageIndex = 0;
-                    StatusChanged?.Invoke("Plan cycle complete. Loop is ON; restarting from the first enabled message.");
+                    _pendingMessages = messages.Count;
+                    SetStatus("Plan cycle complete. Loop is ON; restarting from the first enabled message.", "LoopRestart");
                 }
                 else
                 {
@@ -202,27 +272,18 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            StatusChanged?.Invoke("Monitor stopped.");
+            SetStatus("Monitor stopped.", "Stopped");
         }
         catch (SimpleMonitorBlockedException ex)
         {
-            StatusChanged?.Invoke($"BLOCKED — {ex.Message}");
+            _lastError = ex.Message;
+            SetStatus($"BLOCKED — {ex.Message}", "Blocked");
         }
         catch (Exception ex)
         {
-            StatusChanged?.Invoke($"BLOCKED — Chrome/session error: {ex.Message}");
+            _lastError = ex.Message;
+            SetStatus($"BLOCKED — Chrome/session error: {ex.Message}", "Blocked");
             await ExceptionLogService.LogAsync(ex, "SimpleMonitorRunner.RunLoop").ConfigureAwait(false);
-        }
-        finally
-        {
-            lock (_sync)
-            {
-                if (_worker is { IsCompleted: false })
-                {
-                    // The task completes immediately after this finally block. Keep the cancellation
-                    // source intact so StopAsync can still join/dispose it deterministically.
-                }
-            }
         }
     }
 
@@ -235,11 +296,11 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         while (true)
         {
             var tab = await RequireSameConversationAsync(session, conversationUrl, cancellationToken).ConfigureAwait(false);
-            var state = await ReadPassiveStateAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+            var state = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
             ThrowIfUnsafe(state);
             if (!state.IsGenerating)
             {
-                StatusChanged?.Invoke($"Existing response finished. Waiting {delaySeconds} seconds before any send.");
+                SetStatus($"Existing response finished. Waiting {delaySeconds} seconds before any send.", "SafetyDelay");
                 await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken).ConfigureAwait(false);
                 return;
             }
@@ -260,7 +321,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         while (true)
         {
             var tab = await RequireSameConversationAsync(session, conversationUrl, cancellationToken).ConfigureAwait(false);
-            var state = await ReadPassiveStateAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+            var state = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
             ThrowIfUnsafe(state);
 
             if (state.IsGenerating)
@@ -304,6 +365,75 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         }
     }
 
+    private async Task<ChatPageState> ReadPassiveStateResilientAsync(
+        ChromeDevToolsService chrome,
+        ChromeTab tab,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 4;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                _lastCdpEvent = attempt == 1 ? "Runtime.evaluate passive read" : $"Runtime.evaluate retry {attempt - 1}/{maxAttempts - 1}";
+                var state = await InvokePassiveStateReaderAsync(chrome, tab, cancellationToken).ConfigureAwait(false);
+                if (attempt > 1) _lastCdpEvent = "Runtime.evaluate recovered";
+                PublishInspector("ReadingChatState");
+                return state;
+            }
+            catch (Exception ex) when (IsTransientRuntimeEvaluateTimeout(ex) && attempt < maxAttempts)
+            {
+                _passiveReadRetries++;
+                _lastError = ex.Message;
+                _lastCdpEvent = $"Runtime.evaluate timeout; safe passive retry {attempt}/{maxAttempts - 1}";
+                StatusChanged?.Invoke($"Chrome state read timed out. Retrying safely ({attempt}/{maxAttempts - 1}) without resending any message...");
+                PublishInspector("RecoveringCdpRead");
+                await Task.Delay(TimeSpan.FromMilliseconds(750 * attempt), cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (IsTransientRuntimeEvaluateTimeout(ex))
+            {
+                _lastError = ex.Message;
+                _lastCdpEvent = "Runtime.evaluate timeout exhausted";
+                PublishInspector("Blocked");
+                throw new SimpleMonitorBlockedException(
+                    "Chrome DevTools Runtime.evaluate remained unavailable after 4 passive read attempts. Confirmed messages remain checkpointed and will not be resent; press Start after Chrome recovers to resume at the next pending message.");
+            }
+        }
+
+        throw new InvalidOperationException("Passive state retry loop exited unexpectedly.");
+    }
+
+    private static async Task<ChatPageState> InvokePassiveStateReaderAsync(
+        ChromeDevToolsService chrome,
+        ChromeTab tab,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var task = (Task<ChatPageState>)(PassiveStateReader.Invoke(
+                chrome,
+                new object[] { tab, cancellationToken })
+                ?? throw new InvalidOperationException("Passive chat-state reader returned no task."));
+            return await task.ConfigureAwait(false);
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is not null)
+        {
+            throw ex.InnerException;
+        }
+    }
+
+    private static bool IsTransientRuntimeEvaluateTimeout(Exception ex)
+    {
+        for (Exception? current = ex; current is not null; current = current.InnerException)
+        {
+            var message = current.Message ?? string.Empty;
+            if (message.Contains("Runtime.evaluate", StringComparison.OrdinalIgnoreCase)
+                && message.Contains("timed out", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
     private static async Task<ChromeTab> RequireSameConversationAsync(
         SimpleMonitorProfileSession session,
         string conversationUrl,
@@ -317,24 +447,6 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             "The selected chat is no longer open in the selected Chrome profile. No other chat will be used.");
     }
 
-    private static Task<ChatPageState> ReadPassiveStateAsync(
-        ChromeDevToolsService chrome,
-        ChromeTab tab,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            return (Task<ChatPageState>)(PassiveStateReader.Invoke(
-                chrome,
-                new object[] { tab, cancellationToken })
-                ?? throw new InvalidOperationException("Passive chat-state reader returned no task."));
-        }
-        catch (TargetInvocationException ex) when (ex.InnerException is not null)
-        {
-            throw ex.InnerException;
-        }
-    }
-
     private static void ThrowIfUnsafe(ChatPageState state)
     {
         if (!string.IsNullOrWhiteSpace(state.ErrorText))
@@ -342,7 +454,25 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 $"ChatGPT reported an error in the current chat: {state.ErrorText}. Same-chat mode will not create a replacement conversation.");
     }
 
+    private void SetStatus(string text, string state)
+    {
+        StatusChanged?.Invoke(text);
+        PublishInspector(state);
+    }
+
+    private void PublishInspector(string state)
+        => InspectorChanged?.Invoke(new SimpleMonitorInspectorSnapshot(
+            state,
+            _currentMessage,
+            _totalMessages,
+            _sentMessages,
+            _pendingMessages,
+            _passiveReadRetries,
+            _lastCdpEvent,
+            _lastError));
+
     public async ValueTask DisposeAsync() => await StopAsync().ConfigureAwait(false);
 
+    private sealed record RuntimeMessage(int OriginalIndex, SimpleMonitorMessageStep Step);
     private sealed class SimpleMonitorBlockedException(string message) : Exception(message);
 }
