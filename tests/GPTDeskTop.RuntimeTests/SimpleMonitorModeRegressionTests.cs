@@ -61,9 +61,31 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.DoesNotContain("ConversationRotation", runner, StringComparison.Ordinal);
         Assert.Contains("openIfMissing: false", runner, StringComparison.Ordinal);
         Assert.Contains("No other chat will be used", runner, StringComparison.Ordinal);
-        Assert.Contains("requireNewTurn: true", runner, StringComparison.Ordinal);
+        Assert.Contains("SimpleMonitorVerifiedSender.SendOnceAndVerifyAsync", runner, StringComparison.Ordinal);
+        Assert.DoesNotContain("session.Chrome.SendChatMessageVerifiedAsync(", runner, StringComparison.Ordinal);
         Assert.Contains("ReadChatStateCoreAsync", runner, StringComparison.Ordinal);
         Assert.DoesNotContain("GetChatStateAsync(", runner, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MonitorOnlyCompletesAllRecoveryGatesBeforeComposerMutationAndNeverRefreshesAfterLoad()
+    {
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
+        var sender = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorVerifiedSender.cs");
+
+        var sendGateIndex = runner.IndexOf("AcquireSendPermitAsync", StringComparison.Ordinal);
+        var senderIndex = runner.IndexOf("SimpleMonitorVerifiedSender.SendOnceAndVerifyAsync", StringComparison.Ordinal);
+        Assert.True(sendGateIndex >= 0);
+        Assert.True(senderIndex > sendGateIndex);
+
+        Assert.Contains("SendChatMessageAsync(tab, message", sender, StringComparison.Ordinal);
+        Assert.DoesNotContain("chrome.SendChatMessageVerifiedAsync(", sender, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReloadTabAsync(", sender, StringComparison.Ordinal);
+        Assert.DoesNotContain("RefreshStuckComposerAsync(", sender, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryRefreshTabBindingAsync(", sender, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveConversationAsync(", sender, StringComparison.Ordinal);
+        Assert.Contains("SimpleMonitorSendUncertainException", sender, StringComparison.Ordinal);
+        Assert.Contains("Automatic retry is blocked", sender, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -164,9 +186,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointTwentyThree()
+    public void ProductVersionIsBumpedToTwoPointZeroPointTwentyFour()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.23</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.24</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
