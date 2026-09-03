@@ -223,15 +223,19 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     cancellationToken).ConfigureAwait(false);
                 tab = sendPermit.Tab;
                 before = sendPermit.State;
-                    ThrowIfUnsafe(before);
+                ThrowIfUnsafe(before);
 
+                // Everything above this point is read-only validation/recovery gating. The selected
+                // message is not written into ChatGPT until the same-chat/send gates have completed.
+                // After SendOnceAndVerifyAsync begins, Monitor Only forbids reload/rebind/reopen and
+                // forbids any second physical submit when the outcome is uncertain.
                 var runtimeMessage = messages[messageIndex];
                 var step = runtimeMessage.Step;
                 var message = step.Text;
                 _currentMessage = runtimeMessage.OriginalIndex + 1;
                 MessageChanged?.Invoke(_currentMessage, _totalMessages, message);
                 SetStatus($"Sending stored message {_currentMessage}/{_totalMessages} to the same chat...", "Sending");
-                _lastCdpEvent = "SendChatMessageVerifiedAsync";
+                _lastCdpEvent = "SimpleMonitorVerifiedSender.SendOnceAndVerifyAsync";
                 PublishInspector("Sending");
 
                 await sendPermit.RecordPhysicalAttemptAsync(CancellationToken.None).ConfigureAwait(false);
@@ -239,11 +243,11 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 try
                 {
                     sent = await SimpleMonitorPassiveReadGate.RunAsync(
-                        () => session.Chrome.SendChatMessageVerifiedAsync(
+                        () => SimpleMonitorVerifiedSender.SendOnceAndVerifyAsync(
+                            session.Chrome,
                             tab,
                             message,
-                            cancellationToken,
-                            requireNewTurn: true),
+                            cancellationToken),
                         cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
@@ -260,7 +264,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     catch
                     {
                         // The send outcome is already uncertain. A failed diagnostic probe must never
-                        // convert uncertainty into permission to try the composer again.
+                        // convert uncertainty into permission to touch the composer or try again.
                     }
 
                     if (rateLimited)
@@ -271,17 +275,18 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     }
 
                     throw new SimpleMonitorBlockedException(
-                        $"The physical send outcome is uncertain ({ex.Message}). Automatic retry is blocked to prevent duplicate delivery. Inspect the same chat before pressing Start again.");
+                        $"The physical send outcome is uncertain ({ex.Message}). No refresh/rebind or automatic retry is allowed after composer mutation. Inspect the same chat before pressing Start again.");
                 }
 
                 if (!sent)
                 {
                     if (await HandleRateLimitIfNeededAsync(session, conversationUrl, tab, cancellationToken).ConfigureAwait(false))
                     {
-                        SetStatus("RATE LIMITED — physical submit was rejected. Safe backoff completed; retry remains behind the global send gate.", "RateLimited");
+                        SetStatus("RATE LIMITED — no physical submit was confirmed. Safe backoff completed; any later attempt remains behind the global send gate.", "RateLimited");
                         continue;
                     }
-                    throw new SimpleMonitorBlockedException("The exact stored message was not safely confirmed as sent. Automatic retry is blocked to prevent a duplicate.");
+                    throw new SimpleMonitorBlockedException(
+                        "The composer could not produce a physical submit. No refresh/rebind is allowed after message load; automatic retry is blocked until the operator starts again.");
                 }
 
                 // Durability rule: checkpoint confirmed delivery before waiting on any later CDP read.
