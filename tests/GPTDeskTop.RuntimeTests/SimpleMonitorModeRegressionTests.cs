@@ -81,6 +81,51 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
+    public void MonitorOnlyIsTheFirstVisibleColdStartSurface()
+    {
+        var program = ReadSource("src", "GPTDeskTop", "Program.cs");
+        var startup = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyStartupCoordinator.cs");
+
+        Assert.Contains("MonitorOnlyStartupCoordinator.Prepare(mainForm, database)", program, StringComparison.Ordinal);
+        Assert.Contains("mainForm.Opacity = 0d", startup, StringComparison.Ordinal);
+        Assert.Contains("mainForm.ShowInTaskbar = false", startup, StringComparison.Ordinal);
+        Assert.Contains("mainForm.Hide()", startup, StringComparison.Ordinal);
+        Assert.Contains("_startupMonitor = new SimpleMonitorForm(database)", startup, StringComparison.Ordinal);
+        Assert.True(
+            startup.IndexOf("mainForm.Hide()", StringComparison.Ordinal)
+            < startup.IndexOf("_startupMonitor.Show()", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ResponsiveMessageSplitterResetsConstraintsBeforeOrientationChange()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "SimpleMonitorForm.cs");
+
+        Assert.Contains("_messageSplit.Panel1MinSize = 0", source, StringComparison.Ordinal);
+        Assert.Contains("_messageSplit.Panel2MinSize = 0", source, StringComparison.Ordinal);
+        Assert.Contains("_messageSplit.SplitterDistance = 0", source, StringComparison.Ordinal);
+        Assert.Contains("if (_messageSplit.Orientation != targetOrientation)", source, StringComparison.Ordinal);
+        Assert.Contains("Math.Clamp(desiredDistance, 1, available - 1)", source, StringComparison.Ordinal);
+        Assert.Contains("ResetSplitMinimums()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Math.Max(_messageSplit.Panel1MinSize, _messageSplit.Height / 2)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void StoredAndJsonMessagesCanBeDeletedAndDeletionIsDurable()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "SimpleMonitorForm.cs");
+
+        Assert.Contains("Delete Selected", source, StringComparison.Ordinal);
+        Assert.Contains("await RemoveMessageAsync()", source, StringComparison.Ordinal);
+        Assert.Contains("_loadedPlan.Messages.RemoveAt(index)", source, StringComparison.Ordinal);
+        Assert.Contains("SetSettingAsync(PlanSetting, SimpleMonitorMessagePlanService.Serialize(_loadedPlan))", source, StringComparison.Ordinal);
+        Assert.Contains("PersistManualMessagesAsync", source, StringComparison.Ordinal);
+        Assert.Contains("_removeMessageButton.Enabled = canDelete", source, StringComparison.Ordinal);
+        Assert.Contains("savedMessagesJson is null", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (_loadedPlan is not null) return;\n        var index = _messagesList.SelectedIndex;", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void SelectedChromeProfileGetsASeparatePersistentAutomationSafeSession()
     {
         var catalog = ReadSource("src", "GPTDeskTop", "Services", "ChromeProfileCatalog.cs");
@@ -95,9 +140,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointNineteen()
+    public void ProductVersionIsBumpedToTwoPointZeroPointTwenty()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.19</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.20</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
