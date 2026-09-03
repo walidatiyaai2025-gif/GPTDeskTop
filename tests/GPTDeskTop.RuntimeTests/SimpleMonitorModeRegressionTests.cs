@@ -73,10 +73,12 @@ public sealed class SimpleMonitorModeRegressionTests
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
         var sender = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorVerifiedSender.cs");
 
-        var sendGateIndex = runner.IndexOf("AcquireSendPermitAsync", StringComparison.Ordinal);
-        var senderIndex = runner.IndexOf("SimpleMonitorVerifiedSender.SendOnceAndVerifyAsync", StringComparison.Ordinal);
-        Assert.True(sendGateIndex >= 0);
-        Assert.True(senderIndex > sendGateIndex);
+        const string gateCall = "await using var sendPermit = await _safety.AcquireSendPermitAsync(";
+        const string mutationCall = "() => SimpleMonitorVerifiedSender.SendOnceAndVerifyAsync(";
+        var sendGateIndex = runner.IndexOf(gateCall, StringComparison.Ordinal);
+        var senderIndex = runner.IndexOf(mutationCall, StringComparison.Ordinal);
+        Assert.True(sendGateIndex >= 0, "The global/same-chat send gate must exist before any Monitor Only composer mutation.");
+        Assert.True(senderIndex > sendGateIndex, "Monitor Only must finish its send/recovery gate before calling the composer-mutating sender.");
 
         Assert.Contains("SendChatMessageAsync(tab, message", sender, StringComparison.Ordinal);
         Assert.DoesNotContain("chrome.SendChatMessageVerifiedAsync(", sender, StringComparison.Ordinal);
