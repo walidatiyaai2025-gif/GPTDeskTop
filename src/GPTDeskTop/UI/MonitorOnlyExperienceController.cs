@@ -30,7 +30,7 @@ internal sealed class MonitorOnlyExperienceController : IDisposable
     private readonly Label _cycleLabel;
     private readonly Label _liveStreamLabel = new();
     private readonly Label _liveDot = new();
-    private readonly System.Windows.Forms.Timer _streamTimer = new() { Interval = 750 };
+    private readonly System.Windows.Forms.Timer _streamTimer = new() { Interval = 1500 };
     private readonly CancellationTokenSource _streamCancellation = new();
     private bool _streamReadInFlight;
     private bool _disposed;
@@ -362,25 +362,26 @@ internal sealed class MonitorOnlyExperienceController : IDisposable
         _liveDot.ForeColor = isGenerating ? FluentTheme.Success : isConnected ? FluentTheme.Info : FluentTheme.Muted;
     }
 
-    private static async Task<LiveChatSnapshot> ReadLiveSnapshotAsync(
+    private static Task<LiveChatSnapshot> ReadLiveSnapshotAsync(
         ChromeDevToolsService chrome,
         ChromeTab tab,
         CancellationToken cancellationToken)
-    {
-        try
+        => SimpleMonitorPassiveReadGate.RunAsync(async () =>
         {
-            var task = (Task<ChatPageState>)(PassiveStateReader.Invoke(
-                chrome,
-                new object[] { tab, cancellationToken })
-                ?? throw new InvalidOperationException("Passive live chat reader returned no task."));
-            var state = await task.ConfigureAwait(true);
-            return new LiveChatSnapshot(state.IsGenerating, state.LastAssistantText ?? string.Empty);
-        }
-        catch (TargetInvocationException ex) when (ex.InnerException is not null)
-        {
-            throw ex.InnerException;
-        }
-    }
+            try
+            {
+                var task = (Task<ChatPageState>)(PassiveStateReader.Invoke(
+                    chrome,
+                    new object[] { tab, cancellationToken })
+                    ?? throw new InvalidOperationException("Passive live chat reader returned no task."));
+                var state = await task.ConfigureAwait(true);
+                return new LiveChatSnapshot(state.IsGenerating, state.LastAssistantText ?? string.Empty);
+            }
+            catch (TargetInvocationException ex) when (ex.InnerException is not null)
+            {
+                throw ex.InnerException;
+            }
+        }, cancellationToken);
 
     private static string CompactTail(string value, int maxLength)
     {

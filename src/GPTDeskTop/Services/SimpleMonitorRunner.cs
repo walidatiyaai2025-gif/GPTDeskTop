@@ -1,4 +1,5 @@
 using System.Reflection;
+using GPTDeskTop.Data;
 using GPTDeskTop.Models;
 
 namespace GPTDeskTop.Services;
@@ -30,6 +31,14 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
     private int _totalMessages;
     private string _lastCdpEvent = "Idle";
     private string _lastError = string.Empty;
+    private readonly SimpleMonitorSafetyGate _safety;
+
+    public SimpleMonitorRunner() : this(null) { }
+
+    public SimpleMonitorRunner(LocalDatabase? database)
+    {
+        _safety = new SimpleMonitorSafetyGate(database);
+    }
 
     public event Action<string>? StatusChanged;
     public event Action<int, int, string>? MessageChanged;
@@ -184,6 +193,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 ?? throw new SimpleMonitorBlockedException("The selected ChatGPT conversation could not be opened in this profile.");
 
             var initial = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+            await HandleRateLimitIfNeededAsync(session, conversationUrl, tab, cancellationToken).ConfigureAwait(false);
             ThrowIfUnsafe(initial);
             if (initial.IsGenerating)
             {
@@ -196,6 +206,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             {
                 tab = await RequireSameConversationAsync(session, conversationUrl, cancellationToken).ConfigureAwait(false);
                 var before = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+                await HandleRateLimitIfNeededAsync(session, conversationUrl, tab, cancellationToken).ConfigureAwait(false);
                 ThrowIfUnsafe(before);
                 if (before.IsGenerating)
                 {
@@ -203,6 +214,16 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     await WaitForExistingGenerationAsync(session, conversationUrl, defaultDelaySeconds, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
+
+                await using var sendPermit = await _safety.AcquireSendPermitAsync(
+                    session.Chrome,
+                    token => RequireSameConversationAsync(session, conversationUrl, token),
+                    (liveTab, token) => ReadPassiveStateResilientAsync(session.Chrome, liveTab, token),
+                    status => SetStatus(status, "SendGate"),
+                    cancellationToken).ConfigureAwait(false);
+                tab = sendPermit.Tab;
+                before = sendPermit.State;
+                    ThrowIfUnsafe(before);
 
                 var runtimeMessage = messages[messageIndex];
                 var step = runtimeMessage.Step;
@@ -213,13 +234,55 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 _lastCdpEvent = "SendChatMessageVerifiedAsync";
                 PublishInspector("Sending");
 
-                var sent = await session.Chrome.SendChatMessageVerifiedAsync(
-                    tab,
-                    message,
-                    cancellationToken,
-                    requireNewTurn: true).ConfigureAwait(false);
+                await sendPermit.RecordPhysicalAttemptAsync(CancellationToken.None).ConfigureAwait(false);
+                bool sent;
+                try
+                {
+                    sent = await SimpleMonitorPassiveReadGate.RunAsync(
+                        () => session.Chrome.SendChatMessageVerifiedAsync(
+                            tab,
+                            message,
+                            cancellationToken,
+                            requireNewTurn: true),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    var rateLimited = false;
+                    try
+                    {
+                        rateLimited = await _safety.ObserveRateLimitAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch
+                    {
+                        // The send outcome is already uncertain. A failed diagnostic probe must never
+                        // convert uncertainty into permission to try the composer again.
+                    }
+
+                    if (rateLimited)
+                    {
+                        SetStatus("RATE LIMITED — physical send outcome is uncertain. Breaker is active and automatic retry is blocked to prevent duplicate delivery.", "RateLimited");
+                        throw new SimpleMonitorBlockedException(
+                            "ChatGPT rate limited the profile while the physical send outcome was uncertain. Automatic retry is blocked to prevent a duplicate. Wait for the cooldown, inspect the same chat, then press Start only after reconciling whether the message arrived.");
+                    }
+
+                    throw new SimpleMonitorBlockedException(
+                        $"The physical send outcome is uncertain ({ex.Message}). Automatic retry is blocked to prevent duplicate delivery. Inspect the same chat before pressing Start again.");
+                }
+
                 if (!sent)
+                {
+                    if (await HandleRateLimitIfNeededAsync(session, conversationUrl, tab, cancellationToken).ConfigureAwait(false))
+                    {
+                        SetStatus("RATE LIMITED — physical submit was rejected. Safe backoff completed; retry remains behind the global send gate.", "RateLimited");
+                        continue;
+                    }
                     throw new SimpleMonitorBlockedException("The exact stored message was not safely confirmed as sent. Automatic retry is blocked to prevent a duplicate.");
+                }
 
                 // Durability rule: checkpoint confirmed delivery before waiting on any later CDP read.
                 // If Runtime.evaluate fails after this point, Stop/Start or app restart resumes at
@@ -238,6 +301,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     conversationUrl,
                     before,
                     cancellationToken).ConfigureAwait(false);
+                await _safety.RecordResponseCompletedAsync(CancellationToken.None).ConfigureAwait(false);
 
                 var stepDelaySeconds = step.EffectiveDelaySeconds(defaultDelaySeconds);
                 SetStatus($"Response complete. Safety delay: {stepDelaySeconds} seconds.", "SafetyDelay");
@@ -245,6 +309,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
 
                 tab = await RequireSameConversationAsync(session, conversationUrl, cancellationToken).ConfigureAwait(false);
                 var recheck = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+                await HandleRateLimitIfNeededAsync(session, conversationUrl, tab, cancellationToken).ConfigureAwait(false);
                 ThrowIfUnsafe(recheck);
                 if (recheck.IsGenerating)
                 {
@@ -297,6 +362,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         {
             var tab = await RequireSameConversationAsync(session, conversationUrl, cancellationToken).ConfigureAwait(false);
             var state = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+            await HandleRateLimitIfNeededAsync(session, conversationUrl, tab, cancellationToken).ConfigureAwait(false);
             ThrowIfUnsafe(state);
             if (!state.IsGenerating)
             {
@@ -322,6 +388,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         {
             var tab = await RequireSameConversationAsync(session, conversationUrl, cancellationToken).ConfigureAwait(false);
             var state = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+            await HandleRateLimitIfNeededAsync(session, conversationUrl, tab, cancellationToken).ConfigureAwait(false);
             ThrowIfUnsafe(state);
 
             if (state.IsGenerating)
@@ -403,24 +470,25 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         throw new InvalidOperationException("Passive state retry loop exited unexpectedly.");
     }
 
-    private static async Task<ChatPageState> InvokePassiveStateReaderAsync(
+    private static Task<ChatPageState> InvokePassiveStateReaderAsync(
         ChromeDevToolsService chrome,
         ChromeTab tab,
         CancellationToken cancellationToken)
-    {
-        try
+        => SimpleMonitorPassiveReadGate.RunAsync(async () =>
         {
-            var task = (Task<ChatPageState>)(PassiveStateReader.Invoke(
-                chrome,
-                new object[] { tab, cancellationToken })
-                ?? throw new InvalidOperationException("Passive chat-state reader returned no task."));
-            return await task.ConfigureAwait(false);
-        }
-        catch (TargetInvocationException ex) when (ex.InnerException is not null)
-        {
-            throw ex.InnerException;
-        }
-    }
+            try
+            {
+                var task = (Task<ChatPageState>)(PassiveStateReader.Invoke(
+                    chrome,
+                    new object[] { tab, cancellationToken })
+                    ?? throw new InvalidOperationException("Passive chat-state reader returned no task."));
+                return await task.ConfigureAwait(false);
+            }
+            catch (TargetInvocationException ex) when (ex.InnerException is not null)
+            {
+                throw ex.InnerException;
+            }
+        }, cancellationToken);
 
     private static bool IsTransientRuntimeEvaluateTimeout(Exception ex)
     {
@@ -445,6 +513,24 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             cancellationToken).ConfigureAwait(false);
         return tab ?? throw new SimpleMonitorBlockedException(
             "The selected chat is no longer open in the selected Chrome profile. No other chat will be used.");
+    }
+
+    private async Task<bool> HandleRateLimitIfNeededAsync(
+        SimpleMonitorProfileSession session,
+        string conversationUrl,
+        ChromeTab tab,
+        CancellationToken cancellationToken)
+    {
+        var active = await _safety.ObserveRateLimitAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+        if (!active) return false;
+
+        SetStatus("RATE LIMITED — ChatGPT temporarily limited this profile. All physical sends are globally paused.", "RateLimited");
+        await _safety.WaitForRateLimitClearAsync(
+            session.Chrome,
+            token => RequireSameConversationAsync(session, conversationUrl, token),
+            status => SetStatus(status, "RateLimited"),
+            cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     private static void ThrowIfUnsafe(ChatPageState state)

@@ -112,7 +112,7 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("topCards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 27))", experience, StringComparison.Ordinal);
         Assert.Contains("Monitor the same chat until assistant response is complete.", experience, StringComparison.Ordinal);
         Assert.Contains("LIVE CHAT", experience, StringComparison.Ordinal);
-        Assert.Contains("Interval = 750", experience, StringComparison.Ordinal);
+        Assert.Contains("Interval = 1500", experience, StringComparison.Ordinal);
         Assert.Contains("ReadChatStateCoreAsync", experience, StringComparison.Ordinal);
         Assert.Contains("state.LastAssistantText", experience, StringComparison.Ordinal);
         Assert.Contains("openIfMissing: false", experience, StringComparison.Ordinal);
@@ -164,9 +164,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointTwentyTwo()
+    public void ProductVersionIsBumpedToTwoPointZeroPointTwentyThree()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.22</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.23</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }

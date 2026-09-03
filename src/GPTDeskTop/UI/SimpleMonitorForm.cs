@@ -14,7 +14,7 @@ public sealed class SimpleMonitorForm : Form
     private const string PlanSetting = "SimpleMonitor.MessagePlanJson";
 
     private readonly LocalDatabase _database;
-    private readonly SimpleMonitorRunner _runner = new();
+    private readonly SimpleMonitorRunner _runner;
     private SimpleMonitorProfileSession? _session;
     private SimpleMonitorMessagePlan? _loadedPlan;
 
@@ -102,6 +102,7 @@ public sealed class SimpleMonitorForm : Form
     public SimpleMonitorForm(LocalDatabase database)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
+        _runner = new SimpleMonitorRunner(_database);
 
         Text = "GPTDeskTop — Monitor Only";
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
