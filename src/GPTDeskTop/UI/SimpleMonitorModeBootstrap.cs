@@ -107,6 +107,7 @@ internal static class SimpleMonitorModeBootstrap
                 if (_monitorOnlyForm is null || _monitorOnlyForm.IsDisposed)
                 {
                     _monitorOnlyForm = new SimpleMonitorForm(database);
+                    MonitorOnlyExperienceController.Attach(_monitorOnlyForm);
                     _monitorOnlyForm.FormClosed += (_, _) =>
                     {
                         _monitorOnlyForm = null;
