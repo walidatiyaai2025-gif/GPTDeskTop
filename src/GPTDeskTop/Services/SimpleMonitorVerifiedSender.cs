@@ -10,7 +10,7 @@ namespace GPTDeskTop.Services;
 /// All conversation recovery/readiness work must complete before this class is called. Once
 /// SendChatMessageAsync starts, this sender performs read-only receipt checks only: it never
 /// reloads, rebinds, reopens, refreshes or retries a physical submit. An uncertain outcome is
-/// returned/raised to the runner, which fails closed and requires operator reconciliation.
+/// raised to the runner, which fails closed and requires operator reconciliation.
 /// </summary>
 internal static class SimpleMonitorVerifiedSender
 {
@@ -44,8 +44,8 @@ internal static class SimpleMonitorVerifiedSender
         if (expected.Length == 0)
             return false;
 
-        // This is the final read-only baseline before the mutation boundary. No recovery action is
-        // allowed after this point; a transport failure becomes an uncertain send and fails closed.
+        // Final read-only baseline before the mutation boundary. No recovery action is allowed
+        // after this point; a transport failure becomes an uncertain send and fails closed.
         var before = await ReadUserTurnSnapshotAsync(chrome, tab, cancellationToken).ConfigureAwait(false);
 
         // Exactly one composer mutation / physical submit attempt. SendChatMessageAsync itself does
@@ -63,17 +63,20 @@ internal static class SimpleMonitorVerifiedSender
 
             if (current.Count > before.Count)
             {
-                // A different new user turn means somebody/something else changed the chat. Do not
-                // retry or reinterpret it as our receipt.
-                return string.Equals(current.LastText, expected, StringComparison.Ordinal);
+                if (string.Equals(current.LastText, expected, StringComparison.Ordinal))
+                    return true;
+
+                throw new SimpleMonitorSendUncertainException(
+                    "A different user turn appeared after the physical submit. Automatic retry is blocked.");
             }
 
             await Task.Delay(ReceiptPollInterval, cancellationToken).ConfigureAwait(false);
         }
 
-        // The click outcome is now uncertain. Returning false causes the monitor runner to block;
-        // it must never reload/rebind or blindly submit the stored message again.
-        return false;
+        // The send button was physically clicked, but the exact new user turn was not confirmed.
+        // Never turn this into a normal false result: the caller must not retry after cooldown/rebind.
+        throw new SimpleMonitorSendUncertainException(
+            "The physical submit was issued, but its exact user-turn receipt was not confirmed within 12 seconds. Automatic retry is blocked.");
     }
 
     private static async Task<UserTurnSnapshot> ReadUserTurnSnapshotAsync(
@@ -100,3 +103,5 @@ internal static class SimpleMonitorVerifiedSender
 
     private readonly record struct UserTurnSnapshot(int Count, string LastText);
 }
+
+internal sealed class SimpleMonitorSendUncertainException(string message) : Exception(message);
