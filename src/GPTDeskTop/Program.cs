@@ -92,6 +92,7 @@ internal static class Program
             ProjectMonitorUiBootstrap.Install(mainForm);
             if (ApplicationBuildIdentity.StableBuildId is not null)
                 mainForm.Text = $"GPTDeskTop {ApplicationBuildIdentity.DisplayVersion}";
+            MonitorOnlyStartupCoordinator.Prepare(mainForm, database);
 
             // The development runtime remains eager because it may need to resume an active plan after
             // crash/takeover recovery. Only the operator dashboard is visual state.
@@ -311,7 +312,8 @@ internal static class Program
                 catch { }
             }
 
-            try { developmentRuntime?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+            try { developmentRuntime?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
             catch { }
 
             var restarted = TryRestartAfterFatal(database);
