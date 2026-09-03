@@ -16,6 +16,10 @@ public sealed class SimpleMonitorMessageStep
     public bool Enabled { get; init; } = true;
     public int? DelaySeconds { get; init; }
 
+    // Runtime-owned durable checkpoint. For RUN ONCE plans a sent message is never
+    // selected again after Stop/Start or application restart.
+    public bool Sent { get; set; }
+
     public int EffectiveDelaySeconds(int defaultDelaySeconds)
         => DelaySeconds ?? defaultDelaySeconds;
 }
