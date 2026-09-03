@@ -76,24 +76,48 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.True(
             source.IndexOf("await monitor.StopAllAsync()", StringComparison.Ordinal)
             < source.IndexOf("main.Hide()", StringComparison.Ordinal));
+        Assert.Contains("MonitorOnlyExperienceController.Attach(_monitorOnlyForm)", source, StringComparison.Ordinal);
         Assert.Contains("Current GPTDeskTop", source, StringComparison.Ordinal);
         Assert.Contains("Monitor Only — Same Chat", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void MonitorOnlyIsTheFirstVisibleColdStartSurface()
+    public void MonitorOnlyColdStartBlocksLegacyBusinessUntilCurrentRadioSelected()
     {
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
-        var startup = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyStartupCoordinator.cs");
+        var gate = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyStartupGate.cs");
+        var experience = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyExperienceController.cs");
 
-        Assert.Contains("MonitorOnlyStartupCoordinator.Prepare(mainForm, database)", program, StringComparison.Ordinal);
-        Assert.Contains("mainForm.Opacity = 0d", startup, StringComparison.Ordinal);
-        Assert.Contains("mainForm.ShowInTaskbar = false", startup, StringComparison.Ordinal);
-        Assert.Contains("mainForm.Hide()", startup, StringComparison.Ordinal);
-        Assert.Contains("_startupMonitor = new SimpleMonitorForm(database)", startup, StringComparison.Ordinal);
-        Assert.True(
-            startup.IndexOf("mainForm.Hide()", StringComparison.Ordinal)
-            < startup.IndexOf("_startupMonitor.Show()", StringComparison.Ordinal));
+        var gateIndex = program.IndexOf("MonitorOnlyStartupGate.Run(database)", StringComparison.Ordinal);
+        Assert.True(gateIndex >= 0);
+        Assert.True(gateIndex < program.IndexOf("CrashRecoveryStateService.PrepareStartupAsync", StringComparison.Ordinal));
+        Assert.True(gateIndex < program.IndexOf("new ChromeDevToolsService", StringComparison.Ordinal));
+        Assert.True(gateIndex < program.IndexOf("new ChatGptMonitorService", StringComparison.Ordinal));
+        Assert.True(gateIndex < program.IndexOf("new DevelopmentTaskRuntimeBinding", StringComparison.Ordinal));
+        Assert.DoesNotContain("MonitorOnlyStartupCoordinator.Prepare", program, StringComparison.Ordinal);
+
+        Assert.Contains("Application.Run(form)", gate, StringComparison.Ordinal);
+        Assert.Contains("return experience.SwitchToCurrentRequested", gate, StringComparison.Ordinal);
+        Assert.Contains("SwitchToCurrentRequested = _currentModeRadio.Checked", experience, StringComparison.Ordinal);
+        Assert.Contains("Closing the window with X/Alt+F4", experience, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PremiumMonitorOnlyCompositionMatchesRequestedLayoutAndStreamsFooterLive()
+    {
+        var experience = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyExperienceController.cs");
+
+        Assert.Contains("topCards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50))", experience, StringComparison.Ordinal);
+        Assert.Contains("topCards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 23))", experience, StringComparison.Ordinal);
+        Assert.Contains("topCards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 27))", experience, StringComparison.Ordinal);
+        Assert.Contains("Monitor the same chat until assistant response is complete.", experience, StringComparison.Ordinal);
+        Assert.Contains("LIVE CHAT", experience, StringComparison.Ordinal);
+        Assert.Contains("Interval = 750", experience, StringComparison.Ordinal);
+        Assert.Contains("ReadChatStateCoreAsync", experience, StringComparison.Ordinal);
+        Assert.Contains("state.LastAssistantText", experience, StringComparison.Ordinal);
+        Assert.Contains("openIfMissing: false", experience, StringComparison.Ordinal);
+        Assert.Contains("Live stream temporarily unavailable", experience, StringComparison.Ordinal);
+        Assert.Contains("must never change Monitor", experience, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -140,9 +164,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointTwenty()
+    public void ProductVersionIsBumpedToTwoPointZeroPointTwentyOne()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.20</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.21</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
