@@ -59,5 +59,13 @@ public sealed class SimpleMonitorRateLimitSafetyRegressionTests
         Assert.Contains("WaitForRateLimitClearAsync", safety, StringComparison.Ordinal);
         Assert.Contains("No message will be sent or retried", safety, StringComparison.Ordinal);
         Assert.Contains("No physical send yet", safety, StringComparison.Ordinal);
+        Assert.Contains("physical send outcome is uncertain", runner, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("automatic retry is blocked to prevent duplicate", runner, StringComparison.OrdinalIgnoreCase);
+
+        var uncertainStart = runner.IndexOf("catch (Exception ex) when (!cancellationToken.IsCancellationRequested)", StringComparison.Ordinal);
+        var uncertainEnd = runner.IndexOf("if (!sent)", uncertainStart, StringComparison.Ordinal);
+        Assert.True(uncertainStart >= 0 && uncertainEnd > uncertainStart);
+        var uncertainBlock = runner[uncertainStart..uncertainEnd];
+        Assert.DoesNotContain("continue;", uncertainBlock, StringComparison.Ordinal);
     }
 }

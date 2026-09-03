@@ -207,7 +207,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 tab = await RequireSameConversationAsync(session, conversationUrl, cancellationToken).ConfigureAwait(false);
                 var before = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
                 await HandleRateLimitIfNeededAsync(session, conversationUrl, tab, cancellationToken).ConfigureAwait(false);
-            ThrowIfUnsafe(before);
+                ThrowIfUnsafe(before);
                 if (before.IsGenerating)
                 {
                     SetStatus("ChatGPT is generating. Send is blocked until the response finishes.", "WaitingResponse");
@@ -223,7 +223,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     cancellationToken).ConfigureAwait(false);
                 tab = sendPermit.Tab;
                 before = sendPermit.State;
-                ThrowIfUnsafe(before);
+                    ThrowIfUnsafe(before);
 
                 var runtimeMessage = messages[messageIndex];
                 var step = runtimeMessage.Step;
@@ -246,14 +246,32 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                             requireNewTurn: true),
                         cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
                 {
-                    if (await HandleRateLimitIfNeededAsync(session, conversationUrl, tab, cancellationToken).ConfigureAwait(false))
+                    var rateLimited = false;
+                    try
                     {
-                        SetStatus("RATE LIMITED — physical submit was rejected. Safe backoff completed; retry remains behind the global send gate.", "RateLimited");
-                        continue;
+                        rateLimited = await _safety.ObserveRateLimitAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
                     }
-                    throw;
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch
+                    {
+                        // The send outcome is already uncertain. A failed diagnostic probe must never
+                        // convert uncertainty into permission to try the composer again.
+                    }
+
+                    if (rateLimited)
+                    {
+                        SetStatus("RATE LIMITED — physical send outcome is uncertain. Breaker is active and automatic retry is blocked to prevent duplicate delivery.", "RateLimited");
+                        throw new SimpleMonitorBlockedException(
+                            "ChatGPT rate limited the profile while the physical send outcome was uncertain. Automatic retry is blocked to prevent a duplicate. Wait for the cooldown, inspect the same chat, then press Start only after reconciling whether the message arrived.");
+                    }
+
+                    throw new SimpleMonitorBlockedException(
+                        $"The physical send outcome is uncertain ({ex.Message}). Automatic retry is blocked to prevent duplicate delivery. Inspect the same chat before pressing Start again.");
                 }
 
                 if (!sent)
@@ -292,7 +310,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 tab = await RequireSameConversationAsync(session, conversationUrl, cancellationToken).ConfigureAwait(false);
                 var recheck = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
                 await HandleRateLimitIfNeededAsync(session, conversationUrl, tab, cancellationToken).ConfigureAwait(false);
-            ThrowIfUnsafe(recheck);
+                ThrowIfUnsafe(recheck);
                 if (recheck.IsGenerating)
                 {
                     SetStatus("A new response started during the delay. Waiting without sending.", "WaitingResponse");
