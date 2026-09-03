@@ -68,9 +68,10 @@ internal static class Program
             if (database.GetSettingAsync("NoResponseRefreshSeconds").GetAwaiter().GetResult() is null)
                 database.SetSettingAsync("NoResponseRefreshSeconds", "180").GetAwaiter().GetResult();
 
-            var currentStartupWasUnclean = CrashRecoveryStateService.PrepareStartupAsync(database).GetAwaiter().GetResult();
+            // Exception logging is shared infrastructure required by Monitor Only itself. No legacy
+            // Current GPTDeskTop service, recovery worker, saved monitor, or development runtime is
+            // constructed before the explicit Current GPTDeskTop radio authorization below.
             ExceptionLogService.Configure(database);
-
             Application.ThreadException += (_, e) => ExceptionLogService.Log(e.Exception, "Application.ThreadException");
             AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             {
@@ -82,6 +83,18 @@ internal static class Program
                 e.SetObserved();
             };
 
+            // TRUE MODE GATE: Monitor Only owns the first application message loop. Closing it while
+            // Monitor Only remains selected exits GPTDeskTop. Only selecting Current GPTDeskTop allows
+            // execution to continue to any legacy business below this point.
+            if (!MonitorOnlyStartupGate.Run(database))
+                return;
+
+            // Do not count time intentionally spent operating Monitor Only against legacy UI startup.
+            startupTimer.Restart();
+
+            // Everything below this line belongs to Current GPTDeskTop and is intentionally lazy.
+            var currentStartupWasUnclean = CrashRecoveryStateService.PrepareStartupAsync(database).GetAwaiter().GetResult();
+
             using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
             var chrome = new ChromeDevToolsService(httpClient, config.Chrome);
             var monitor = new ChatGptMonitorService(chrome, database, config.Monitoring);
@@ -92,10 +105,8 @@ internal static class Program
             ProjectMonitorUiBootstrap.Install(mainForm);
             if (ApplicationBuildIdentity.StableBuildId is not null)
                 mainForm.Text = $"GPTDeskTop {ApplicationBuildIdentity.DisplayVersion}";
-            MonitorOnlyStartupCoordinator.Prepare(mainForm, database);
 
-            // The development runtime remains eager because it may need to resume an active plan after
-            // crash/takeover recovery. Only the operator dashboard is visual state.
+            // The development runtime is created only after Current GPTDeskTop was explicitly selected.
             var resolver = new SavedMonitorTabResolver(chrome);
             var targetFactory = new DevelopmentTaskMonitorTargetFactory(database, resolver, chrome);
             var developmentEngine = new DevelopmentTaskEngine();
@@ -312,7 +323,9 @@ internal static class Program
                 catch { }
             }
 
-            try { developmentRuntime?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            try
+            {
+                developmentRuntime?.DisposeAsync().AsTask().GetAwaiter().GetResult();
             }
             catch { }
 
