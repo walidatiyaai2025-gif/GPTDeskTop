@@ -1,0 +1,38 @@
+name: Apply v2.0.23 Uncertain Send Fail Closed
+
+on:
+  push:
+    branches:
+      - worker/monitor-only-rate-limit-v2023
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply uncertain-send safety fix
+        run: python scripts/apply_v2023_uncertain_send_fix.py
+
+      - name: Remove one-shot integration helpers
+        run: |
+          rm scripts/apply_v2023_uncertain_send_fix.py
+          rm .github/workflows/v2023-uncertain-send-fix.yml
+
+      - name: Commit fail-closed source
+        run: |
+          set -euo pipefail
+          git config user.name "gptdesktop-v2023-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix(monitor-only): block retry after uncertain physical send"
+          git push origin HEAD:worker/monitor-only-rate-limit-v2023
