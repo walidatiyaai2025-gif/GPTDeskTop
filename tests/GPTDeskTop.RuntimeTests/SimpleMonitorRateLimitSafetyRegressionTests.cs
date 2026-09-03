@@ -49,12 +49,13 @@ public sealed class SimpleMonitorRateLimitSafetyRegressionTests
     }
 
     [Fact]
-    public void RateLimitRejectionRetriesOnlyAfterBreakerAndSafeProbe()
+    public void RateLimitAfterPhysicalAttemptFailsClosedWhilePreSendRateLimitUsesBreakerAndSafeProbe()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
         var safety = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorSafetyGate.cs");
 
-        Assert.Contains("RATE LIMITED — physical submit was rejected", runner, StringComparison.Ordinal);
+        Assert.Contains("RATE LIMITED — physical send outcome is uncertain", runner, StringComparison.Ordinal);
+        Assert.Contains("automatic retry is blocked to prevent duplicate delivery", runner, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("HandleRateLimitIfNeededAsync", runner, StringComparison.Ordinal);
         Assert.Contains("WaitForRateLimitClearAsync", safety, StringComparison.Ordinal);
         Assert.Contains("No message will be sent or retried", safety, StringComparison.Ordinal);
