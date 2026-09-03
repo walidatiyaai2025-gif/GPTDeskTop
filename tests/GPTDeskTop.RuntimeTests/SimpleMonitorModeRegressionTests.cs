@@ -42,9 +42,13 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("Download Sample JSON", source, StringComparison.Ordinal);
         Assert.Contains("Copy ChatGPT Prompt", source, StringComparison.Ordinal);
         Assert.Contains("Preview / Validate", source, StringComparison.Ordinal);
+        Assert.Contains("Runtime Inspector", source, StringComparison.Ordinal);
+        Assert.Contains("DrawMode = DrawMode.OwnerDrawFixed", source, StringComparison.Ordinal);
+        Assert.Contains("CheckpointPlanMessageSentAsync", source, StringComparison.Ordinal);
         Assert.Contains("if (!loop)", runner, StringComparison.Ordinal);
         Assert.Contains("messageIndex = 0", runner, StringComparison.Ordinal);
         Assert.Contains("messageIndex++", runner, StringComparison.Ordinal);
+        Assert.Contains("Runtime.evaluate timeout", runner, StringComparison.Ordinal);
         Assert.Contains("Step.EffectiveDelaySeconds", source, StringComparison.Ordinal);
     }
 
@@ -91,9 +95,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointEighteen()
+    public void ProductVersionIsBumpedToTwoPointZeroPointNineteen()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.18</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.19</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
