@@ -1,12 +1,13 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using GPTDeskTop.Services;
 
 namespace GPTDeskTop.UI;
 
 /// <summary>
 /// Keeps Monitor Only's primary runtime actions and product version visible at all supported
-/// window sizes/DPI settings. This is presentation-only: it does not start, stop, resend,
-/// recover, rotate, or otherwise alter Monitor Only business state.
+/// window sizes/DPI settings, and reflects the owner-routed fresh-chat lifecycle in the existing UI.
+/// Runtime sending remains owned by SimpleMonitorRunner.
 /// </summary>
 internal static class MonitorOnlyVisualHotfix
 {
@@ -37,15 +38,14 @@ internal static class MonitorOnlyVisualHotfix
         root.SuspendLayout();
         try
         {
-            // The premium shell is designed to fit the supported minimum window. AutoScroll on
-            // the outer table can make Percent rows grow to preferred size and push the fixed
-            // footer below the viewport, so keep scrolling inside the message panes instead.
             root.AutoScroll = false;
             root.RowStyles[1] = new RowStyle(SizeType.Absolute, 210);
             root.RowStyles[3] = new RowStyle(SizeType.Absolute, 60);
 
             EnsureRuntimeActions(form, root);
             EnsureVersionFooter(root);
+            ApplyFreshChatPolicyText(form, root);
+            WireConversationDisplay(form);
 
             form.MinimumSize = new Size(1100, 720);
             form.Text = $"GPTDeskTop v{GetProductVersion()} — Monitor Only";
@@ -56,6 +56,57 @@ internal static class MonitorOnlyVisualHotfix
         }
 
         InstalledHandles.Add(form.Handle);
+    }
+
+    private static void ApplyFreshChatPolicyText(SimpleMonitorForm form, Control root)
+    {
+        var monitorMode = GetField<RadioButton>(form, "_monitorModeRadio");
+        monitorMode.Text = "Monitor Only — Fresh Chat";
+
+        foreach (var label in EnumerateControls(root).OfType<Label>())
+        {
+            if (!label.Text.StartsWith("LOCKED RULE:", StringComparison.OrdinalIgnoreCase)) continue;
+            label.Text = "LOCKED RULE: Start = NEW CHAT   •   Continue while healthy   •   conversation problem = NEW CHAT   •   429 = WAIT   •   uncertain send = BLOCKED";
+            label.AutoEllipsis = true;
+            break;
+        }
+    }
+
+    private static void WireConversationDisplay(SimpleMonitorForm form)
+    {
+        var runner = GetField<SimpleMonitorRunner>(form, "_runner");
+        var conversation = GetField<ComboBox>(form, "_conversationCombo");
+
+        runner.ConversationChanged += url =>
+        {
+            void ApplyUrl()
+            {
+                if (form.IsDisposed || form.Disposing) return;
+                conversation.SelectedIndex = -1;
+                conversation.Text = url;
+                conversation.SelectionStart = conversation.Text.Length;
+            }
+
+            if (form.IsHandleCreated && form.InvokeRequired)
+            {
+                try { form.BeginInvoke((Action)ApplyUrl); }
+                catch (InvalidOperationException) { }
+            }
+            else
+            {
+                ApplyUrl();
+            }
+        };
+    }
+
+    private static IEnumerable<Control> EnumerateControls(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            yield return child;
+            foreach (var descendant in EnumerateControls(child))
+                yield return descendant;
+        }
     }
 
     private static void EnsureRuntimeActions(SimpleMonitorForm form, TableLayoutPanel root)
