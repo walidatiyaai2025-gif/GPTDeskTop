@@ -7,6 +7,8 @@ namespace GPTDeskTop.Services;
 public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 {
     private readonly HttpClient _httpClient;
+    private readonly object _freshTargetSync = new();
+    private readonly Dictionary<string, HashSet<string>> _freshTargetBaselines = new(StringComparer.Ordinal);
     private Process? _launchedProcess;
 
     public ChromeProfileInfo Profile { get; }
@@ -113,14 +115,19 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
     }
 
     /// <summary>
-    /// Creates a brand-new ChatGPT target in the selected authenticated profile. The target begins
-    /// at chatgpt.com/ and receives a stable /c/{conversation-id} only after ChatGPT accepts the
-    /// first user turn. Monitor Only intentionally uses this on every explicit Start.
+    /// Creates a brand-new ChatGPT target in the selected authenticated profile. The baseline of
+    /// preexisting target IDs is retained so a target replacement during first-send navigation can
+    /// be resolved without accidentally attaching to an older conversation.
     /// </summary>
     public async Task<ChromeTab> CreateFreshConversationTabAsync(CancellationToken cancellationToken = default)
     {
         await EnsureConnectedAsync(cancellationToken);
-        return await Chrome.CreateNewChatTabAsync(cancellationToken);
+        var existingTabs = await Chrome.GetTabsAsync(cancellationToken);
+        var baseline = existingTabs.Select(tab => tab.Id).ToHashSet(StringComparer.Ordinal);
+        var created = await Chrome.CreateNewChatTabAsync(cancellationToken);
+        lock (_freshTargetSync)
+            _freshTargetBaselines[created.Id] = baseline;
+        return created;
     }
 
     /// <summary>
@@ -147,21 +154,52 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 
     /// <summary>
     /// Waits for a newly-created root ChatGPT target to acquire its stable conversation URL after
-    /// the first confirmed send. This is read-only and never creates or resends a message.
+    /// the first confirmed send. Uses the repository's existing new-chat stable-target selector so
+    /// CDP target replacement during navigation is handled without binding to an older chat.
     /// </summary>
     public async Task<ChromeTab?> WaitForStableConversationAsync(
         ChromeTab tab,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tab);
+        HashSet<string> baseline;
+        lock (_freshTargetSync)
+            baseline = _freshTargetBaselines.TryGetValue(tab.Id, out var stored)
+                ? new HashSet<string>(stored, StringComparer.Ordinal)
+                : new HashSet<string>(StringComparer.Ordinal);
+
         for (var attempt = 0; attempt < 120; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var live = await RefreshLiveTabAsync(tab, cancellationToken);
-            if (live is null) return null;
-            if (TryGetConversationId(live.Url, out _)) return live;
+            try
+            {
+                var tabs = await Chrome.GetTabsAsync(cancellationToken);
+                var stable = NewChatStableTargetSelector.Select(tab, baseline, tabs);
+                if (stable is not null && TryGetConversationId(stable.Url, out _))
+                {
+                    var originalId = tab.Id;
+                    CopyTab(tab, stable);
+                    lock (_freshTargetSync)
+                    {
+                        _freshTargetBaselines.Remove(originalId);
+                        _freshTargetBaselines.Remove(tab.Id);
+                    }
+                    return tab;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ChromeTransportFailureClassifier.IsTransient(ex))
+            {
+                // The first-send navigation may briefly replace/rebind the CDP target.
+            }
+
             await Task.Delay(250, cancellationToken);
         }
+
+        lock (_freshTargetSync) _freshTargetBaselines.Remove(tab.Id);
         return null;
     }
 
@@ -243,6 +281,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
     {
         try { _launchedProcess?.Dispose(); } catch { }
         _launchedProcess = null;
+        lock (_freshTargetSync) _freshTargetBaselines.Clear();
         _httpClient.Dispose();
         return ValueTask.CompletedTask;
     }
