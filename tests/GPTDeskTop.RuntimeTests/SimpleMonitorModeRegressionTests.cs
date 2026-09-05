@@ -80,7 +80,11 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.True(sendGateIndex >= 0, "The global/same-chat send gate must exist before any Monitor Only composer mutation.");
         Assert.True(senderIndex > sendGateIndex, "Monitor Only must finish its send/recovery gate before calling the composer-mutating sender.");
 
-        Assert.Contains("SendChatMessageAsync(tab, message", sender, StringComparison.Ordinal);
+        Assert.Contains("PrepareComposerAsync", sender, StringComparison.Ordinal);
+        Assert.Contains("IsComposerReadyToSubmitAsync", sender, StringComparison.Ordinal);
+        Assert.Contains("DispatchSubmitOnceAsync", sender, StringComparison.Ordinal);
+        Assert.Contains("sendButton.click()", sender, StringComparison.Ordinal);
+        Assert.DoesNotContain("chrome.SendChatMessageAsync(", sender, StringComparison.Ordinal);
         Assert.DoesNotContain("chrome.SendChatMessageVerifiedAsync(", sender, StringComparison.Ordinal);
         Assert.DoesNotContain("ReloadTabAsync(", sender, StringComparison.Ordinal);
         Assert.DoesNotContain("RefreshStuckComposerAsync(", sender, StringComparison.Ordinal);
@@ -88,6 +92,22 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.DoesNotContain("ResolveConversationAsync(", sender, StringComparison.Ordinal);
         Assert.Contains("SimpleMonitorSendUncertainException", sender, StringComparison.Ordinal);
         Assert.Contains("Automatic retry is blocked", sender, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PreSubmitRuntimeEvaluateTimeoutIsRetriedWithoutClaimingPhysicalSendUncertain()
+    {
+        var sender = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorVerifiedSender.cs");
+
+        var prepareIndex = sender.IndexOf("PrepareComposerAsync", StringComparison.Ordinal);
+        var dispatchIndex = sender.IndexOf("DispatchSubmitOnceAsync", StringComparison.Ordinal);
+        Assert.True(prepareIndex >= 0);
+        Assert.True(dispatchIndex > prepareIndex);
+        Assert.Contains("PreSubmitRetryWindow", sender, StringComparison.Ordinal);
+        Assert.Contains("A failure before DispatchSubmitOnceAsync is not a physical-send uncertainty", sender, StringComparison.Ordinal);
+        Assert.Contains("The Runtime.evaluate request that contains sendButton.click() is the exact uncertainty", sender, StringComparison.Ordinal);
+        Assert.Contains("Receipt checks are read-only", sender, StringComparison.Ordinal);
+        Assert.Contains("return false;", sender, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -188,9 +208,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointTwentyFour()
+    public void ProductVersionIsBumpedToTwoPointZeroPointTwentyFive()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.24</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.25</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
