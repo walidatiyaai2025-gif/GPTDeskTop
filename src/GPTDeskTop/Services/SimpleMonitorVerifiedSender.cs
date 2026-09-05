@@ -5,11 +5,9 @@ using GPTDeskTop.Models;
 namespace GPTDeskTop.Services;
 
 /// <summary>
-/// Monitor-only send path with an explicit physical-submit boundary.
-///
-/// Composer preparation/readiness failures are pre-submit failures: they may be retried in-place
-/// because no click command has been dispatched. Once the submit Runtime.evaluate command is
-/// dispatched, any transport uncertainty fails closed and receipt verification remains read-only.
+/// Monitor-only send path with one explicit physical-submit boundary.
+/// Composer preparation may retry because it cannot submit. Once the atomic submit command is
+/// dispatched, any transport uncertainty fails closed and receipt verification stays read-only.
 /// </summary>
 internal static class SimpleMonitorVerifiedSender
 {
@@ -31,26 +29,6 @@ internal static class SimpleMonitorVerifiedSender
 })()
 """;
 
-    private const string RateLimitProbeExpression = """
-(() => {
-  const visible = element => {
-    if (!element) return false;
-    const rect = element.getBoundingClientRect();
-    const style = getComputedStyle(element);
-    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-  };
-  const pattern = /too many requests|making requests too quickly|temporarily limited access|please wait a few minutes before trying again|http\s*429|error\s*429|status\s*429/i;
-  for (const selector of ['[role="dialog"]', '[aria-modal="true"]', '[role="alert"]', '[aria-live="assertive"]']) {
-    for (const element of document.querySelectorAll(selector)) {
-      if (!visible(element)) continue;
-      const text = (element.innerText || element.textContent || '').trim();
-      if (text && text.length <= 4000 && pattern.test(text)) return true;
-    }
-  }
-  return false;
-})()
-""";
-
     internal static async Task<bool> SendOnceAndVerifyAsync(
         ChromeDevToolsService chrome,
         ChromeTab tab,
@@ -65,10 +43,10 @@ internal static class SimpleMonitorVerifiedSender
             return false;
 
         // PRE-SUBMIT WAIT CONTRACT:
-        // Keep waiting/retrying in-place until the selected same-chat composer is genuinely ready.
-        // A prepared draft is not a physical send and must never be converted into a terminal
-        // "physical submit unavailable" block merely because ChatGPT took longer than an arbitrary
-        // local timeout to expose/enable its send control. Stop/cancellation remains authoritative.
+        // Composer preparation is safe to retry because it only writes the draft. After the draft
+        // is exact, one atomic Runtime.evaluate validates the current UI, captures the user-turn
+        // baseline and performs at most one physical submit. This avoids the former chain of several
+        // vulnerable CDP round-trips between "draft ready" and the actual submit.
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -82,33 +60,19 @@ internal static class SimpleMonitorVerifiedSender
                     continue;
                 }
 
-                // A rate-limit dialog can appear after the outer send gate but before the click.
-                // Detect it again here while we are still safely pre-submit and return to the
-                // runner's global breaker path without dispatching a physical submit.
-                if (await IsRateLimitVisibleAsync(chrome, tab, cancellationToken).ConfigureAwait(false))
+                var attempt = await DispatchPreparedComposerOnceAsync(
+                    chrome,
+                    tab,
+                    expected,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (attempt.RateLimited)
                     return false;
 
-                var ready = await IsComposerReadyToSubmitAsync(chrome, tab, expected, cancellationToken).ConfigureAwait(false);
-                if (!ready)
+                if (!attempt.Submitted)
                 {
-                    await Task.Delay(PreSubmitPollInterval, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                // Capture the user-turn baseline immediately before dispatching the physical submit.
-                // If this passive read times out, retry is still safe because no click was dispatched.
-                var before = await ReadUserTurnSnapshotAsync(chrome, tab, cancellationToken).ConfigureAwait(false);
-
-                if (await IsRateLimitVisibleAsync(chrome, tab, cancellationToken).ConfigureAwait(false))
-                    return false;
-
-                // PHYSICAL-SUBMIT BOUNDARY. From this call onward a transport timeout is uncertain:
-                // the JavaScript click/requestSubmit may have executed even if the CDP reply was lost.
-                var submitted = await DispatchSubmitOnceAsync(chrome, tab, cancellationToken).ConfigureAwait(false);
-                if (!submitted)
-                {
-                    // The submit expression completed and explicitly reported that no click/submit
-                    // occurred. This remains pre-submit and is safe to retry indefinitely in-place.
+                    // The atomic command completed and explicitly reported that no click/requestSubmit
+                    // occurred. Retrying remains safe because the physical-submit boundary was not crossed.
                     await Task.Delay(PreSubmitPollInterval, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -117,7 +81,7 @@ internal static class SimpleMonitorVerifiedSender
                     chrome,
                     tab,
                     expected,
-                    before,
+                    attempt.Before,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (SimpleMonitorSendUncertainException)
@@ -130,9 +94,9 @@ internal static class SimpleMonitorVerifiedSender
             }
             catch
             {
-                // Any failure before DispatchSubmitOnceAsync is not a physical-send uncertainty.
-                // Keep the same prepared draft and retry in-place; do not refresh/rebind or claim
-                // that a user turn may have been submitted.
+                // Failures here can only come from pre-submit composer preparation. The atomic submit
+                // method converts every transport failure after its Runtime.evaluate dispatch into
+                // SimpleMonitorSendUncertainException, so this retry can never duplicate a send.
                 await Task.Delay(PreSubmitPollInterval, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -204,7 +168,7 @@ internal static class SimpleMonitorVerifiedSender
         return value.ValueKind == JsonValueKind.True;
     }
 
-    private static async Task<bool> IsComposerReadyToSubmitAsync(
+    private static async Task<AtomicSubmitResult> DispatchPreparedComposerOnceAsync(
         ChromeDevToolsService chrome,
         ChromeTab tab,
         string expected,
@@ -234,74 +198,18 @@ internal static class SimpleMonitorVerifiedSender
   const readEditor = editor => editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
     ? editor.value
     : (editor.innerText || editor.textContent || '');
-  const enabledCandidate = button => {
-    if (!button || !visible(button)) return false;
-    if (button.matches(':disabled,[aria-disabled="true"]')) return false;
-    const meta = `${button.getAttribute('data-testid') || ''} ${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`.trim();
-    if (/stop|voice|microphone|audio|attach|upload|cancel|إيقاف|صوت|ميكروفون/i.test(meta)) return false;
-    return true;
+  const rateLimitPattern = /too many requests|making requests too quickly|temporarily limited access|temporarily limited access to your conversations|please wait a few minutes before trying again|rate[ -]?limit|http\s*429|error\s*429|status\s*429/i;
+  const transcriptSelector = '[data-message-author-role="user"],[data-message-author-role="assistant"]';
+  const rateLimitVisible = () => {
+    const roots = [
+      ...document.querySelectorAll('[role="dialog"], [aria-modal="true"], [role="alert"], [aria-live="assertive"], [data-state="open"], [data-radix-portal]')
+    ];
+    return roots.some(element => {
+      if (!visible(element) || element.closest(transcriptSelector)) return false;
+      const text = (element.innerText || element.textContent || '').trim();
+      return text.length > 0 && text.length <= 4000 && rateLimitPattern.test(text);
+    });
   };
-  const findSendButton = editor => {
-    const form = editor?.closest('form');
-    const composer = form || editor?.closest('[data-testid*="composer"]') || editor?.closest('[class*="composer"]') || editor?.parentElement?.parentElement?.parentElement || document;
-    const strict = root => {
-      const byTestId = root.querySelector('button[data-testid="send-button"], [role="button"][data-testid="send-button"]');
-      if (enabledCandidate(byTestId)) return byTestId;
-      const labeled = [...root.querySelectorAll('button,[role="button"]')].find(button => {
-        if (!enabledCandidate(button)) return false;
-        const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`.trim();
-        return /^(send|send message|send prompt|submit|إرسال|إرسال الرسالة)$/i.test(label);
-      });
-      if (labeled) return labeled;
-      if (root instanceof HTMLFormElement) {
-        const submit = [...root.querySelectorAll('button[type="submit"],input[type="submit"]')].find(enabledCandidate);
-        if (submit) return submit;
-      }
-      return null;
-    };
-    return strict(composer) || (composer !== document ? strict(document) : null);
-  };
-
-  const stop = document.querySelector('button[data-testid="stop-button"]');
-  if (visible(stop)) return false;
-  const editor = findEditor();
-  if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
-  if (normalize(readEditor(editor)) !== normalize(expected)) return false;
-
-  if (findSendButton(editor)) return true;
-
-  // Keep the readiness gate aligned with the single-submit dispatch path. ChatGPT may expose
-  // the composer action without the historical send-button metadata, while the exact editor form
-  // remains a valid submit boundary. DispatchSubmitOnceAsync will invoke requestSubmit() once on
-  // this same form; no broad click, Enter-key fallback, reload, or second submit is introduced.
-  const form = editor.closest('form');
-  return !!(form && typeof form.requestSubmit === 'function');
-})()
-""";
-
-        var value = await EvaluateAsync(chrome, tab, expression, cancellationToken).ConfigureAwait(false);
-        return value.ValueKind == JsonValueKind.True;
-    }
-
-    private static async Task<bool> DispatchSubmitOnceAsync(
-        ChromeDevToolsService chrome,
-        ChromeTab tab,
-        CancellationToken cancellationToken)
-    {
-        const string submitExpression = """
-(() => {
-  const visible = element => {
-    if (!element) return false;
-    const rect = element.getBoundingClientRect();
-    const style = getComputedStyle(element);
-    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-  };
-  const findEditor = () =>
-    document.querySelector('#prompt-textarea') ||
-    document.querySelector('textarea[placeholder]') ||
-    document.querySelector('[contenteditable="true"][data-lexical-editor="true"]') ||
-    [...document.querySelectorAll('[contenteditable="true"][role="textbox"]')].find(visible) ||
-    null;
   const enabledCandidate = button => {
     if (!button || !visible(button)) return false;
     if (button.matches(':disabled,[aria-disabled="true"]')) return false;
@@ -330,37 +238,45 @@ internal static class SimpleMonitorVerifiedSender
     return { button: strict(composer) || (composer !== document ? strict(document) : null), form };
   };
 
+  const empty = reason => ({ submitted: false, rateLimited: false, reason, beforeCount: 0, beforeLastText: '', path: '' });
   const stop = document.querySelector('button[data-testid="stop-button"]');
-  if (visible(stop)) return false;
+  if (visible(stop)) return empty('generating');
+
   const editor = findEditor();
-  if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
+  if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return empty('editor-not-ready');
+  if (normalize(readEditor(editor)) !== normalize(expected)) return empty('draft-mismatch');
+  if (rateLimitVisible()) return { ...empty('rate-limited'), rateLimited: true };
+
+  const userTurns = [...document.querySelectorAll('[data-message-author-role="user"]')];
+  const beforeCount = userTurns.length;
+  const beforeLastText = beforeCount
+    ? (userTurns[beforeCount - 1].innerText || userTurns[beforeCount - 1].textContent || '').trim()
+    : '';
   const target = findSendButton(editor);
 
   if (target.button) {
     target.button.click();
     try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch { }
-    return true;
+    return { submitted: true, rateLimited: false, reason: '', beforeCount, beforeLastText, path: 'button' };
   }
 
-  // ChatGPT occasionally renders the blue composer action as a form submit control without
-  // the historical data-testid/aria-label. requestSubmit is scoped to the exact editor form and
-  // is used only when the form exists and the editor is already prepared/validated by the caller.
   if (target.form && typeof target.form.requestSubmit === 'function') {
     target.form.requestSubmit();
     try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch { }
-    return true;
+    return { submitted: true, rateLimited: false, reason: '', beforeCount, beforeLastText, path: 'form' };
   }
 
-  return false;
+  return { submitted: false, rateLimited: false, reason: 'submit-control-not-ready', beforeCount, beforeLastText, path: '' };
 })()
 """;
 
+        JsonElement value;
         try
         {
-            // The Runtime.evaluate request containing click()/requestSubmit() is the exact uncertainty
-            // boundary. If its response is lost, the physical submit may already have executed.
-            var value = await EvaluateAsync(chrome, tab, submitExpression, cancellationToken).ConfigureAwait(false);
-            return value.ValueKind == JsonValueKind.True;
+            // ATOMIC PHYSICAL-SUBMIT BOUNDARY. This single Runtime.evaluate performs the final exact
+            // draft/safety validation, captures the receipt baseline and performs at most one submit.
+            // If its CDP response is lost, the submit may already have happened and retry is forbidden.
+            value = await EvaluateAsync(chrome, tab, expression, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -369,18 +285,28 @@ internal static class SimpleMonitorVerifiedSender
         catch (Exception ex)
         {
             throw new SimpleMonitorSendUncertainException(
-                $"The submit command was dispatched but its CDP result was not confirmed ({ex.Message}). Automatic retry is blocked.",
+                $"The atomic submit command was dispatched but its CDP result was not confirmed ({ex.Message}). Automatic retry is blocked.",
                 ex);
         }
-    }
 
-    private static async Task<bool> IsRateLimitVisibleAsync(
-        ChromeDevToolsService chrome,
-        ChromeTab tab,
-        CancellationToken cancellationToken)
-    {
-        var value = await EvaluateAsync(chrome, tab, RateLimitProbeExpression, cancellationToken).ConfigureAwait(false);
-        return value.ValueKind == JsonValueKind.True;
+        if (value.ValueKind != JsonValueKind.Object)
+            return new AtomicSubmitResult(false, false, new UserTurnSnapshot(0, string.Empty));
+
+        var submitted = value.TryGetProperty("submitted", out var submittedElement)
+            && submittedElement.ValueKind == JsonValueKind.True;
+        var rateLimited = value.TryGetProperty("rateLimited", out var rateElement)
+            && rateElement.ValueKind == JsonValueKind.True;
+        var beforeCount = value.TryGetProperty("beforeCount", out var countElement) && countElement.TryGetInt32(out var count)
+            ? count
+            : 0;
+        var beforeLastText = value.TryGetProperty("beforeLastText", out var textElement)
+            ? textElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        return new AtomicSubmitResult(
+            submitted,
+            rateLimited,
+            new UserTurnSnapshot(beforeCount, beforeLastText.Trim()));
     }
 
     private static async Task<bool> VerifyReceiptReadOnlyAsync(
@@ -416,8 +342,8 @@ internal static class SimpleMonitorVerifiedSender
             }
             catch
             {
-                // Receipt checks are read-only. A transient Runtime.evaluate timeout after the click
-                // is not a reason to send again; keep observing until the receipt deadline.
+                // Receipt checks are read-only. A transient Runtime.evaluate timeout after submit
+                // never authorizes another physical send; keep observing until the receipt deadline.
             }
 
             await Task.Delay(ReceiptPollInterval, cancellationToken).ConfigureAwait(false);
@@ -459,6 +385,7 @@ internal static class SimpleMonitorVerifiedSender
     }
 
     private readonly record struct UserTurnSnapshot(int Count, string LastText);
+    private readonly record struct AtomicSubmitResult(bool Submitted, bool RateLimited, UserTurnSnapshot Before);
 }
 
 internal sealed class SimpleMonitorSendUncertainException : Exception
