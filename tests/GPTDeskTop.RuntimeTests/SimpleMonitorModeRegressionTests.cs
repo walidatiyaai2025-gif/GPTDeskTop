@@ -83,7 +83,8 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("PrepareComposerAsync", sender, StringComparison.Ordinal);
         Assert.Contains("IsComposerReadyToSubmitAsync", sender, StringComparison.Ordinal);
         Assert.Contains("DispatchSubmitOnceAsync", sender, StringComparison.Ordinal);
-        Assert.Contains("sendButton.click()", sender, StringComparison.Ordinal);
+        Assert.Contains("target.button.click()", sender, StringComparison.Ordinal);
+        Assert.Contains("target.form.requestSubmit()", sender, StringComparison.Ordinal);
         Assert.DoesNotContain("chrome.SendChatMessageAsync(", sender, StringComparison.Ordinal);
         Assert.DoesNotContain("chrome.SendChatMessageVerifiedAsync(", sender, StringComparison.Ordinal);
         Assert.DoesNotContain("ReloadTabAsync(", sender, StringComparison.Ordinal);
@@ -103,11 +104,26 @@ public sealed class SimpleMonitorModeRegressionTests
         var dispatchIndex = sender.IndexOf("DispatchSubmitOnceAsync", StringComparison.Ordinal);
         Assert.True(prepareIndex >= 0);
         Assert.True(dispatchIndex > prepareIndex);
-        Assert.Contains("PreSubmitRetryWindow", sender, StringComparison.Ordinal);
-        Assert.Contains("A failure before DispatchSubmitOnceAsync is not a physical-send uncertainty", sender, StringComparison.Ordinal);
-        Assert.Contains("The Runtime.evaluate request that contains sendButton.click() is the exact uncertainty", sender, StringComparison.Ordinal);
+        Assert.Contains("while (true)", sender, StringComparison.Ordinal);
+        Assert.DoesNotContain("PreSubmitRetryWindow", sender, StringComparison.Ordinal);
+        Assert.Contains("A prepared draft is not a physical send", sender, StringComparison.Ordinal);
+        Assert.Contains("Any failure before DispatchSubmitOnceAsync is not a physical-send uncertainty", sender, StringComparison.Ordinal);
+        Assert.Contains("The Runtime.evaluate request containing click()/requestSubmit() is the exact uncertainty", sender, StringComparison.Ordinal);
         Assert.Contains("Receipt checks are read-only", sender, StringComparison.Ordinal);
-        Assert.Contains("return false;", sender, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ComposerSubmitSupportsCurrentChatGptButtonAndFormShapesWithoutBroadBlindClicks()
+    {
+        var sender = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorVerifiedSender.cs");
+
+        Assert.Contains("button[data-testid=\"send-button\"]", sender, StringComparison.Ordinal);
+        Assert.Contains("button[type=\"submit\"],input[type=\"submit\"]", sender, StringComparison.Ordinal);
+        Assert.Contains("send prompt", sender, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("editor?.closest('form')", sender, StringComparison.Ordinal);
+        Assert.Contains("target.form.requestSubmit()", sender, StringComparison.Ordinal);
+        Assert.Contains("if (/stop|voice|microphone|audio|attach|upload|cancel", sender, StringComparison.Ordinal);
+        Assert.Contains("IsRateLimitVisibleAsync", sender, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -208,9 +224,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointTwentyFive()
+    public void ProductVersionIsBumpedToTwoPointZeroPointTwentySix()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.25</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.26</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }

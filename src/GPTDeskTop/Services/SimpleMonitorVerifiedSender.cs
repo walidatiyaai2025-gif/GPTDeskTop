@@ -10,8 +10,6 @@ namespace GPTDeskTop.Services;
 /// Composer preparation/readiness failures are pre-submit failures: they may be retried in-place
 /// because no click command has been dispatched. Once the submit Runtime.evaluate command is
 /// dispatched, any transport uncertainty fails closed and receipt verification remains read-only.
-/// This keeps the UI responsive without turning a pre-submit CDP timeout into a false
-/// "physical send outcome uncertain" block.
 /// </summary>
 internal static class SimpleMonitorVerifiedSender
 {
@@ -19,7 +17,6 @@ internal static class SimpleMonitorVerifiedSender
         .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
         .Single(method => method.Name == "EvaluateAsync" && method.GetParameters().Length == 4);
 
-    private static readonly TimeSpan PreSubmitRetryWindow = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan PreSubmitPollInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan ReceiptTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan ReceiptPollInterval = TimeSpan.FromMilliseconds(250);
@@ -31,6 +28,26 @@ internal static class SimpleMonitorVerifiedSender
     ? (messages[messages.length - 1].innerText || messages[messages.length - 1].textContent || '').trim()
     : '';
   return { count: messages.length, lastText: last };
+})()
+""";
+
+    private const string RateLimitProbeExpression = """
+(() => {
+  const visible = element => {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+  const pattern = /too many requests|making requests too quickly|temporarily limited access|please wait a few minutes before trying again|http\s*429|error\s*429|status\s*429/i;
+  for (const selector of ['[role="dialog"]', '[aria-modal="true"]', '[role="alert"]', '[aria-live="assertive"]']) {
+    for (const element of document.querySelectorAll(selector)) {
+      if (!visible(element)) continue;
+      const text = (element.innerText || element.textContent || '').trim();
+      if (text && text.length <= 4000 && pattern.test(text)) return true;
+    }
+  }
+  return false;
 })()
 """;
 
@@ -47,23 +64,29 @@ internal static class SimpleMonitorVerifiedSender
         if (expected.Length == 0)
             return false;
 
-        var preSubmitDeadline = DateTimeOffset.UtcNow + PreSubmitRetryWindow;
-        UserTurnSnapshot before = default;
-
-        while (DateTimeOffset.UtcNow < preSubmitDeadline)
+        // PRE-SUBMIT WAIT CONTRACT:
+        // Keep waiting/retrying in-place until the selected same-chat composer is genuinely ready.
+        // A prepared draft is not a physical send and must never be converted into a terminal
+        // "physical submit unavailable" block merely because ChatGPT took longer than an arbitrary
+        // local timeout to expose/enable its send control. Stop/cancellation remains authoritative.
+        while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             try
             {
-                // PRE-SUBMIT PHASE. These operations may populate/re-populate the composer, but they
-                // never dispatch the send-button click. A CDP timeout here is therefore safe to retry.
                 var prepared = await PrepareComposerAsync(chrome, tab, expected, cancellationToken).ConfigureAwait(false);
                 if (!prepared)
                 {
                     await Task.Delay(PreSubmitPollInterval, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
+
+                // A rate-limit dialog can appear after the outer send gate but before the click.
+                // Detect it again here while we are still safely pre-submit and return to the
+                // runner's global breaker path without dispatching a physical submit.
+                if (await IsRateLimitVisibleAsync(chrome, tab, cancellationToken).ConfigureAwait(false))
+                    return false;
 
                 var ready = await IsComposerReadyToSubmitAsync(chrome, tab, expected, cancellationToken).ConfigureAwait(false);
                 if (!ready)
@@ -74,15 +97,18 @@ internal static class SimpleMonitorVerifiedSender
 
                 // Capture the user-turn baseline immediately before dispatching the physical submit.
                 // If this passive read times out, retry is still safe because no click was dispatched.
-                before = await ReadUserTurnSnapshotAsync(chrome, tab, cancellationToken).ConfigureAwait(false);
+                var before = await ReadUserTurnSnapshotAsync(chrome, tab, cancellationToken).ConfigureAwait(false);
+
+                if (await IsRateLimitVisibleAsync(chrome, tab, cancellationToken).ConfigureAwait(false))
+                    return false;
 
                 // PHYSICAL-SUBMIT BOUNDARY. From this call onward a transport timeout is uncertain:
-                // the JavaScript click may have executed even if the CDP reply was lost.
+                // the JavaScript click/requestSubmit may have executed even if the CDP reply was lost.
                 var submitted = await DispatchSubmitOnceAsync(chrome, tab, cancellationToken).ConfigureAwait(false);
                 if (!submitted)
                 {
-                    // The submit expression completed and explicitly reported that no click occurred.
-                    // This is still pre-submit and can be retried safely in-place.
+                    // The submit expression completed and explicitly reported that no click/submit
+                    // occurred. This remains pre-submit and is safe to retry indefinitely in-place.
                     await Task.Delay(PreSubmitPollInterval, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -104,15 +130,12 @@ internal static class SimpleMonitorVerifiedSender
             }
             catch
             {
-                // A failure before DispatchSubmitOnceAsync is not a physical-send uncertainty.
-                // Never refresh/rebind here; simply retry the same prepared text in-place.
+                // Any failure before DispatchSubmitOnceAsync is not a physical-send uncertainty.
+                // Keep the same prepared draft and retry in-place; do not refresh/rebind or claim
+                // that a user turn may have been submitted.
                 await Task.Delay(PreSubmitPollInterval, cancellationToken).ConfigureAwait(false);
             }
         }
-
-        // No submit command was dispatched within the pre-submit retry window.
-        // Returning false lets the caller handle the condition without claiming an uncertain send.
-        return false;
     }
 
     private static async Task<bool> PrepareComposerAsync(
@@ -131,15 +154,28 @@ internal static class SimpleMonitorVerifiedSender
     const style = getComputedStyle(element);
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
-  const stop = document.querySelector('button[data-testid="stop-button"]');
-  if (visible(stop)) return false;
-  const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
-  if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
-
-  const current = editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
+  const normalize = value => (value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[\u200b-\u200d\ufeff]/gi, '')
+    .trim();
+  const findEditor = () =>
+    document.querySelector('#prompt-textarea') ||
+    document.querySelector('textarea[placeholder]') ||
+    document.querySelector('[contenteditable="true"][data-lexical-editor="true"]') ||
+    [...document.querySelectorAll('[contenteditable="true"][role="textbox"]')].find(visible) ||
+    null;
+  const readEditor = editor => editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
     ? editor.value
     : (editor.innerText || editor.textContent || '');
-  if ((current || '').trim() === text.trim()) return true;
+
+  const stop = document.querySelector('button[data-testid="stop-button"]');
+  if (visible(stop)) return false;
+  const editor = findEditor();
+  if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
+
+  const current = readEditor(editor);
+  if (normalize(current) === normalize(text)) return true;
 
   editor.focus();
   if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
@@ -157,11 +193,10 @@ internal static class SimpleMonitorVerifiedSender
     selection?.addRange(range);
     document.execCommand('insertText', false, text);
     editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    editor.dispatchEvent(new Event('change', { bubbles: true }));
   }
-  const after = editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
-    ? editor.value
-    : (editor.innerText || editor.textContent || '');
-  return (after || '').trim() === text.trim();
+
+  return normalize(readEditor(editor)) === normalize(text);
 })()
 """;
 
@@ -185,24 +220,55 @@ internal static class SimpleMonitorVerifiedSender
     const style = getComputedStyle(element);
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
-  const stop = document.querySelector('button[data-testid="stop-button"]');
-  if (visible(stop)) return false;
-  const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
-  if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
-  const current = editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
+  const normalize = value => (value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[\u200b-\u200d\ufeff]/gi, '')
+    .trim();
+  const findEditor = () =>
+    document.querySelector('#prompt-textarea') ||
+    document.querySelector('textarea[placeholder]') ||
+    document.querySelector('[contenteditable="true"][data-lexical-editor="true"]') ||
+    [...document.querySelectorAll('[contenteditable="true"][role="textbox"]')].find(visible) ||
+    null;
+  const readEditor = editor => editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
     ? editor.value
     : (editor.innerText || editor.textContent || '');
-  if ((current || '').trim() !== expected.trim()) return false;
-  const sendButton = document.querySelector('button[data-testid="send-button"]') ||
-    [...document.querySelectorAll('button')].find(button => {
-      if (!visible(button)) return false;
-      const label = button.getAttribute('aria-label') || '';
-      return /^(send|send message|إرسال|إرسال الرسالة)$/i.test(label.trim());
-    });
-  return !!sendButton
-    && !sendButton.disabled
-    && sendButton.getAttribute('aria-disabled') !== 'true'
-    && visible(sendButton);
+  const enabledCandidate = button => {
+    if (!button || !visible(button)) return false;
+    if (button.matches(':disabled,[aria-disabled="true"]')) return false;
+    const meta = `${button.getAttribute('data-testid') || ''} ${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`.trim();
+    if (/stop|voice|microphone|audio|attach|upload|cancel|إيقاف|صوت|ميكروفون/i.test(meta)) return false;
+    return true;
+  };
+  const findSendButton = editor => {
+    const form = editor?.closest('form');
+    const composer = form || editor?.closest('[data-testid*="composer"]') || editor?.closest('[class*="composer"]') || editor?.parentElement?.parentElement?.parentElement || document;
+    const strict = root => {
+      const byTestId = root.querySelector('button[data-testid="send-button"], [role="button"][data-testid="send-button"]');
+      if (enabledCandidate(byTestId)) return byTestId;
+      const labeled = [...root.querySelectorAll('button,[role="button"]')].find(button => {
+        if (!enabledCandidate(button)) return false;
+        const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`.trim();
+        return /^(send|send message|send prompt|submit|إرسال|إرسال الرسالة)$/i.test(label);
+      });
+      if (labeled) return labeled;
+      if (root instanceof HTMLFormElement) {
+        const submit = [...root.querySelectorAll('button[type="submit"],input[type="submit"]')].find(enabledCandidate);
+        if (submit) return submit;
+      }
+      return null;
+    };
+    return strict(composer) || (composer !== document ? strict(document) : null);
+  };
+
+  const stop = document.querySelector('button[data-testid="stop-button"]');
+  if (visible(stop)) return false;
+  const editor = findEditor();
+  if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
+  if (normalize(readEditor(editor)) !== normalize(expected)) return false;
+
+  return !!findSendButton(editor);
 })()
 """;
 
@@ -223,25 +289,69 @@ internal static class SimpleMonitorVerifiedSender
     const style = getComputedStyle(element);
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
+  const findEditor = () =>
+    document.querySelector('#prompt-textarea') ||
+    document.querySelector('textarea[placeholder]') ||
+    document.querySelector('[contenteditable="true"][data-lexical-editor="true"]') ||
+    [...document.querySelectorAll('[contenteditable="true"][role="textbox"]')].find(visible) ||
+    null;
+  const enabledCandidate = button => {
+    if (!button || !visible(button)) return false;
+    if (button.matches(':disabled,[aria-disabled="true"]')) return false;
+    const meta = `${button.getAttribute('data-testid') || ''} ${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`.trim();
+    if (/stop|voice|microphone|audio|attach|upload|cancel|إيقاف|صوت|ميكروفون/i.test(meta)) return false;
+    return true;
+  };
+  const findSendButton = editor => {
+    const form = editor?.closest('form');
+    const composer = form || editor?.closest('[data-testid*="composer"]') || editor?.closest('[class*="composer"]') || editor?.parentElement?.parentElement?.parentElement || document;
+    const strict = root => {
+      const byTestId = root.querySelector('button[data-testid="send-button"], [role="button"][data-testid="send-button"]');
+      if (enabledCandidate(byTestId)) return byTestId;
+      const labeled = [...root.querySelectorAll('button,[role="button"]')].find(button => {
+        if (!enabledCandidate(button)) return false;
+        const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`.trim();
+        return /^(send|send message|send prompt|submit|إرسال|إرسال الرسالة)$/i.test(label);
+      });
+      if (labeled) return labeled;
+      if (root instanceof HTMLFormElement) {
+        const submit = [...root.querySelectorAll('button[type="submit"],input[type="submit"]')].find(enabledCandidate);
+        if (submit) return submit;
+      }
+      return null;
+    };
+    return { button: strict(composer) || (composer !== document ? strict(document) : null), form };
+  };
+
   const stop = document.querySelector('button[data-testid="stop-button"]');
   if (visible(stop)) return false;
-  const sendButton = document.querySelector('button[data-testid="send-button"]') ||
-    [...document.querySelectorAll('button')].find(button => {
-      if (!visible(button)) return false;
-      const label = button.getAttribute('aria-label') || '';
-      return /^(send|send message|إرسال|إرسال الرسالة)$/i.test(label.trim());
-    });
-  if (!sendButton || sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true' || !visible(sendButton)) return false;
-  sendButton.click();
-  try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch { }
-  return true;
+  const editor = findEditor();
+  if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
+  const target = findSendButton(editor);
+
+  if (target.button) {
+    target.button.click();
+    try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch { }
+    return true;
+  }
+
+  // ChatGPT occasionally renders the blue composer action as a form submit control without
+  // the historical data-testid/aria-label. requestSubmit is scoped to the exact editor form and
+  // is used only when the form exists and the editor is already prepared/validated by the caller.
+  if (target.form && typeof target.form.requestSubmit === 'function') {
+    target.form.requestSubmit();
+    try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch { }
+    return true;
+  }
+
+  return false;
 })()
 """;
 
         try
         {
-            // The Runtime.evaluate request that contains sendButton.click() is the exact uncertainty
-            // boundary. If the response is lost, the click may already have executed.
+            // The Runtime.evaluate request containing click()/requestSubmit() is the exact uncertainty
+            // boundary. If its response is lost, the physical submit may already have executed.
             var value = await EvaluateAsync(chrome, tab, submitExpression, cancellationToken).ConfigureAwait(false);
             return value.ValueKind == JsonValueKind.True;
         }
@@ -255,6 +365,15 @@ internal static class SimpleMonitorVerifiedSender
                 $"The submit command was dispatched but its CDP result was not confirmed ({ex.Message}). Automatic retry is blocked.",
                 ex);
         }
+    }
+
+    private static async Task<bool> IsRateLimitVisibleAsync(
+        ChromeDevToolsService chrome,
+        ChromeTab tab,
+        CancellationToken cancellationToken)
+    {
+        var value = await EvaluateAsync(chrome, tab, RateLimitProbeExpression, cancellationToken).ConfigureAwait(false);
+        return value.ValueKind == JsonValueKind.True;
     }
 
     private static async Task<bool> VerifyReceiptReadOnlyAsync(
