@@ -8,7 +8,11 @@ namespace GPTDeskTop.Setup;
 internal static class Program
 {
     internal const string AppName = "GPTDeskTop";
-    internal const string Version = "2.0.0";
+    internal static string Version => NormalizeVersion(
+        Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion);
+
     private static readonly string[] RequiredPayloadResources =
     [
         "Payload.GPTDeskTop.exe",
@@ -23,6 +27,13 @@ internal static class Program
 
         if (args.Any(a => string.Equals(a, "--verify-wizard", StringComparison.OrdinalIgnoreCase)))
             return InstallerWizardForm.VerifyWizardContract() ? 0 : 24;
+
+        var verifyVersionIndex = Array.FindIndex(args, a => string.Equals(a, "--verify-version", StringComparison.OrdinalIgnoreCase));
+        if (verifyVersionIndex >= 0)
+        {
+            if (verifyVersionIndex + 1 >= args.Length) return 25;
+            return VerifyVersionContract(args[verifyVersionIndex + 1], out _) ? 0 : 25;
+        }
 
         ApplicationConfiguration.Initialize();
         try
@@ -45,6 +56,67 @@ internal static class Program
             MessageBox.Show(ex.ToString(), $"{AppName} Setup Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
+    }
+
+    private static string NormalizeVersion(string? rawVersion)
+    {
+        if (string.IsNullOrWhiteSpace(rawVersion)) return "unknown";
+
+        var core = rawVersion.Trim();
+        var metadataIndex = core.IndexOf('+');
+        if (metadataIndex >= 0) core = core[..metadataIndex];
+        var prereleaseIndex = core.IndexOf('-');
+        if (prereleaseIndex >= 0) core = core[..prereleaseIndex];
+
+        if (!System.Version.TryParse(core, out var parsed)) return core;
+        var build = parsed.Build >= 0 ? parsed.Build : 0;
+        return $"{parsed.Major}.{parsed.Minor}.{build}";
+    }
+
+    private static bool VerifyVersionContract(string expectedVersion, out string error)
+    {
+        var expected = NormalizeVersion(expectedVersion);
+        if (string.Equals(expected, "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            error = "Expected setup version is empty or invalid.";
+            return false;
+        }
+
+        if (!string.Equals(Version, expected, StringComparison.Ordinal))
+        {
+            error = $"Setup product version mismatch. Expected {expected}, actual {Version}.";
+            return false;
+        }
+
+        var assembly = Assembly.GetExecutingAssembly();
+        using var executable = assembly.GetManifestResourceStream("Payload.GPTDeskTop.exe");
+        if (executable is null || executable.Length <= 0)
+        {
+            error = "Installer application payload is missing while verifying product version.";
+            return false;
+        }
+
+        var tempPath = Path.Combine(Path.GetTempPath(), $"GPTDeskTop-version-probe-{Guid.NewGuid():N}.exe");
+        try
+        {
+            using (var file = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                executable.CopyTo(file);
+
+            var payloadInfo = FileVersionInfo.GetVersionInfo(tempPath);
+            var payloadVersion = NormalizeVersion(payloadInfo.ProductVersion ?? payloadInfo.FileVersion);
+            if (!string.Equals(payloadVersion, expected, StringComparison.Ordinal))
+            {
+                error = $"Embedded GPTDeskTop payload version mismatch. Expected {expected}, actual {payloadVersion}.";
+                return false;
+            }
+        }
+        finally
+        {
+            TryDelete(tempPath);
+        }
+
+        error = string.Empty;
+        return true;
     }
 
     private static bool VerifyPayloadResources(out string error)

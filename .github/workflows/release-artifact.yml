@@ -37,6 +37,36 @@ jobs:
       - name: Build Release x64
         run: dotnet build GPTDeskTop.sln --configuration Release --no-restore -p:Platform=x64
 
+      - name: Verify application and setup version identity
+        shell: pwsh
+        run: |
+          $expected = '${{ steps.release_version.outputs.version }}'
+          $app = (Resolve-Path 'Output/Publish/GPTDeskTop.exe').Path
+          $setup = (Resolve-Path 'Output/Setup/GPTDeskTop-Setup.exe').Path
+
+          function Normalize-Version([string]$value) {
+            if ([string]::IsNullOrWhiteSpace($value)) { return '' }
+            $core = ($value -split '\+')[0]
+            $core = ($core -split '-')[0]
+            $parsed = [version]::Parse($core)
+            return "$($parsed.Major).$($parsed.Minor).$($parsed.Build)"
+          }
+
+          $appVersion = Normalize-Version ((Get-Item $app).VersionInfo.ProductVersion)
+          $setupVersion = Normalize-Version ((Get-Item $setup).VersionInfo.ProductVersion)
+          if ($appVersion -ne $expected) {
+            throw "Published GPTDeskTop.exe version mismatch. Expected $expected, actual $appVersion."
+          }
+          if ($setupVersion -ne $expected) {
+            throw "GPTDeskTop-Setup.exe version mismatch. Expected $expected, actual $setupVersion."
+          }
+
+          $versionProbe = Start-Process -FilePath $setup -ArgumentList @('--verify-version', $expected) -Wait -PassThru
+          if ($versionProbe.ExitCode -ne 0) {
+            throw "Setup/embedded-payload version contract failed for $expected. ExitCode=$($versionProbe.ExitCode)"
+          }
+          Write-Host "Verified setup, embedded payload, and published application all report GPTDeskTop v$expected."
+
       - name: Verify setup executable
         shell: pwsh
         run: |
@@ -141,7 +171,7 @@ jobs:
           Workflow run: ${{ github.run_id }}
 
           Primary deliverable: GPTDeskTop-Setup.exe. Opening it launches the interactive Setup Wizard (Welcome -> Options -> Install -> Finish).
-          The setup payload passed wizard-contract verification, resource verification, PE32+/AMD64 validation, and a real Windows process-load + managed-startup probe before publication.
+          The setup payload passed version-identity verification, wizard-contract verification, resource verification, PE32+/AMD64 validation, and a real Windows process-load + managed-startup probe before publication.
           Required assets are attached below. Verify downloads with SHA256SUMS.txt.
           "@
 
