@@ -28,17 +28,75 @@ internal sealed class SimpleMonitorSafetyGate
     if (!element) return false;
     const rect = element.getBoundingClientRect();
     const style = getComputedStyle(element);
-    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
   };
+  const textOf = element => (element?.innerText || element?.textContent || '').trim();
   const pattern = /too many requests|making requests too quickly|temporarily limited access|temporarily limited access to your conversations|please wait a few minutes before trying again|http\s*429|error\s*429|status\s*429/i;
-  const selectors = ['[role="dialog"]', '[aria-modal="true"]', '[role="alert"]', '[aria-live="assertive"]'];
-  for (const selector of selectors) {
+  const dismissPattern = /^(got it|ok|okay|dismiss|close|understood|حسنًا|حسنا|فهمت|إغلاق|اغلاق)$/i;
+  const transcriptSelector = '[data-message-author-role], [data-testid^="conversation-turn"], article[data-testid^="conversation-turn"]';
+
+  const hasDismissControl = root => [...root.querySelectorAll('button,[role="button"]')].some(button => {
+    if (!visible(button)) return false;
+    const label = `${textOf(button)} ${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`.trim();
+    return dismissPattern.test(label);
+  });
+
+  const modalRoot = element => {
+    let node = element;
+    for (let depth = 0; node && node !== document.body && depth < 10; depth++, node = node.parentElement) {
+      if (!visible(node)) continue;
+      if (node.closest(transcriptSelector)) return null;
+      const style = getComputedStyle(node);
+      const role = (node.getAttribute('role') || '').toLowerCase();
+      const className = typeof node.className === 'string' ? node.className : '';
+      const semanticModal = role === 'dialog'
+        || role === 'alert'
+        || node.getAttribute('aria-modal') === 'true'
+        || node.getAttribute('data-state') === 'open'
+        || node.hasAttribute('data-radix-portal')
+        || /(^|\s|[-_])(modal|dialog)(\s|[-_]|$)/i.test(className);
+      const dismiss = hasDismissControl(node);
+      const rect = node.getBoundingClientRect();
+      const overlayLike = style.position === 'fixed' || style.position === 'sticky';
+      if ((semanticModal || dismiss || (overlayLike && dismiss)) && rect.width >= 220 && rect.height >= 70)
+        return node;
+    }
+    return null;
+  };
+
+  const bodyText = textOf(document.body);
+  if (!pattern.test(bodyText)) return '';
+
+  const semanticSelectors = [
+    '[role="dialog"]',
+    '[aria-modal="true"]',
+    '[role="alert"]',
+    '[aria-live="assertive"]',
+    '[data-state="open"]',
+    '[data-radix-portal]'
+  ];
+  for (const selector of semanticSelectors) {
     for (const element of document.querySelectorAll(selector)) {
-      if (!visible(element)) continue;
-      const text = (element.innerText || element.textContent || '').trim();
+      if (!visible(element) || element.closest(transcriptSelector)) continue;
+      const text = textOf(element);
       if (text && text.length <= 4000 && pattern.test(text)) return text;
     }
   }
+
+  // Current ChatGPT can render the protection notice in a visually modal portal without
+  // role=dialog/aria-modal. Search only visible short text nodes, then require modal evidence
+  // (including the visible "Got it" control) so transcript text cannot create a false 429.
+  for (const element of document.querySelectorAll('h1,h2,h3,h4,p,div,section,span')) {
+    if (!visible(element) || element.closest(transcriptSelector)) continue;
+    const text = textOf(element);
+    if (!text || text.length > 1400 || !pattern.test(text)) continue;
+    const root = modalRoot(element);
+    if (!root) continue;
+    const rootText = textOf(root);
+    if (rootText && rootText.length <= 4000 && pattern.test(rootText)) return rootText;
+    return text;
+  }
+
   return '';
 })()
 """;
