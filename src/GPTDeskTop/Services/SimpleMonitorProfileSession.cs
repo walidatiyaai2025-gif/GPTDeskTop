@@ -7,6 +7,8 @@ namespace GPTDeskTop.Services;
 public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 {
     private readonly HttpClient _httpClient;
+    private readonly object _freshTargetSync = new();
+    private readonly Dictionary<string, HashSet<string>> _freshTargetBaselines = new(StringComparer.Ordinal);
     private Process? _launchedProcess;
 
     public ChromeProfileInfo Profile { get; }
@@ -112,6 +114,95 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
             : null;
     }
 
+    /// <summary>
+    /// Creates a brand-new ChatGPT target in the selected authenticated profile. The baseline of
+    /// preexisting target IDs is retained so a target replacement during first-send navigation can
+    /// be resolved without accidentally attaching to an older conversation.
+    /// </summary>
+    public async Task<ChromeTab> CreateFreshConversationTabAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureConnectedAsync(cancellationToken);
+        var existingTabs = await Chrome.GetTabsAsync(cancellationToken);
+        var baseline = existingTabs.Select(tab => tab.Id).ToHashSet(StringComparer.Ordinal);
+        var created = await Chrome.CreateNewChatTabAsync(cancellationToken);
+        lock (_freshTargetSync)
+            _freshTargetBaselines[created.Id] = baseline;
+        return created;
+    }
+
+    /// <summary>
+    /// Refreshes the mutable tab snapshot from Chrome without navigating or reloading it.
+    /// </summary>
+    public async Task<ChromeTab?> RefreshLiveTabAsync(
+        ChromeTab tab,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tab);
+        await EnsureConnectedAsync(cancellationToken);
+        var tabs = await Chrome.GetTabsAsync(cancellationToken);
+        var live = tabs.FirstOrDefault(candidate => string.Equals(candidate.Id, tab.Id, StringComparison.Ordinal));
+        if (live is null && TryGetConversationId(tab.Url, out var expectedId))
+        {
+            live = tabs.FirstOrDefault(candidate =>
+                TryGetConversationId(candidate.Url, out var actualId)
+                && string.Equals(expectedId, actualId, StringComparison.Ordinal));
+        }
+        if (live is null) return null;
+        CopyTab(tab, live);
+        return tab;
+    }
+
+    /// <summary>
+    /// Waits for a newly-created root ChatGPT target to acquire its stable conversation URL after
+    /// the first confirmed send. Uses the repository's existing new-chat stable-target selector so
+    /// CDP target replacement during navigation is handled without binding to an older chat.
+    /// </summary>
+    public async Task<ChromeTab?> WaitForStableConversationAsync(
+        ChromeTab tab,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tab);
+        HashSet<string> baseline;
+        lock (_freshTargetSync)
+            baseline = _freshTargetBaselines.TryGetValue(tab.Id, out var stored)
+                ? new HashSet<string>(stored, StringComparer.Ordinal)
+                : new HashSet<string>(StringComparer.Ordinal);
+
+        for (var attempt = 0; attempt < 120; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var tabs = await Chrome.GetTabsAsync(cancellationToken);
+                var stable = NewChatStableTargetSelector.Select(tab, baseline, tabs);
+                if (stable is not null && TryGetConversationId(stable.Url, out _))
+                {
+                    var originalId = tab.Id;
+                    CopyTab(tab, stable);
+                    lock (_freshTargetSync)
+                    {
+                        _freshTargetBaselines.Remove(originalId);
+                        _freshTargetBaselines.Remove(tab.Id);
+                    }
+                    return tab;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ChromeTransportFailureClassifier.IsTransient(ex))
+            {
+                // The first-send navigation may briefly replace/rebind the CDP target.
+            }
+
+            await Task.Delay(250, cancellationToken);
+        }
+
+        lock (_freshTargetSync) _freshTargetBaselines.Remove(tab.Id);
+        return null;
+    }
+
     public static bool SameConversation(string left, string right)
         => TryGetConversationId(left, out var leftId)
            && TryGetConversationId(right, out var rightId)
@@ -132,6 +223,15 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 
         conversationId = segments[1];
         return conversationId.Length > 0;
+    }
+
+    private static void CopyTab(ChromeTab target, ChromeTab source)
+    {
+        target.Id = source.Id;
+        target.Title = source.Title;
+        target.Url = source.Url;
+        target.Type = source.Type;
+        target.WebSocketDebuggerUrl = source.WebSocketDebuggerUrl;
     }
 
     private async Task<bool> CanReadEndpointAsync(CancellationToken cancellationToken)
@@ -181,6 +281,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
     {
         try { _launchedProcess?.Dispose(); } catch { }
         _launchedProcess = null;
+        lock (_freshTargetSync) _freshTargetBaselines.Clear();
         _httpClient.Dispose();
         return ValueTask.CompletedTask;
     }

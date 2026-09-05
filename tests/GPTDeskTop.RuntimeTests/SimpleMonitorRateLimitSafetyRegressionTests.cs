@@ -49,24 +49,31 @@ public sealed class SimpleMonitorRateLimitSafetyRegressionTests
     }
 
     [Fact]
-    public void RateLimitAfterPhysicalAttemptFailsClosedWhilePreSendRateLimitUsesBreakerAndSafeProbe()
+    public void RateLimitNeverRotatesAndUncertainDeliveryNeverRetriesAutomatically()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
         var safety = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorSafetyGate.cs");
 
-        Assert.Contains("RATE LIMITED — physical send outcome is uncertain", runner, StringComparison.Ordinal);
-        Assert.Contains("automatic retry is blocked to prevent duplicate delivery", runner, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("HandleRateLimitIfNeededAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("New Chat will NOT be used as a bypass", runner, StringComparison.Ordinal);
+        Assert.Contains("send outcome is uncertain", runner, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("No rollover or automatic resend is allowed", runner, StringComparison.Ordinal);
+        Assert.Contains("Fresh-chat rollover is blocked for this message", runner, StringComparison.Ordinal);
         Assert.Contains("WaitForRateLimitClearAsync", safety, StringComparison.Ordinal);
         Assert.Contains("No message will be sent or retried", safety, StringComparison.Ordinal);
         Assert.Contains("No physical send yet", safety, StringComparison.Ordinal);
-        Assert.Contains("physical send outcome is uncertain", runner, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("automatic retry is blocked to prevent duplicate", runner, StringComparison.OrdinalIgnoreCase);
 
-        var uncertainStart = runner.IndexOf("catch (Exception ex) when (!cancellationToken.IsCancellationRequested)", StringComparison.Ordinal);
-        var uncertainEnd = runner.IndexOf("if (!sent)", uncertainStart, StringComparison.Ordinal);
-        Assert.True(uncertainStart >= 0 && uncertainEnd > uncertainStart);
-        var uncertainBlock = runner[uncertainStart..uncertainEnd];
-        Assert.DoesNotContain("continue;", uncertainBlock, StringComparison.Ordinal);
+        var senderCall = runner.IndexOf("session.Chrome.SendChatMessageVerifiedAsync(", StringComparison.Ordinal);
+        var uncertainCatch = runner.IndexOf("catch (Exception ex)", senderCall, StringComparison.Ordinal);
+        var falseBranch = runner.IndexOf("if (!sent)", senderCall, StringComparison.Ordinal);
+        var safePreSendCatch = runner.IndexOf("catch (ConversationTargetException ex)", falseBranch, StringComparison.Ordinal);
+        Assert.True(senderCall >= 0 && uncertainCatch > senderCall && falseBranch > uncertainCatch && safePreSendCatch > falseBranch);
+
+        var uncertainOutcome = runner[uncertainCatch..falseBranch];
+        Assert.DoesNotContain("RollOverBeforeSendAsync", uncertainOutcome, StringComparison.Ordinal);
+        Assert.DoesNotContain("continue;", uncertainOutcome, StringComparison.Ordinal);
+
+        var unconfirmedDelivery = runner[falseBranch..safePreSendCatch];
+        Assert.DoesNotContain("RollOverBeforeSendAsync", unconfirmedDelivery, StringComparison.Ordinal);
+        Assert.DoesNotContain("continue;", unconfirmedDelivery, StringComparison.Ordinal);
     }
 }
