@@ -37,9 +37,22 @@ public sealed class MonitorOnlyVisualHotfixRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointThirty()
+    public void FreshChatPolicyAndConversationUrlAreVisible()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyVisualHotfix.cs");
+
+        Assert.Contains("Monitor Only — Fresh Chat", source, StringComparison.Ordinal);
+        Assert.Contains("Start = NEW CHAT", source, StringComparison.Ordinal);
+        Assert.Contains("conversation problem = NEW CHAT", source, StringComparison.Ordinal);
+        Assert.Contains("429 = WAIT", source, StringComparison.Ordinal);
+        Assert.Contains("runner.ConversationChanged += url", source, StringComparison.Ordinal);
+        Assert.Contains("conversation.Text = url", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProductVersionIsBumpedToTwoPointZeroPointThirtyOne()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.30</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.31</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
