@@ -268,7 +268,14 @@ internal static class SimpleMonitorVerifiedSender
   if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
   if (normalize(readEditor(editor)) !== normalize(expected)) return false;
 
-  return !!findSendButton(editor);
+  if (findSendButton(editor)) return true;
+
+  // Keep the readiness gate aligned with the single-submit dispatch path. ChatGPT may expose
+  // the composer action without the historical send-button metadata, while the exact editor form
+  // remains a valid submit boundary. DispatchSubmitOnceAsync will invoke requestSubmit() once on
+  // this same form; no broad click, Enter-key fallback, reload, or second submit is introduced.
+  const form = editor.closest('form');
+  return !!(form && typeof form.requestSubmit === 'function');
 })()
 """;
 
