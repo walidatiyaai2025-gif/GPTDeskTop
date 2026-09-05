@@ -121,9 +121,18 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("button[type=\"submit\"],input[type=\"submit\"]", sender, StringComparison.Ordinal);
         Assert.Contains("send prompt", sender, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("editor?.closest('form')", sender, StringComparison.Ordinal);
+        Assert.Contains("const form = editor.closest('form');", sender, StringComparison.Ordinal);
+        Assert.Contains("typeof form.requestSubmit === 'function'", sender, StringComparison.Ordinal);
         Assert.Contains("target.form.requestSubmit()", sender, StringComparison.Ordinal);
         Assert.Contains("if (/stop|voice|microphone|audio|attach|upload|cancel", sender, StringComparison.Ordinal);
         Assert.Contains("IsRateLimitVisibleAsync", sender, StringComparison.Ordinal);
+
+        var readinessIndex = sender.IndexOf("private static async Task<bool> IsComposerReadyToSubmitAsync", StringComparison.Ordinal);
+        var readinessFallbackIndex = sender.IndexOf("const form = editor.closest('form');", readinessIndex, StringComparison.Ordinal);
+        var dispatchIndex = sender.IndexOf("private static async Task<bool> DispatchSubmitOnceAsync", StringComparison.Ordinal);
+        Assert.True(readinessIndex >= 0);
+        Assert.True(readinessFallbackIndex > readinessIndex);
+        Assert.True(dispatchIndex > readinessFallbackIndex, "Form requestSubmit capability must satisfy readiness before the single physical-submit method runs.");
     }
 
     [Fact]
@@ -224,9 +233,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointTwentyEight()
+    public void ProductVersionIsBumpedToTwoPointZeroPointTwentyNine()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.28</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.29</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
