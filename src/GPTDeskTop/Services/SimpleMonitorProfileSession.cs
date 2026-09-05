@@ -112,6 +112,59 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
             : null;
     }
 
+    /// <summary>
+    /// Creates a brand-new ChatGPT target in the selected authenticated profile. The target begins
+    /// at chatgpt.com/ and receives a stable /c/{conversation-id} only after ChatGPT accepts the
+    /// first user turn. Monitor Only intentionally uses this on every explicit Start.
+    /// </summary>
+    public async Task<ChromeTab> CreateFreshConversationTabAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureConnectedAsync(cancellationToken);
+        return await Chrome.CreateNewChatTabAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Refreshes the mutable tab snapshot from Chrome without navigating or reloading it.
+    /// </summary>
+    public async Task<ChromeTab?> RefreshLiveTabAsync(
+        ChromeTab tab,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tab);
+        await EnsureConnectedAsync(cancellationToken);
+        var tabs = await Chrome.GetTabsAsync(cancellationToken);
+        var live = tabs.FirstOrDefault(candidate => string.Equals(candidate.Id, tab.Id, StringComparison.Ordinal));
+        if (live is null && TryGetConversationId(tab.Url, out var expectedId))
+        {
+            live = tabs.FirstOrDefault(candidate =>
+                TryGetConversationId(candidate.Url, out var actualId)
+                && string.Equals(expectedId, actualId, StringComparison.Ordinal));
+        }
+        if (live is null) return null;
+        CopyTab(tab, live);
+        return tab;
+    }
+
+    /// <summary>
+    /// Waits for a newly-created root ChatGPT target to acquire its stable conversation URL after
+    /// the first confirmed send. This is read-only and never creates or resends a message.
+    /// </summary>
+    public async Task<ChromeTab?> WaitForStableConversationAsync(
+        ChromeTab tab,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tab);
+        for (var attempt = 0; attempt < 120; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var live = await RefreshLiveTabAsync(tab, cancellationToken);
+            if (live is null) return null;
+            if (TryGetConversationId(live.Url, out _)) return live;
+            await Task.Delay(250, cancellationToken);
+        }
+        return null;
+    }
+
     public static bool SameConversation(string left, string right)
         => TryGetConversationId(left, out var leftId)
            && TryGetConversationId(right, out var rightId)
@@ -132,6 +185,15 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 
         conversationId = segments[1];
         return conversationId.Length > 0;
+    }
+
+    private static void CopyTab(ChromeTab target, ChromeTab source)
+    {
+        target.Id = source.Id;
+        target.Title = source.Title;
+        target.Url = source.Url;
+        target.Type = source.Type;
+        target.WebSocketDebuggerUrl = source.WebSocketDebuggerUrl;
     }
 
     private async Task<bool> CanReadEndpointAsync(CancellationToken cancellationToken)
