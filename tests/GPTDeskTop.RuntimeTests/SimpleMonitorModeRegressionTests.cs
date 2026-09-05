@@ -47,7 +47,8 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("conversation problem = NEW CHAT", hotfix, StringComparison.Ordinal);
         Assert.Contains("429 = WAIT", hotfix, StringComparison.Ordinal);
         Assert.Contains("uncertain send = BLOCKED", hotfix, StringComparison.Ordinal);
-        Assert.Contains("if (!loop)", runner, StringComparison.Ordinal);
+        Assert.Contains("var nextMessageIndex = isLastStep ? (loop ? 0 : -1) : messageIndex + 1;", runner, StringComparison.Ordinal);
+        Assert.Contains("if (nextMessageIndex < 0)", runner, StringComparison.Ordinal);
         Assert.Contains("messageIndex = nextMessageIndex", runner, StringComparison.Ordinal);
         Assert.Contains("Runtime.evaluate timeout", runner, StringComparison.Ordinal);
         Assert.Contains("Step.EffectiveDelaySeconds", source, StringComparison.Ordinal);
