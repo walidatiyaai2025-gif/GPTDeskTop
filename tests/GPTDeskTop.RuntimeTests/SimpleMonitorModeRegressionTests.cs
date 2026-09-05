@@ -26,16 +26,13 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void AlternateFormExposesOnlyTheRequestedSimpleMonitorBusiness()
+    public void AlternateFormRetainsMessagePlanBusinessAndAppliesFreshChatPolicyAtRuntime()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "SimpleMonitorForm.cs");
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
+        var hotfix = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyVisualHotfix.cs");
 
-        Assert.Contains("Monitor Only — Same Chat", source, StringComparison.Ordinal);
         Assert.Contains("Chrome profile", source, StringComparison.Ordinal);
-        Assert.Contains("Same Chat = ON", source, StringComparison.Ordinal);
-        Assert.Contains("New Chat = OFF", source, StringComparison.Ordinal);
-        Assert.Contains("Rotation = OFF", source, StringComparison.Ordinal);
         Assert.Contains("Minimum = 15", source, StringComparison.Ordinal);
         Assert.Contains("Stored message sequence", source, StringComparison.Ordinal);
         Assert.Contains("Load JSON Plan", source, StringComparison.Ordinal);
@@ -45,92 +42,76 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("Runtime Inspector", source, StringComparison.Ordinal);
         Assert.Contains("DrawMode = DrawMode.OwnerDrawFixed", source, StringComparison.Ordinal);
         Assert.Contains("CheckpointPlanMessageSentAsync", source, StringComparison.Ordinal);
+        Assert.Contains("Monitor Only — Fresh Chat", hotfix, StringComparison.Ordinal);
+        Assert.Contains("Start = NEW CHAT", hotfix, StringComparison.Ordinal);
+        Assert.Contains("conversation problem = NEW CHAT", hotfix, StringComparison.Ordinal);
+        Assert.Contains("429 = WAIT", hotfix, StringComparison.Ordinal);
+        Assert.Contains("uncertain send = BLOCKED", hotfix, StringComparison.Ordinal);
         Assert.Contains("if (!loop)", runner, StringComparison.Ordinal);
-        Assert.Contains("messageIndex = 0", runner, StringComparison.Ordinal);
-        Assert.Contains("messageIndex++", runner, StringComparison.Ordinal);
+        Assert.Contains("messageIndex = nextMessageIndex", runner, StringComparison.Ordinal);
         Assert.Contains("Runtime.evaluate timeout", runner, StringComparison.Ordinal);
         Assert.Contains("Step.EffectiveDelaySeconds", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void RuntimeNeverCreatesOrRotatesToAnotherChat()
+    public void EveryExplicitStartCreatesFreshTargetAndStableUrlIsPersisted()
+    {
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
+        var session = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
+        var hotfix = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyVisualHotfix.cs");
+
+        Assert.Contains("CreateFreshTargetAsync(session, \"Start Monitor\"", runner, StringComparison.Ordinal);
+        Assert.Contains("CreateFreshConversationTabAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("CreateNewChatTabAsync", session, StringComparison.Ordinal);
+        Assert.Contains("WaitForStableConversationAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("NewChatStableTargetSelector.Select", session, StringComparison.Ordinal);
+        Assert.Contains("PublishConversationAsync(activeTab.Url)", runner, StringComparison.Ordinal);
+        Assert.Contains("SimpleMonitor.ConversationUrl", runner, StringComparison.Ordinal);
+        Assert.Contains("ConversationChanged", runner, StringComparison.Ordinal);
+        Assert.Contains("runner.ConversationChanged += url", hotfix, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MonitorOnlyUsesFieldProvenChromeVerifiedSenderInsteadOfAtomicReplacement()
+    {
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
+        var chrome = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
+
+        Assert.Contains("session.Chrome.SendChatMessageVerifiedAsync(", runner, StringComparison.Ordinal);
+        Assert.Contains("requireNewTurn: true", runner, StringComparison.Ordinal);
+        Assert.DoesNotContain("SimpleMonitorVerifiedSender.SendOnceAndVerifyAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("public async Task<bool> SendChatMessageVerifiedAsync", chrome, StringComparison.Ordinal);
+        Assert.Contains("ReconcileUnacknowledgedSubmitAsync", chrome, StringComparison.Ordinal);
+        Assert.Contains("RefreshStuckComposerAsync", chrome, StringComparison.Ordinal);
+        Assert.Contains("TryRefreshTabBindingAsync", chrome, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ConversationFailuresRollOnlyAtSafeBoundaries()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
 
-        Assert.DoesNotContain("CreateNewChatTabAsync", runner, StringComparison.Ordinal);
-        Assert.DoesNotContain("ConversationRotation", runner, StringComparison.Ordinal);
-        Assert.Contains("openIfMissing: false", runner, StringComparison.Ordinal);
-        Assert.Contains("No other chat will be used", runner, StringComparison.Ordinal);
-        Assert.Contains("SimpleMonitorVerifiedSender.SendOnceAndVerifyAsync", runner, StringComparison.Ordinal);
-        Assert.DoesNotContain("session.Chrome.SendChatMessageVerifiedAsync(", runner, StringComparison.Ordinal);
-        Assert.Contains("ReadChatStateCoreAsync", runner, StringComparison.Ordinal);
-        Assert.DoesNotContain("GetChatStateAsync(", runner, StringComparison.Ordinal);
+        Assert.Contains("RollOverBeforeSendAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("No sender has been entered for this iteration", runner, StringComparison.Ordinal);
+        Assert.Contains("RollOverAfterCheckpointAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("Confirmed delivery is durable before any later read or rollover", runner, StringComparison.Ordinal);
+        Assert.Contains("The stable sender did not confirm delivery", runner, StringComparison.Ordinal);
+        Assert.Contains("automatic New Chat/resend is blocked", runner, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Fresh-chat rollover is blocked for this message", runner, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void MonitorOnlyCompletesAllRecoveryGatesBeforeComposerMutationAndNeverRefreshesAfterLoad()
+    public void RateLimitNeverUsesFreshChatAsBypass()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
-        var sender = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorVerifiedSender.cs");
+        var safety = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorSafetyGate.cs");
 
-        const string gateCall = "await using var sendPermit = await _safety.AcquireSendPermitAsync(";
-        const string mutationCall = "() => SimpleMonitorVerifiedSender.SendOnceAndVerifyAsync(";
-        var sendGateIndex = runner.IndexOf(gateCall, StringComparison.Ordinal);
-        var senderIndex = runner.IndexOf(mutationCall, StringComparison.Ordinal);
-        Assert.True(sendGateIndex >= 0, "The global/same-chat send gate must exist before any Monitor Only composer mutation.");
-        Assert.True(senderIndex > sendGateIndex, "Monitor Only must finish its send/recovery gate before calling the composer-mutating sender.");
-
-        Assert.Contains("PrepareComposerAsync", sender, StringComparison.Ordinal);
-        Assert.Contains("DispatchPreparedComposerOnceAsync", sender, StringComparison.Ordinal);
-        Assert.Contains("target.button.click()", sender, StringComparison.Ordinal);
-        Assert.Contains("target.form.requestSubmit()", sender, StringComparison.Ordinal);
-        Assert.DoesNotContain("chrome.SendChatMessageAsync(", sender, StringComparison.Ordinal);
-        Assert.DoesNotContain("chrome.SendChatMessageVerifiedAsync(", sender, StringComparison.Ordinal);
-        Assert.DoesNotContain("ReloadTabAsync(", sender, StringComparison.Ordinal);
-        Assert.DoesNotContain("RefreshStuckComposerAsync(", sender, StringComparison.Ordinal);
-        Assert.DoesNotContain("TryRefreshTabBindingAsync(", sender, StringComparison.Ordinal);
-        Assert.DoesNotContain("ResolveConversationAsync(", sender, StringComparison.Ordinal);
-        Assert.Contains("SimpleMonitorSendUncertainException", sender, StringComparison.Ordinal);
-        Assert.Contains("Automatic retry is blocked", sender, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void PreSubmitPreparationCanRetryButAtomicSubmitTimeoutFailsClosed()
-    {
-        var sender = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorVerifiedSender.cs");
-
-        var prepareIndex = sender.IndexOf("PrepareComposerAsync", StringComparison.Ordinal);
-        var dispatchIndex = sender.IndexOf("DispatchPreparedComposerOnceAsync", StringComparison.Ordinal);
-        Assert.True(prepareIndex >= 0);
-        Assert.True(dispatchIndex > prepareIndex);
-        Assert.Contains("while (true)", sender, StringComparison.Ordinal);
-        Assert.DoesNotContain("PreSubmitRetryWindow", sender, StringComparison.Ordinal);
-        Assert.Contains("one atomic Runtime.evaluate", sender, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("ATOMIC PHYSICAL-SUBMIT BOUNDARY", sender, StringComparison.Ordinal);
-        Assert.Contains("atomic submit command was dispatched but its CDP result was not confirmed", sender, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Receipt checks are read-only", sender, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void AtomicComposerSubmitValidatesDraftSafetyBaselineAndSingleSubmitInOneEvaluation()
-    {
-        var sender = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorVerifiedSender.cs");
-
-        Assert.Contains("private static async Task<AtomicSubmitResult> DispatchPreparedComposerOnceAsync", sender, StringComparison.Ordinal);
-        Assert.Contains("normalize(readEditor(editor)) !== normalize(expected)", sender, StringComparison.Ordinal);
-        Assert.Contains("rateLimitVisible()", sender, StringComparison.Ordinal);
-        Assert.Contains("const beforeCount = userTurns.length", sender, StringComparison.Ordinal);
-        Assert.Contains("beforeLastText", sender, StringComparison.Ordinal);
-        Assert.Contains("button[data-testid=\"send-button\"]", sender, StringComparison.Ordinal);
-        Assert.Contains("button[type=\"submit\"],input[type=\"submit\"]", sender, StringComparison.Ordinal);
-        Assert.Contains("send prompt", sender, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("editor?.closest('form')", sender, StringComparison.Ordinal);
-        Assert.Contains("target.button.click()", sender, StringComparison.Ordinal);
-        Assert.Contains("target.form.requestSubmit()", sender, StringComparison.Ordinal);
-        Assert.Contains("if (/stop|voice|microphone|audio|attach|upload|cancel", sender, StringComparison.Ordinal);
-        Assert.DoesNotContain("IsComposerReadyToSubmitAsync", sender, StringComparison.Ordinal);
-        Assert.DoesNotContain("IsRateLimitVisibleAsync", sender, StringComparison.Ordinal);
-        Assert.DoesNotContain("DispatchSubmitOnceAsync", sender, StringComparison.Ordinal);
+        Assert.Contains("New Chat will NOT be used as a bypass", runner, StringComparison.Ordinal);
+        Assert.Contains("WaitForRateLimitClearAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromMinutes(5)", safety, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromMinutes(10)", safety, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromMinutes(15)", safety, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromMinutes(30)", safety, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -231,9 +212,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointThirty()
+    public void ProductVersionIsBumpedToTwoPointZeroPointThirtyOne()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.30</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.31</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
