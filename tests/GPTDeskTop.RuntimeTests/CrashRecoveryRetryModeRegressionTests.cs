@@ -12,15 +12,17 @@ public sealed class CrashRecoveryRetryModeRegressionTests
     }
 
     [Fact]
-    public void ProgramPropagatesCurrentStartupCrashStateIntoRecoveryMode()
+    public void ProgramRecordsCrashStateButDefersRecoveryUntilExplicitOperatorAction()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
 
         Assert.Contains("var currentStartupWasUnclean = CrashRecoveryStateService.PrepareStartupAsync(database)", source, StringComparison.Ordinal);
-        Assert.Contains("? CrashRecoveryMode.FreshCrashReset", source, StringComparison.Ordinal);
-        Assert.Contains(": CrashRecoveryMode.PendingRetry", source, StringComparison.Ordinal);
-        Assert.Contains("CrashRecoveryService.RecoverIfPendingAsync(", source, StringComparison.Ordinal);
-        Assert.Contains("recoveryMode", source, StringComparison.Ordinal);
+        Assert.Contains("Runtime.StartupBrowserMutationPolicy", source, StringComparison.Ordinal);
+        Assert.Contains("OperatorOnly", source, StringComparison.Ordinal);
+        Assert.Contains("Runtime.StartupRecoveryDeferred", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CrashRecoveryService.RecoverIfPendingAsync(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CrashRecoveryMode.FreshCrashReset", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CrashRecoveryMode.PendingRetry", source, StringComparison.Ordinal);
     }
 
     [Fact]

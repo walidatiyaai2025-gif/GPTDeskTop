@@ -73,19 +73,19 @@ public sealed class InstanceHandoffResumeReconciliationTests
     }
 
     [Fact]
-    public void ProgramPersistsTheAuthoritativeResumeResultWithoutSecondPass()
+    public void ProgramPersistsDeferredHandoffIntentWithoutAutomaticResumePass()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
-        var resume = source.IndexOf("var reconciliation = await InstanceHandoffCoordinator.ResumeRunningMonitorsAsync", StringComparison.Ordinal);
-        var requested = source.IndexOf("LastInstanceHandoffRequestedCount", resume, StringComparison.Ordinal);
+        var requested = source.IndexOf("LastInstanceHandoffRequestedCount", StringComparison.Ordinal);
         var resumed = source.IndexOf("LastInstanceHandoffResumedCount", requested, StringComparison.Ordinal);
         var incomplete = source.IndexOf("LastInstanceHandoffIncompleteCount", resumed, StringComparison.Ordinal);
         var incompleteIds = source.IndexOf("LastInstanceHandoffIncompleteIds", incomplete, StringComparison.Ordinal);
-        var diagnostic = source.IndexOf("Program.InstanceHandoffResumeIncomplete", incompleteIds, StringComparison.Ordinal);
 
-        Assert.True(resume >= 0);
-        Assert.True(requested > resume && resumed > requested && incomplete > resumed && incompleteIds > incomplete);
-        Assert.True(diagnostic > incompleteIds);
+        Assert.True(requested >= 0 && resumed > requested && incomplete > resumed && incompleteIds > incomplete);
+        Assert.Contains("LastWorkingStateService.ReplaceDesiredMonitorIdsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("LastInstanceHandoffResumedCount\", \"0\"", source, StringComparison.Ordinal);
+        Assert.Contains("Runtime.StartupAutoResumeDeferred", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("InstanceHandoffCoordinator.ResumeRunningMonitorsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("InstanceHandoffResumeReconciler.ReconcileAsync", source, StringComparison.Ordinal);
     }
 
