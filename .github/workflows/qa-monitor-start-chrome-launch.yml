@@ -1,0 +1,83 @@
+name: QA Monitor Start Chrome Launch Gate
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  start-monitor-launch-gate:
+    name: Chrome launch only from Start Monitor
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore src/GPTDeskTop/GPTDeskTop.csproj
+
+      - name: Build
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release --no-restore
+
+      - name: Enforce Start-Monitor-only Chrome launch contract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sessionPath = 'src/GPTDeskTop/Services/SimpleMonitorProfileSession.cs'
+          $formPath = 'src/GPTDeskTop/UI/SimpleMonitorForm.cs'
+          $session = Get-Content $sessionPath -Raw
+          $form = Get-Content $formPath -Raw
+
+          $processStarts = [regex]::Matches($session, 'Process\.Start\s*\(').Count
+          if ($processStarts -ne 1) {
+            throw "SimpleMonitorProfileSession must contain exactly one Chrome Process.Start boundary; found $processStarts."
+          }
+
+          $launchMentions = [regex]::Matches($session, 'LaunchChromeForMonitorStartAsync\s*\(').Count
+          if ($launchMentions -ne 2) {
+            throw "LaunchChromeForMonitorStartAsync must have exactly one definition and one call; found $launchMentions mentions."
+          }
+
+          if ($session -notmatch 'if\s*\(!openIfMissing\)\s*return null;\s*await LaunchChromeForMonitorStartAsync') {
+            throw 'Chrome launch boundary is not guarded by openIfMissing in ResolveConversationAsync.'
+          }
+
+          if ($session -notmatch 'public async Task EnsureConnectedAsync[\s\S]*?_ = await CanReadEndpointAsync') {
+            throw 'Pre-start EnsureConnectedAsync is no longer a passive endpoint probe.'
+          }
+
+          $ensureStart = $session.IndexOf('public async Task EnsureConnectedAsync', [StringComparison]::Ordinal)
+          $getTabsStart = $session.IndexOf('public async Task<IReadOnlyList<ChromeTab>> GetConversationTabsAsync', [StringComparison]::Ordinal)
+          if ($ensureStart -lt 0 -or $getTabsStart -le $ensureStart) { throw 'Could not isolate EnsureConnectedAsync.' }
+          $ensureBody = $session.Substring($ensureStart, $getTabsStart - $ensureStart)
+          if ($ensureBody -match 'Process\.Start|LaunchChromeForMonitorStartAsync|CreateTabAsync|CreateNewChatTabAsync') {
+            throw 'Pre-start EnsureConnectedAsync contains a browser mutation.'
+          }
+
+          $getTabsEnd = $session.IndexOf('public async Task<ChromeTab?> ResolveConversationAsync', [StringComparison]::Ordinal)
+          $getTabsBody = $session.Substring($getTabsStart, $getTabsEnd - $getTabsStart)
+          if ($getTabsBody -match 'Process\.Start|LaunchChromeForMonitorStartAsync|CreateTabAsync|CreateNewChatTabAsync') {
+            throw 'GetConversationTabsAsync must remain passive and may not launch/mutate Chrome.'
+          }
+
+          $uiLaunchAuthorizations = [regex]::Matches($form, 'ResolveConversationAsync\s*\(\s*url\s*,\s*openIfMissing:\s*true\s*\)').Count
+          if ($uiLaunchAuthorizations -ne 1) {
+            throw "The Monitor Only UI must contain exactly one explicit launch authorization; found $uiLaunchAuthorizations."
+          }
+
+          $startMethod = $form.IndexOf('private async Task StartMonitorAsync()', [StringComparison]::Ordinal)
+          $checkpointMethod = $form.IndexOf('private async Task CheckpointPlanMessageSentAsync', [StringComparison]::Ordinal)
+          $authorizedCall = $form.IndexOf('ResolveConversationAsync(url, openIfMissing: true)', [StringComparison]::Ordinal)
+          if ($startMethod -lt 0 -or $checkpointMethod -le $startMethod -or $authorizedCall -lt $startMethod -or $authorizedCall -ge $checkpointMethod) {
+            throw 'The only launch-authorized ResolveConversationAsync call is not inside StartMonitorAsync.'
+          }
+
+          Write-Host 'PASS: Monitor Only can launch Chrome only from the explicit Start Monitor path.'
