@@ -50,9 +50,9 @@ public sealed class MonitorOnlyVisualHotfixRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointThirtyTwo()
+    public void ProductVersionIsBumpedToTwoPointZeroPointThirtyThree()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.32</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.33</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
