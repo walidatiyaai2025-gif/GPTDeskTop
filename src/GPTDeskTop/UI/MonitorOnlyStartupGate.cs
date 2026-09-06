@@ -14,6 +14,7 @@ internal static class MonitorOnlyStartupGate
 
         using var form = new SimpleMonitorForm(database);
         using var experience = MonitorOnlyExperienceController.Attach(form);
+        MonitorOnlyRuntimeInspectorExport.Install(form);
         Application.Run(form);
         return experience.SwitchToCurrentRequested;
     }
