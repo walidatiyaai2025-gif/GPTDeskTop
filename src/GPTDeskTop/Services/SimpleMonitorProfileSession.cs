@@ -31,50 +31,22 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         });
     }
 
+    /// <summary>
+    /// Passive pre-start attachment probe. This method deliberately NEVER starts Chrome.
+    /// The Monitor Only UI may call it while loading, selecting a profile, connecting, refreshing,
+    /// or inspecting state without creating any browser process.
+    /// </summary>
     public async Task EnsureConnectedAsync(CancellationToken cancellationToken = default)
     {
-        if (await CanReadEndpointAsync(cancellationToken)) return;
-
-        Directory.CreateDirectory(Profile.ManagedUserDataDirectory);
-        File.WriteAllText(
-            Path.Combine(Profile.ManagedUserDataDirectory, "gptdesktop-profile-source.txt"),
-            $"ChromeProfile={Profile.Key}{Environment.NewLine}DisplayName={Profile.DisplayName}{Environment.NewLine}SourceDirectory={Profile.SourceDirectory}{Environment.NewLine}");
-
-        var chromePath = FindChromePath();
-        var arguments = string.Join(' ', new[]
-        {
-            $"--remote-debugging-port={DebuggingPort}",
-            $"--user-data-dir=\"{Profile.ManagedUserDataDirectory}\"",
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-renderer-backgrounding",
-            "--disable-features=CalculateNativeWinOcclusion",
-            "--new-window",
-            "\"https://chatgpt.com/\""
-        });
-
-        _launchedProcess = Process.Start(new ProcessStartInfo
-        {
-            FileName = chromePath,
-            Arguments = arguments,
-            UseShellExecute = true
-        }) ?? throw new InvalidOperationException("Chrome could not be started for the selected profile.");
-
-        for (var attempt = 0; attempt < 80; attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (await CanReadEndpointAsync(cancellationToken)) return;
-            await Task.Delay(250, cancellationToken);
-        }
-
-        throw new TimeoutException(
-            $"Chrome profile '{Profile.DisplayLabel}' opened, but its automation endpoint did not become ready. Close any conflicting automation window for this profile and retry.");
+        _ = await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<ChromeTab>> GetConversationTabsAsync(CancellationToken cancellationToken = default)
     {
-        await EnsureConnectedAsync(cancellationToken);
-        var tabs = await Chrome.GetTabsAsync(cancellationToken);
+        if (!await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false))
+            return Array.Empty<ChromeTab>();
+
+        var tabs = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
         return tabs
             .Where(tab => TryGetConversationId(tab.Url, out _))
             .OrderBy(tab => tab.Title, StringComparer.CurrentCultureIgnoreCase)
@@ -87,25 +59,32 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         if (!TryGetConversationId(conversationUrl, out var expectedId)) return null;
-        await EnsureConnectedAsync(cancellationToken);
 
-        var tabs = await Chrome.GetTabsAsync(cancellationToken);
+        // openIfMissing:true is the explicit Start Monitor path. It is the ONLY production path
+        // authorized to start Chrome. Passive/read-only calls return null when CDP is unavailable.
+        if (!await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (!openIfMissing) return null;
+            await LaunchChromeForMonitorStartAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        var tabs = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
         var existing = tabs.FirstOrDefault(tab =>
             TryGetConversationId(tab.Url, out var actualId)
             && string.Equals(expectedId, actualId, StringComparison.Ordinal));
         if (existing is not null) return existing;
         if (!openIfMissing) return null;
 
-        var created = await Chrome.CreateTabAsync(conversationUrl, cancellationToken);
+        var created = await Chrome.CreateTabAsync(conversationUrl, cancellationToken).ConfigureAwait(false);
         for (var attempt = 0; attempt < 40; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var currentTabs = await Chrome.GetTabsAsync(cancellationToken);
+            var currentTabs = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
             var resolved = currentTabs.FirstOrDefault(tab =>
                 TryGetConversationId(tab.Url, out var actualId)
                 && string.Equals(expectedId, actualId, StringComparison.Ordinal));
             if (resolved is not null) return resolved;
-            await Task.Delay(250, cancellationToken);
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
         }
 
         return TryGetConversationId(created.Url, out var createdId)
@@ -115,31 +94,33 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
     }
 
     /// <summary>
-    /// Creates a brand-new ChatGPT target in the selected authenticated profile. The baseline of
-    /// preexisting target IDs is retained so a target replacement during first-send navigation can
-    /// be resolved without accidentally attaching to an older conversation.
+    /// Creates a brand-new ChatGPT target in an already-connected selected profile. This method
+    /// never launches or relaunches Chrome; only the explicit Start Monitor authorization may do so.
+    /// The baseline of preexisting target IDs is retained so a target replacement during first-send
+    /// navigation can be resolved without accidentally attaching to an older conversation.
     /// </summary>
     public async Task<ChromeTab> CreateFreshConversationTabAsync(CancellationToken cancellationToken = default)
     {
-        await EnsureConnectedAsync(cancellationToken);
-        var existingTabs = await Chrome.GetTabsAsync(cancellationToken);
+        await EnsureAttachedOrThrowAsync(cancellationToken).ConfigureAwait(false);
+        var existingTabs = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
         var baseline = existingTabs.Select(tab => tab.Id).ToHashSet(StringComparer.Ordinal);
-        var created = await Chrome.CreateNewChatTabAsync(cancellationToken);
+        var created = await Chrome.CreateNewChatTabAsync(cancellationToken).ConfigureAwait(false);
         lock (_freshTargetSync)
             _freshTargetBaselines[created.Id] = baseline;
         return created;
     }
 
     /// <summary>
-    /// Refreshes the mutable tab snapshot from Chrome without navigating or reloading it.
+    /// Refreshes the mutable tab snapshot from Chrome without navigating, reloading, launching,
+    /// or relaunching a browser process.
     /// </summary>
     public async Task<ChromeTab?> RefreshLiveTabAsync(
         ChromeTab tab,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tab);
-        await EnsureConnectedAsync(cancellationToken);
-        var tabs = await Chrome.GetTabsAsync(cancellationToken);
+        await EnsureAttachedOrThrowAsync(cancellationToken).ConfigureAwait(false);
+        var tabs = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
         var live = tabs.FirstOrDefault(candidate => string.Equals(candidate.Id, tab.Id, StringComparison.Ordinal));
         if (live is null && TryGetConversationId(tab.Url, out var expectedId))
         {
@@ -173,7 +154,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var tabs = await Chrome.GetTabsAsync(cancellationToken);
+                var tabs = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
                 var stable = NewChatStableTargetSelector.Select(tab, baseline, tabs);
                 if (stable is not null && TryGetConversationId(stable.Url, out _))
                 {
@@ -196,7 +177,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
                 // The first-send navigation may briefly replace/rebind the CDP target.
             }
 
-            await Task.Delay(250, cancellationToken);
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
         }
 
         lock (_freshTargetSync) _freshTargetBaselines.Remove(tab.Id);
@@ -225,6 +206,58 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         return conversationId.Length > 0;
     }
 
+    private async Task EnsureAttachedOrThrowAsync(CancellationToken cancellationToken)
+    {
+        if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
+
+        throw new InvalidOperationException(
+            "The Monitor Only Chrome automation session is no longer available. GPTDeskTop will not launch or relaunch Chrome automatically. Press Start Monitor to authorize a new Chrome launch.");
+    }
+
+    /// <summary>
+    /// The single Chrome process-launch boundary for Monitor Only. This method is reached only from
+    /// ResolveConversationAsync(openIfMissing:true), whose sole UI caller is StartMonitorAsync.
+    /// </summary>
+    private async Task LaunchChromeForMonitorStartAsync(CancellationToken cancellationToken)
+    {
+        if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
+
+        Directory.CreateDirectory(Profile.ManagedUserDataDirectory);
+        File.WriteAllText(
+            Path.Combine(Profile.ManagedUserDataDirectory, "gptdesktop-profile-source.txt"),
+            $"ChromeProfile={Profile.Key}{Environment.NewLine}DisplayName={Profile.DisplayName}{Environment.NewLine}SourceDirectory={Profile.SourceDirectory}{Environment.NewLine}");
+
+        var chromePath = FindChromePath();
+        var arguments = string.Join(' ', new[]
+        {
+            $"--remote-debugging-port={DebuggingPort}",
+            $"--user-data-dir=\"{Profile.ManagedUserDataDirectory}\"",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-features=CalculateNativeWinOcclusion",
+            "--new-window",
+            "\"https://chatgpt.com/\""
+        });
+
+        _launchedProcess = Process.Start(new ProcessStartInfo
+        {
+            FileName = chromePath,
+            Arguments = arguments,
+            UseShellExecute = true
+        }) ?? throw new InvalidOperationException("Chrome could not be started for the selected profile.");
+
+        for (var attempt = 0; attempt < 80; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new TimeoutException(
+            $"Chrome profile '{Profile.DisplayLabel}' opened after Start Monitor, but its automation endpoint did not become ready. Close any conflicting automation window for this profile and press Start Monitor again.");
+    }
+
     private static void CopyTab(ChromeTab target, ChromeTab source)
     {
         target.Id = source.Id;
@@ -238,7 +271,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
     {
         try
         {
-            _ = await Chrome.GetTabsAsync(cancellationToken);
+            _ = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
