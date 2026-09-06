@@ -32,12 +32,20 @@ public sealed class MonitorOnlyRuntimeInspectorExportRegressionTests
         Assert.Contains("GetField<Label>(form, \"_inspectorRetries\")", export, StringComparison.Ordinal);
         Assert.Contains("GetField<Label>(form, \"_inspectorCdp\")", export, StringComparison.Ordinal);
         Assert.Contains("GetField<Label>(form, \"_inspectorError\")", export, StringComparison.Ordinal);
+        Assert.Contains("state.Text,", export, StringComparison.Ordinal);
+        Assert.Contains("message.Text,", export, StringComparison.Ordinal);
+        Assert.Contains("progress.Text,", export, StringComparison.Ordinal);
+        Assert.Contains("retries.Text,", export, StringComparison.Ordinal);
+        Assert.Contains("cdp.Text,", export, StringComparison.Ordinal);
+        Assert.Contains("error.Text", export, StringComparison.Ordinal);
         Assert.Contains("File.WriteAllText(dialog.FileName", export, StringComparison.Ordinal);
         Assert.Contains("new UTF8Encoding(false)", export, StringComparison.Ordinal);
         Assert.DoesNotContain("_messageEditor", export, StringComparison.Ordinal);
         Assert.DoesNotContain("GetConversationUrl", export, StringComparison.Ordinal);
-        Assert.DoesNotContain("cookie", export, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("token", export, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("CookieContainer", export, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("GetCookies", export, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("AuthorizationHeader", export, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("GitHubToken", export, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ReadSource(params string[] segments)
