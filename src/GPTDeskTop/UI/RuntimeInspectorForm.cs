@@ -1,3 +1,4 @@
+using System.Text;
 using GPTDeskTop.Services;
 
 namespace GPTDeskTop.UI;
@@ -21,11 +22,13 @@ internal sealed class RuntimeInspectorForm : Form
         var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = true, Padding = new Padding(8) };
         var refresh = new Button { Text = "Refresh Snapshot", AutoSize = true };
         var copy = new Button { Text = "Copy Diagnostics", AutoSize = true };
+        var exportSnapshot = new Button { Text = "Export Snapshot", AutoSize = true };
         var export = new Button { Text = "Export Support Bundle", AutoSize = true };
         refresh.Click += (_, _) => RefreshSnapshot();
         copy.Click += (_, _) => { if (!string.IsNullOrWhiteSpace(_text.Text)) Clipboard.SetText(_text.Text); };
+        exportSnapshot.Click += (_, _) => ExportSnapshot();
         export.Click += (_, _) => ExportBundle();
-        actions.Controls.AddRange([refresh, copy, export]);
+        actions.Controls.AddRange([refresh, copy, exportSnapshot, export]);
         Controls.Add(_text);
         Controls.Add(actions);
         Shown += (_, _) => RefreshSnapshot();
@@ -35,6 +38,31 @@ internal sealed class RuntimeInspectorForm : Form
     {
         var snapshot = RuntimeInspectorService.Capture(_runtimeOwner, _monitor);
         _text.Text = RuntimeInspectorService.Summary(snapshot) + Environment.NewLine + RuntimeInspectorService.ToSanitizedJson(snapshot);
+    }
+
+    private void ExportSnapshot()
+    {
+        if (string.IsNullOrWhiteSpace(_text.Text))
+            RefreshSnapshot();
+
+        using var dialog = new SaveFileDialog
+        {
+            Filter = "Text file (*.txt)|*.txt|All files (*.*)|*.*",
+            FileName = $"GPTDeskTop-Runtime-Inspector-{DateTime.Now:yyyyMMdd-HHmmss}.txt",
+            AddExtension = true,
+            DefaultExt = "txt"
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            File.WriteAllText(dialog.FileName, _text.Text, new UTF8Encoding(false));
+            MessageBox.Show(this, "Runtime Inspector snapshot exported.", "Runtime Inspector", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Runtime Inspector export failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void ExportBundle()
