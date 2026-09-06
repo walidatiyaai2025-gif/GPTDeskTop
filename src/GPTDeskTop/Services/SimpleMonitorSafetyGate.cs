@@ -35,6 +35,17 @@ internal sealed class SimpleMonitorSafetyGate
   const dismissPattern = /^(got it|ok|okay|dismiss|close|understood|حسنًا|حسنا|فهمت|إغلاق|اغلاق)$/i;
   const transcriptSelector = '[data-message-author-role], [data-testid^="conversation-turn"], article[data-testid^="conversation-turn"]';
 
+  const dismissControl = root => {
+    const button = [...root.querySelectorAll('button,[role="button"]')].find(candidate => {
+      if (!visible(candidate)) return false;
+      const label = `${textOf(candidate)} ${candidate.getAttribute('aria-label') || ''} ${candidate.getAttribute('title') || ''}`.trim();
+      return dismissPattern.test(label);
+    });
+    if (!button) return false;
+    button.click();
+    return true;
+  };
+
   const hasDismissControl = root => [...root.querySelectorAll('button,[role="button"]')].some(button => {
     if (!visible(button)) return false;
     const label = `${textOf(button)} ${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`.trim();
@@ -79,7 +90,10 @@ internal sealed class SimpleMonitorSafetyGate
     for (const element of document.querySelectorAll(selector)) {
       if (!visible(element) || element.closest(transcriptSelector)) continue;
       const text = textOf(element);
-      if (text && text.length <= 4000 && pattern.test(text)) return text;
+      if (text && text.length <= 4000 && pattern.test(text)) {
+        dismissControl(element);
+        return text;
+      }
     }
   }
 
@@ -93,6 +107,7 @@ internal sealed class SimpleMonitorSafetyGate
     const root = modalRoot(element);
     if (!root) continue;
     const rootText = textOf(root);
+    dismissControl(root);
     if (rootText && rootText.length <= 4000 && pattern.test(rootText)) return rootText;
     return text;
   }
