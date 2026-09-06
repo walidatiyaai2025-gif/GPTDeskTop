@@ -93,6 +93,8 @@ internal static class Program
             startupTimer.Restart();
 
             // Everything below this line belongs to Current GPTDeskTop and is intentionally lazy.
+            // Prepare crash-state bookkeeping only. v2.0.32 deliberately does not execute browser,
+            // tab, monitor, recovery-send or development-task mutations merely because this UI loaded.
             var currentStartupWasUnclean = CrashRecoveryStateService.PrepareStartupAsync(database).GetAwaiter().GetResult();
 
             using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
@@ -231,82 +233,33 @@ internal static class Program
 
                 try
                 {
-                    var recoveryMode = currentStartupWasUnclean
-                        ? CrashRecoveryMode.FreshCrashReset
-                        : CrashRecoveryMode.PendingRetry;
-                    await CrashRecoveryService.RecoverIfPendingAsync(
-                        chrome,
-                        monitor,
-                        database,
-                        recoveryMode);
-
+                    // OPERATOR-ONLY STARTUP POLICY (v2.0.32): opening Current GPTDeskTop is UI-only.
+                    // Preserve every saved monitor and pending intent, but do not launch/restart Chrome,
+                    // create/reopen a tab, send a recovery follow-up, start a monitor, or resume a
+                    // development task until the operator explicitly requests the corresponding action.
                     if (takeover is not null)
                     {
-                        var reconciliation = await InstanceHandoffCoordinator.ResumeRunningMonitorsAsync(
-                            takeover,
-                            chrome,
-                            monitor,
-                            database);
-                        var incompleteIds = string.Join(",", reconciliation.IncompleteMonitorIds);
-
-                        await database.SetSettingAsync("LastInstanceHandoffUtc", DateTimeOffset.UtcNow.ToString("O"));
-                        await database.SetSettingAsync("LastInstanceHandoffRequestedCount", reconciliation.RequestedCount.ToString());
-                        await database.SetSettingAsync("LastInstanceHandoffResumedCount", reconciliation.ResumedCount.ToString());
-                        await database.SetSettingAsync("LastInstanceHandoffIncompleteCount", reconciliation.IncompleteCount.ToString());
-                        await database.SetSettingAsync("LastInstanceHandoffIncompleteIds", incompleteIds);
-
-                        if (reconciliation.IncompleteCount > 0)
-                        {
-                            var summary = string.Join(
-                                "; ",
-                                reconciliation.Outcomes
-                                    .Where(outcome => !string.Equals(outcome.Status, "Resumed", StringComparison.Ordinal))
-                                    .Select(outcome => $"{outcome.MonitorId}:{outcome.Reason}"));
-                            await ExceptionLogService.LogAsync(
-                                new InvalidOperationException(
-                                    $"Instance takeover resumed {reconciliation.ResumedCount}/{reconciliation.RequestedCount} requested monitors. Incomplete outcomes: {summary}"),
-                                "Program.InstanceHandoffResumeIncomplete");
-                        }
-
                         await LastWorkingStateService.ReplaceDesiredMonitorIdsAsync(
                             database,
                             takeover.RunningMonitorIds);
-                    }
-                    else
-                    {
-                        var resume = await LastWorkingStateService.ResumeDesiredMonitorsAsync(
-                            chrome,
-                            monitor,
-                            database);
-                        if (resume.IncompleteCount > 0)
-                        {
-                            var summary = string.Join(
-                                "; ",
-                                resume.Outcomes
-                                    .Where(outcome => !string.Equals(outcome.Status, "Resumed", StringComparison.Ordinal))
-                                    .Select(outcome => $"{outcome.MonitorId}:{outcome.Reason}"));
-                            await ExceptionLogService.LogAsync(
-                                new InvalidOperationException(
-                                    $"Restart resume restored {resume.ResumedCount}/{resume.RequestedCount} desired monitors. Incomplete outcomes: {summary}"),
-                                "Program.LastWorkingStateResumeIncomplete");
-                        }
+
+                        await database.SetSettingAsync("LastInstanceHandoffUtc", DateTimeOffset.UtcNow.ToString("O"));
+                        await database.SetSettingAsync("LastInstanceHandoffRequestedCount", takeover.RunningMonitorIds.Length.ToString());
+                        await database.SetSettingAsync("LastInstanceHandoffResumedCount", "0");
+                        await database.SetSettingAsync("LastInstanceHandoffIncompleteCount", takeover.RunningMonitorIds.Length.ToString());
+                        await database.SetSettingAsync(
+                            "LastInstanceHandoffIncompleteIds",
+                            string.Join(",", takeover.RunningMonitorIds.OrderBy(id => id)));
                     }
 
-                    if (developmentRuntime is not null)
-                    {
-                        var developmentResumed = await developmentRuntime.ResumeIfActiveAsync();
-                        await database.SetSettingAsync(
-                            "Runtime.DevelopmentTaskAutoResumed",
-                            developmentResumed ? "1" : "0");
-                        if (developmentResumed)
-                            await database.SetSettingAsync("Runtime.DevelopmentTaskAutoResumeUtc", DateTimeOffset.UtcNow.ToString("O"));
-                    }
+                    await database.SetSettingAsync("Runtime.StartupBrowserMutationPolicy", "OperatorOnly");
+                    await database.SetSettingAsync("Runtime.StartupRecoveryDeferred", currentStartupWasUnclean ? "1" : "0");
+                    await database.SetSettingAsync("Runtime.StartupAutoResumeDeferred", "1");
+                    await database.SetSettingAsync("Runtime.DevelopmentTaskAutoResumed", "0");
                 }
                 catch (Exception ex)
                 {
-                    await ExceptionLogService.LogAsync(ex, takeover is null
-                        ? "Program.BackgroundCrashRecovery"
-                        : "Program.InstanceHandoffResume");
+                    await ExceptionLogService.LogAsync(ex, "Program.PassiveStartupPolicy");
                 }
             };
 
