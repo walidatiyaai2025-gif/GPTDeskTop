@@ -39,9 +39,9 @@ public sealed class SimpleMonitorRateLimitOverlayRegressionTests
     }
 
     [Fact]
-    public void ReleaseIdentityIsVersion2031()
+    public void ReleaseIdentityIsVersion2032()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.31</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.32</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
