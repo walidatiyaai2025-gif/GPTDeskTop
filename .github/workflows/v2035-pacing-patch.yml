@@ -23,9 +23,9 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Apply corrected pacing patch
+      - name: Apply pacing patch
         shell: pwsh
-        run: python tools/v2035_patch_v2.py
+        run: python tools/v2035_patch_v3.py
 
       - name: Runtime regression tests
         shell: pwsh
