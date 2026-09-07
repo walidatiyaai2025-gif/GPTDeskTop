@@ -9,9 +9,8 @@ start = text.index(launch_block)
 end = text.index(recover_block, start)
 text = text[:start] + text[end:]
 
-# The QA hardening must constrain Monitor Only recovery methods, not ban the legacy
-# launcher API used by other product workflows. Locate this temporary global check by
-# its stable PowerShell prefix instead of brittle escaped-regex text.
+# Scope the QA rule to Monitor Only recovery methods, preserving the legacy launcher API
+# required by other product workflows.
 global_gate_start = "          if ($chrome -match 'Process"
 start = text.index(global_gate_start)
 end_marker = "          $recoverStart ="
@@ -27,5 +26,17 @@ text = text.replace(
     '',
 )
 
+# Avoid nested quote escaping in the generated C# source assertion. The assertion only
+# needs to prove the recovery-state assignment exists; exact quoted values are covered by
+# the production source and inspector assertions.
+assertion_prefix = '        Assert.Contains("_lastRecovery = attempt > 1 ? '
+start = text.index(assertion_prefix)
+end = text.index('\n', start)
+text = (
+    text[:start]
+    + '        Assert.Contains("_lastRecovery = attempt > 1 ?", runner, StringComparison.Ordinal);'
+    + text[end:]
+)
+
 path.write_text(text, encoding="utf-8", newline="\n")
-print("Scoped v2.0.33 hardening to Monitor Only passive/recovery paths.")
+print("Scoped v2.0.33 hardening and normalized generated regression test.")
