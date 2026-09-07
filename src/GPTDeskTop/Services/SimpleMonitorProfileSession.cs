@@ -10,6 +10,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
     private readonly object _freshTargetSync = new();
     private readonly Dictionary<string, HashSet<string>> _freshTargetBaselines = new(StringComparer.Ordinal);
     private Process? _launchedProcess;
+    private bool _startLaunchAuthorized;
 
     public ChromeProfileInfo Profile { get; }
     public ChromeDevToolsService Chrome { get; }
@@ -42,6 +43,9 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         _ = await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    public Task<bool> IsAutomationSessionAvailableAsync(CancellationToken cancellationToken = default)
+        => CanReadEndpointAsync(cancellationToken);
+
     public async Task<IReadOnlyList<ChromeTab>> GetConversationTabsAsync(CancellationToken cancellationToken = default)
     {
         if (!await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false))
@@ -61,12 +65,17 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
     {
         if (!TryGetConversationId(conversationUrl, out var expectedId)) return null;
 
-        // openIfMissing:true is the explicit Start Monitor path. It is the ONLY production path
-        // authorized to start Chrome. Passive/read-only calls return null when CDP is unavailable.
-        if (!await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false))
+        // openIfMissing:true is the explicit Start Monitor authorization boundary. It latches
+        // launch permission onto this exact selected profile/session for the lifetime of this
+        // running Monitor Only session. Passive/read-only calls never set that authorization.
+        if (openIfMissing)
         {
-            if (!openIfMissing) return null;
-            await LaunchChromeForMonitorStartAsync(cancellationToken).ConfigureAwait(false);
+            _startLaunchAuthorized = true;
+            await EnsureStartAuthorizedBrowserAvailableAsync(cancellationToken).ConfigureAwait(false);
+        }
+        else if (!await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
         }
 
         var tabs = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
@@ -96,9 +105,8 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 
     /// <summary>
     /// Creates a brand-new ChatGPT target in an already-connected selected profile. This method
-    /// never launches or relaunches Chrome; only the explicit Start Monitor authorization may do so.
-    /// The baseline of preexisting target IDs is retained so a target replacement during first-send
-    /// navigation can be resolved without accidentally attaching to an older conversation.
+    /// never launches or relaunches Chrome. A later recovery may relaunch only when the same session
+    /// was previously authorized by the explicit Start Monitor path.
     /// </summary>
     public async Task<ChromeTab> CreateFreshConversationTabAsync(CancellationToken cancellationToken = default)
     {
@@ -109,6 +117,56 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         lock (_freshTargetSync)
             _freshTargetBaselines[created.Id] = baseline;
         return created;
+    }
+
+    /// <summary>
+    /// Clean recovery for a monitor worker that was already started explicitly. It never touches
+    /// normal Chrome. Only other GPTDeskTop-managed automation sessions are closed, then all
+    /// ChatGPT tabs on this exact selected managed endpoint are removed while a blank keeper tab
+    /// preserves the browser process. If this selected automation process disappeared, the same
+    /// managed profile may be relaunched because Start Monitor already authorized this session.
+    /// </summary>
+    public async Task RecoverAfterAuthorizedStartAsync(
+        Action<string>? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_startLaunchAuthorized)
+            throw new InvalidOperationException("Chrome recovery is not authorized until Start Monitor is explicitly pressed for this selected profile.");
+
+        status?.Invoke($"CLEAN RECOVERY — keeping selected profile '{Profile.DisplayLabel}' on CDP {DebuggingPort} and closing stale GPTDeskTop profile sessions.");
+        await EnsureStartAuthorizedBrowserAvailableAsync(cancellationToken, status).ConfigureAwait(false);
+
+        status?.Invoke("CLEAN RECOVERY — closing all ChatGPT tabs owned by the selected GPTDeskTop automation session only.");
+        await CloseAutomationOwnedChatTabsAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false))
+        {
+            status?.Invoke("CLEAN RECOVERY — selected automation browser closed with its final chat tab; reopening the same authorized profile.");
+            await EnsureStartAuthorizedBrowserAvailableAsync(cancellationToken, status).ConfigureAwait(false);
+        }
+    }
+
+    public async Task CloseAutomationOwnedChatTabsAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureAttachedOrThrowAsync(cancellationToken).ConfigureAwait(false);
+        var tabs = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
+        if (tabs.Count == 0) return;
+
+        // Keep the selected managed browser alive while removing ChatGPT state. Never mutate tabs
+        // on another endpoint and never kill the user's ordinary Chrome process.
+        if (!tabs.Any(tab => !IsChatGptPage(tab.Url)))
+        {
+            _ = await Chrome.CreateTabAsync("about:blank", cancellationToken).ConfigureAwait(false);
+            tabs = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        foreach (var tab in tabs.Where(tab => IsChatGptPage(tab.Url)).ToArray())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _ = await Chrome.CloseTabAsync(tab, cancellationToken).ConfigureAwait(false);
+        }
+
+        lock (_freshTargetSync) _freshTargetBaselines.Clear();
     }
 
     /// <summary>
@@ -212,16 +270,49 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
 
         throw new InvalidOperationException(
-            "The Monitor Only Chrome automation session is no longer available. GPTDeskTop will not launch or relaunch Chrome automatically. Press Start Monitor to authorize a new Chrome launch.");
+            "The Monitor Only Chrome automation session is no longer available. The running monitor will preserve its pending message and use start-authorized clean recovery instead of sending through another profile.");
+    }
+
+    private async Task EnsureStartAuthorizedBrowserAvailableAsync(
+        CancellationToken cancellationToken,
+        Action<string>? status = null)
+    {
+        if (!_startLaunchAuthorized)
+            throw new InvalidOperationException("Chrome launch is not authorized until Start Monitor is explicitly pressed for this selected profile.");
+
+        await SimpleMonitorChromeOwnershipGate.CloseOtherManagedSessionsAsync(Chrome, status, cancellationToken).ConfigureAwait(false);
+        if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
+        await LaunchChromeForMonitorStartAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// The single Chrome process-launch boundary for Monitor Only. This method is reached only from
-    /// ResolveConversationAsync(openIfMissing:true), whose sole UI caller is StartMonitorAsync.
+    /// The single Chrome process-launch boundary for Monitor Only. It is reachable only after
+    /// ResolveConversationAsync(openIfMissing:true) latches explicit Start Monitor authorization
+    /// onto this exact selected session. Recovery reuses that authorization; passive paths cannot.
     /// </summary>
     private async Task LaunchChromeForMonitorStartAsync(CancellationToken cancellationToken)
     {
+        if (!_startLaunchAuthorized)
+            throw new InvalidOperationException("Start Monitor authorization is required before Chrome can be launched.");
         if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
+
+        if (_launchedProcess is not null)
+        {
+            try
+            {
+                if (!_launchedProcess.HasExited)
+                {
+                    _launchedProcess.Kill(entireProcessTree: true);
+                    await _launchedProcess.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (InvalidOperationException) { }
+            finally
+            {
+                try { _launchedProcess.Dispose(); } catch { }
+                _launchedProcess = null;
+            }
+        }
 
         Directory.CreateDirectory(Profile.ManagedUserDataDirectory);
         File.WriteAllText(
@@ -256,7 +347,14 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         }
 
         throw new TimeoutException(
-            $"Chrome profile '{Profile.DisplayLabel}' opened after Start Monitor, but its automation endpoint did not become ready. Close any conflicting automation window for this profile and press Start Monitor again.");
+            $"Chrome profile '{Profile.DisplayLabel}' opened after Start Monitor, but its automation endpoint did not become ready. The running monitor will keep this selected profile and retry through clean recovery.");
+    }
+
+    private static bool IsChatGptPage(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+        return string.Equals(uri.Host, "chatgpt.com", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(uri.Host, "chat.openai.com", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void CopyTab(ChromeTab target, ChromeTab source)
@@ -313,6 +411,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
+        _startLaunchAuthorized = false;
         SimpleMonitorChromeOwnershipGate.Unregister(Chrome);
         try { _launchedProcess?.Dispose(); } catch { }
         _launchedProcess = null;
