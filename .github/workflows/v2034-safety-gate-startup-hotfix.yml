@@ -1,0 +1,95 @@
+name: V2034 Safety Gate Startup Hotfix
+
+on:
+  push:
+    branches:
+      - fix/v2034-safety-gate-startup
+
+permissions:
+  contents: write
+
+jobs:
+  hotfix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply startup hotfix and regression test
+        shell: pwsh
+        run: |
+          $safetyPath = 'src/GPTDeskTop/Services/SimpleMonitorSafetyGate.cs'
+          $safety = Get-Content $safetyPath -Raw
+          $oldSelector = '.Single(method => method.Name == "EvaluateAsync" && method.GetParameters().Length == 4);'
+          $newSelector = '.Single(method => method.Name == "EvaluateAsync" && method.GetParameters().Length == 5);'
+          if (-not $safety.Contains($oldSelector)) { throw 'Expected 4-parameter EvaluateAsync reflection selector was not found.' }
+          $safety = $safety.Replace($oldSelector, $newSelector)
+
+          $oldInvoke = 'new object[] { tab, RateLimitProbeExpression, cancellationToken, false })'
+          $newInvoke = 'new object?[] { tab, RateLimitProbeExpression, cancellationToken, false, null })'
+          if (-not $safety.Contains($oldInvoke)) { throw 'Expected four-argument reflection invocation was not found.' }
+          $safety = $safety.Replace($oldInvoke, $newInvoke)
+          Set-Content $safetyPath $safety -NoNewline -Encoding utf8
+
+          $propsPath = 'Directory.Build.props'
+          $props = Get-Content $propsPath -Raw
+          $oldVersion = '<GPTDeskTopVersion>2.0.33</GPTDeskTopVersion>'
+          $newVersion = '<GPTDeskTopVersion>2.0.34</GPTDeskTopVersion>'
+          if (-not $props.Contains($oldVersion)) { throw 'Canonical 2.0.33 version marker was not found.' }
+          Set-Content $propsPath ($props.Replace($oldVersion, $newVersion)) -NoNewline -Encoding utf8
+
+          $testPath = 'tests/GPTDeskTop.RuntimeTests/SimpleMonitorSafetyGateStartupRegressionTests.cs'
+          @'
+          using System.Runtime.CompilerServices;
+          using GPTDeskTop.Services;
+          using Xunit;
+
+          namespace GPTDeskTop.RuntimeTests;
+
+          public sealed class SimpleMonitorSafetyGateStartupRegressionTests
+          {
+              [Fact]
+              public void StaticInitializerCanRunWithoutThrowing()
+              {
+                  var safetyGateType = typeof(ChromeDevToolsService).Assembly.GetType(
+                      "GPTDeskTop.Services.SimpleMonitorSafetyGate",
+                      throwOnError: true)!;
+
+                  var exception = Record.Exception(
+                      () => RuntimeHelpers.RunClassConstructor(safetyGateType.TypeHandle));
+
+                  Assert.Null(exception);
+              }
+          }
+          '@ | Set-Content $testPath -Encoding utf8
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore runtime tests
+        run: dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj
+
+      - name: Run runtime regression suite
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore
+
+      - name: Build application
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release
+
+      - name: Commit validated hotfix source only
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- Directory.Build.props `
+            src/GPTDeskTop/Services/SimpleMonitorSafetyGate.cs `
+            tests/GPTDeskTop.RuntimeTests/SimpleMonitorSafetyGateStartupRegressionTests.cs
+          git diff --cached --check
+          $staged = @(git diff --cached --name-only)
+          if ($staged.Count -ne 3) { throw "Expected exactly 3 staged hotfix files; found $($staged.Count)." }
+          git commit -m "fix(startup): repair SimpleMonitorSafetyGate initialization"
+          git push origin HEAD:fix/v2034-safety-gate-startup
