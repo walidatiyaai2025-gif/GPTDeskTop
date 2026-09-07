@@ -27,7 +27,7 @@ remove_between(
 )
 
 runner_marker = '\nrunner = "src/GPTDeskTop/Services/SimpleMonitorRunner.cs"\n'
-extra = r'''
+extra = r"""
 replace_once(
     chrome,
     "    private readonly ChromeDevToolsSessionPool _sessionPool = new();",
@@ -147,7 +147,7 @@ replace_once(
     '"value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false);",',
     '"value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false, commandTimeout);",',
 )
-'''
+"""
 text = text.replace(runner_marker, extra + runner_marker, 1)
 
 # Scope the QA gate to the Monitor Only instance policy rather than forbidding
