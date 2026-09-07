@@ -220,8 +220,14 @@ internal static class Program
         ExtractOptionalResource("Payload.Version.txt", Path.Combine(installDir, "Version.txt"), true);
         ExtractOptionalResource("Payload.ReleaseNotes.txt", Path.Combine(installDir, "ReleaseNotes.txt"), true);
 
-        var setupCopy = Path.Combine(installDir, "GPTDeskTop-Setup.exe");
-        File.Copy(Environment.ProcessPath ?? Application.ExecutablePath, setupCopy, true);
+        var setupSource = Path.GetFullPath(Environment.ProcessPath ?? Application.ExecutablePath);
+        var setupCopy = Path.Combine(installDir, "GPTDeskTop-Uninstall.exe");
+        if (!string.Equals(setupSource, Path.GetFullPath(setupCopy), StringComparison.OrdinalIgnoreCase))
+            File.Copy(setupSource, setupCopy, true);
+
+        // v2.0.36 and earlier stored a copy under this name. It can be the currently
+        // executing Setup binary, so cleanup must never be allowed to fail installation.
+        TryDelete(Path.Combine(installDir, "GPTDeskTop-Setup.exe"));
 
         var desktopShortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "GPTDeskTop.lnk");
         if (createDesktopShortcut)
@@ -265,6 +271,7 @@ internal static class Program
         TryDelete(Path.Combine(installDir, "appsettings.json"));
         TryDelete(Path.Combine(installDir, "Version.txt"));
         TryDelete(Path.Combine(installDir, "ReleaseNotes.txt"));
+        TryDelete(Path.Combine(installDir, "GPTDeskTop-Setup.exe"));
         TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "GPTDeskTop.lnk"));
 
         var startMenuDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "GPTDeskTop");
