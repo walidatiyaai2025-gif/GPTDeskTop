@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Apply narrow Monitor Only hardening patch
+      - name: Apply deterministic Monitor Only hardening
         shell: pwsh
         run: |
           @'
@@ -40,14 +40,21 @@ jobs:
               text = read(path)
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f'{path}: expected exactly one literal match, found {count}: {old[:120]!r}')
+                  raise SystemExit(f'{path}: expected one match, found {count}: {old[:120]!r}')
               write(path, text.replace(old, new, 1))
 
-          def sub_once(path, pattern, replacement, flags=0):
+          def replace_exact(path, old, new, expected):
               text = read(path)
-              updated, count = re.subn(pattern, replacement, text, count=1, flags=flags)
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f'{path}: expected {expected} matches, found {count}: {old[:120]!r}')
+              write(path, text.replace(old, new))
+
+          def sub_once(path, pattern, replacement):
+              text = read(path)
+              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
               if count != 1:
-                  raise SystemExit(f'{path}: expected exactly one regex match, found {count}: {pattern[:120]!r}')
+                  raise SystemExit(f'{path}: expected one regex match, found {count}: {pattern[:120]!r}')
               write(path, updated)
 
           pool = 'src/GPTDeskTop/Services/ChromeDevToolsSessionPool.cs'
@@ -76,27 +83,84 @@ jobs:
               '            CancellationToken cancellationToken,\n            bool extractRuntimeValue)\n        {',
               '            CancellationToken cancellationToken,\n            TimeSpan commandTimeout,\n            bool extractRuntimeValue)\n        {')
           replace_once(pool, '_commandGate.WaitAsync(CommandTimeout, cancellationToken)', '_commandGate.WaitAsync(commandTimeout, cancellationToken)')
-          replace_once(pool, 'after {CommandTimeout.TotalSeconds:0} seconds.\");', 'after {commandTimeout.TotalSeconds:0} seconds.\");')
           replace_once(pool, 'commandCts.CancelAfter(CommandTimeout);', 'commandCts.CancelAfter(commandTimeout);')
-          replace_once(pool, 'timed out after {CommandTimeout.TotalSeconds:0} seconds.\");', 'timed out after {commandTimeout.TotalSeconds:0} seconds.\");')
+          replace_exact(pool, 'CommandTimeout.TotalSeconds', 'commandTimeout.TotalSeconds', 2)
 
           chrome = 'src/GPTDeskTop/Services/ChromeDevToolsService.cs'
           replace_once(
               chrome,
-              '''    private async Task<ChatPageState> ReadChatStateCoreAsync(ChromeTab tab, CancellationToken cancellationToken)\n    {\n        var value = await EvaluateAsync(tab, ChatStateReadExpression, cancellationToken, false);\n        if (value.ValueKind == JsonValueKind.Null)\n            value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false);''',
-              '''    public Task<ChatPageState> ReadChatStatePassiveAsync(ChromeTab tab, CancellationToken cancellationToken = default)\n        => ReadChatStateCoreAsync(tab, cancellationToken, ChromeDevToolsSessionPool.PassiveRuntimeEvaluateTimeout);\n\n    private async Task<ChatPageState> ReadChatStateCoreAsync(\n        ChromeTab tab,\n        CancellationToken cancellationToken,\n        TimeSpan? commandTimeout = null)\n    {\n        var value = await EvaluateAsync(tab, ChatStateReadExpression, cancellationToken, false, commandTimeout);\n        if (value.ValueKind == JsonValueKind.Null)\n            value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false, commandTimeout);''')
+              '''    private async Task<ChatPageState> ReadChatStateCoreAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
+        var value = await EvaluateAsync(tab, ChatStateReadExpression, cancellationToken, false);
+        if (value.ValueKind == JsonValueKind.Null)
+            value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false);''',
+              '''    public Task<ChatPageState> ReadChatStatePassiveAsync(ChromeTab tab, CancellationToken cancellationToken = default)
+        => ReadChatStateCoreAsync(tab, cancellationToken, ChromeDevToolsSessionPool.PassiveRuntimeEvaluateTimeout);
+
+    private async Task<ChatPageState> ReadChatStateCoreAsync(
+        ChromeTab tab,
+        CancellationToken cancellationToken,
+        TimeSpan? commandTimeout = null)
+    {
+        var value = await EvaluateAsync(tab, ChatStateReadExpression, cancellationToken, false, commandTimeout);
+        if (value.ValueKind == JsonValueKind.Null)
+            value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false, commandTimeout);''')
 
           sub_once(
               chrome,
-              r'    private async Task<bool> RecoverMonitorTabAsync\(ChromeTab tab, CancellationToken cancellationToken\)\n    \{.*?\n    \}\n\n    private async Task<bool> RefreshConversationTabAsync',
-              '''    private async Task<bool> RecoverMonitorTabAsync(ChromeTab tab, CancellationToken cancellationToken)\n    {\n        // Monitor recovery is deliberately passive: retire only the CDP session and rebind to\n        // an already-live target for the exact same conversation. Never reload, create a tab,\n        // close a tab, or launch/relaunch Chrome from a read/recovery path.\n        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))\n            return false;\n\n        _sessionPool.Invalidate(tab.Id);\n        var replacement = await TryFindConversationTabAsync(tab.Url, cancellationToken).ConfigureAwait(false);\n        if (replacement is null)\n            return false;\n\n        RebindTab(tab, replacement);\n        return true;\n    }\n\n    private async Task<bool> RefreshConversationTabAsync''',
-              re.S)
+              r'    public Process LaunchMonitorChrome\(string\? startUrl = null\)\n    \{.*?\n    \}\n    public async Task<ChromeTab> CreateTabAsync',
+              '    public async Task<ChromeTab> CreateTabAsync')
 
           sub_once(
               chrome,
-              r'    private async Task<bool> RefreshStuckComposerAsync\(ChromeTab tab, CancellationToken cancellationToken\)\n    \{.*?\n    \}\n\n    public async Task<bool> SendChatMessageAsync',
-              '''    private async Task<bool> RefreshStuckComposerAsync(ChromeTab tab, CancellationToken cancellationToken)\n    {\n        // Historically this path reloaded the page. Monitor Only now keeps this recovery\n        // strictly passive so an uncertain send can never trigger a hidden page mutation.\n        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))\n            return false;\n\n        var originalUrl = tab.Url;\n        _sessionPool.Invalidate(tab.Id);\n        await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);\n        if (!ChatGptConversationIdentity.IsSame(originalUrl, tab.Url))\n            return false;\n\n        try\n        {\n            var readiness = await ReadComposerReadinessAsync(tab, cancellationToken).ConfigureAwait(false);\n            return !readiness.IsGenerating\n                   && readiness.EditorPresent\n                   && readiness.EditorEnabled\n                   && !readiness.HasRenderedError;\n        }\n        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))\n        {\n            return false;\n        }\n    }\n\n    public async Task<bool> SendChatMessageAsync''',
-              re.S)
+              r'    private async Task<bool> RecoverMonitorTabAsync\(ChromeTab tab, CancellationToken cancellationToken\)\n    \{.*?\n    \}\n    private async Task<bool> RefreshConversationTabAsync',
+              '''    private async Task<bool> RecoverMonitorTabAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
+        // Passive recovery only: retire the CDP session and rebind to an already-live target
+        // for the exact same conversation. Never reload, create/close a tab, or launch Chrome.
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
+            return false;
+
+        _sessionPool.Invalidate(tab.Id);
+        var replacement = await TryFindConversationTabAsync(tab.Url, cancellationToken).ConfigureAwait(false);
+        if (replacement is null)
+            return false;
+
+        RebindTab(tab, replacement);
+        return true;
+    }
+    private async Task<bool> RefreshConversationTabAsync''')
+
+          sub_once(
+              chrome,
+              r'    private async Task<bool> RefreshStuckComposerAsync\(ChromeTab tab, CancellationToken cancellationToken\)\n    \{.*?\n    \}\n    public async Task<bool> SendChatMessageAsync',
+              '''    private async Task<bool> RefreshStuckComposerAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
+        // Keep uncertain-send recovery passive. Rebind the existing target/session only;
+        // never Page.reload or create another target behind the operator's back.
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
+            return false;
+
+        var originalUrl = tab.Url;
+        _sessionPool.Invalidate(tab.Id);
+        await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
+        if (!ChatGptConversationIdentity.IsSame(originalUrl, tab.Url))
+            return false;
+
+        try
+        {
+            var readiness = await ReadComposerReadinessAsync(tab, cancellationToken).ConfigureAwait(false);
+            return !readiness.IsGenerating
+                   && readiness.EditorPresent
+                   && readiness.EditorEnabled
+                   && !readiness.HasRenderedError;
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+        {
+            return false;
+        }
+    }
+    public async Task<bool> SendChatMessageAsync''')
 
           replace_once(
               chrome,
@@ -111,12 +175,26 @@ jobs:
           replace_once(runner, 'using System.Reflection;\n', '')
           replace_once(
               runner,
-              '''    private static readonly MethodInfo PassiveStateReader = typeof(ChromeDevToolsService).GetMethod(\n        "ReadChatStateCoreAsync",\n        BindingFlags.Instance | BindingFlags.NonPublic)\n        ?? throw new MissingMethodException(typeof(ChromeDevToolsService).FullName, "ReadChatStateCoreAsync");\n\n''',
+              '''    private static readonly MethodInfo PassiveStateReader = typeof(ChromeDevToolsService).GetMethod(
+        "ReadChatStateCoreAsync",
+        BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(typeof(ChromeDevToolsService).FullName, "ReadChatStateCoreAsync");
+
+''',
               '')
           replace_once(
               runner,
-              '''    int PendingMessages,\n    int PassiveReadRetries,\n    string LastCdpEvent,\n    string LastError);''',
-              '''    int PendingMessages,\n    int PassiveReadRetries,\n    int ConsecutivePassiveReadFailures,\n    string LastRecovery,\n    string LastTransientError,\n    string LastCdpEvent,\n    string LastError);''')
+              '''    int PendingMessages,
+    int PassiveReadRetries,
+    string LastCdpEvent,
+    string LastError);''',
+              '''    int PendingMessages,
+    int PassiveReadRetries,
+    int ConsecutivePassiveReadFailures,
+    string LastRecovery,
+    string LastTransientError,
+    string LastCdpEvent,
+    string LastError);''')
           replace_once(
               runner,
               '    private int _passiveReadRetries;\n    private int _sentMessages;',
@@ -127,43 +205,197 @@ jobs:
               '            _passiveReadRetries = 0;\n            _consecutivePassiveReadFailures = 0;\n            _lastRecovery = "Healthy";\n            _lastTransientError = string.Empty;\n            _sentMessages =')
           replace_once(
               runner,
-              '''                var state = await InvokePassiveStateReaderAsync(chrome, tab, cancellationToken).ConfigureAwait(false);\n                if (attempt > 1) _lastCdpEvent = "Runtime.evaluate recovered";\n                PublishInspector("ReadingChatState");\n                return state;''',
-              '''                var state = await InvokePassiveStateReaderAsync(chrome, tab, cancellationToken).ConfigureAwait(false);\n                _consecutivePassiveReadFailures = 0;\n                _lastRecovery = attempt > 1 ? "Recovered" : "Healthy";\n                _lastError = string.Empty;\n                if (attempt > 1) _lastCdpEvent = "Runtime.evaluate recovered";\n                PublishInspector("ReadingChatState");\n                return state;''')
+              '''                var state = await InvokePassiveStateReaderAsync(chrome, tab, cancellationToken).ConfigureAwait(false);
+                if (attempt > 1) _lastCdpEvent = "Runtime.evaluate recovered";
+                PublishInspector("ReadingChatState");
+                return state;''',
+              '''                var state = await InvokePassiveStateReaderAsync(chrome, tab, cancellationToken).ConfigureAwait(false);
+                _consecutivePassiveReadFailures = 0;
+                _lastRecovery = attempt > 1 ? "Recovered" : "Healthy";
+                _lastError = string.Empty;
+                if (attempt > 1) _lastCdpEvent = "Runtime.evaluate recovered";
+                PublishInspector("ReadingChatState");
+                return state;''')
           replace_once(
               runner,
-              '''                _passiveReadRetries++;\n                _lastError = ex.Message;''',
-              '''                _passiveReadRetries++;\n                _consecutivePassiveReadFailures++;\n                _lastRecovery = "Retrying";\n                _lastTransientError = ex.Message;\n                _lastError = ex.Message;''')
+              '''                _passiveReadRetries++;
+                _lastError = ex.Message;''',
+              '''                _passiveReadRetries++;
+                _consecutivePassiveReadFailures++;
+                _lastRecovery = "Retrying";
+                _lastTransientError = ex.Message;
+                _lastError = ex.Message;''')
           replace_once(
               runner,
-              '''            catch (Exception ex) when (IsTransientRuntimeEvaluateTimeout(ex))\n            {\n                _lastError = ex.Message;''',
-              '''            catch (Exception ex) when (IsTransientRuntimeEvaluateTimeout(ex))\n            {\n                _consecutivePassiveReadFailures++;\n                _lastRecovery = "Exhausted";\n                _lastTransientError = ex.Message;\n                _lastError = ex.Message;''')
+              '''            catch (Exception ex) when (IsTransientRuntimeEvaluateTimeout(ex))
+            {
+                _lastError = ex.Message;''',
+              '''            catch (Exception ex) when (IsTransientRuntimeEvaluateTimeout(ex))
+            {
+                _consecutivePassiveReadFailures++;
+                _lastRecovery = "Exhausted";
+                _lastTransientError = ex.Message;
+                _lastError = ex.Message;''')
           sub_once(
               runner,
               r'    private static Task<ChatPageState> InvokePassiveStateReaderAsync\(\n        ChromeDevToolsService chrome,\n        ChromeTab tab,\n        CancellationToken cancellationToken\)\n        => SimpleMonitorPassiveReadGate.RunAsync\(async \(\) =>\n        \{.*?\n        \}, cancellationToken\);',
-              '''    private static Task<ChatPageState> InvokePassiveStateReaderAsync(\n        ChromeDevToolsService chrome,\n        ChromeTab tab,\n        CancellationToken cancellationToken)\n        => SimpleMonitorPassiveReadGate.RunAsync(\n            () => chrome.ReadChatStatePassiveAsync(tab, cancellationToken),\n            cancellationToken);''',
-              re.S)
+              '''    private static Task<ChatPageState> InvokePassiveStateReaderAsync(
+        ChromeDevToolsService chrome,
+        ChromeTab tab,
+        CancellationToken cancellationToken)
+        => SimpleMonitorPassiveReadGate.RunAsync(
+            () => chrome.ReadChatStatePassiveAsync(tab, cancellationToken),
+            cancellationToken);''')
           replace_once(
               runner,
-              '''            _pendingMessages,\n            _passiveReadRetries,\n            _lastCdpEvent,\n            _lastError));''',
-              '''            _pendingMessages,\n            _passiveReadRetries,\n            _consecutivePassiveReadFailures,\n            _lastRecovery,\n            _lastTransientError,\n            _lastCdpEvent,\n            _lastError));''')
+              '''            _pendingMessages,
+            _passiveReadRetries,
+            _lastCdpEvent,
+            _lastError));''',
+              '''            _pendingMessages,
+            _passiveReadRetries,
+            _consecutivePassiveReadFailures,
+            _lastRecovery,
+            _lastTransientError,
+            _lastCdpEvent,
+            _lastError));''')
 
           form = 'src/GPTDeskTop/UI/SimpleMonitorForm.cs'
-          replace_once(form, 'private readonly Label _inspectorRetries = InspectorValue("CDP retries: 0");', 'private readonly Label _inspectorRetries = InspectorValue("Total CDP retries: 0  •  Consecutive: 0");')
           replace_once(
               form,
-              '            _inspectorRetries.Text = $"CDP retries: {snapshot.PassiveReadRetries}";\n            _inspectorCdp.Text = $"Last CDP: {snapshot.LastCdpEvent}";\n            _inspectorError.Text = string.IsNullOrWhiteSpace(snapshot.LastError) ? "Last error: —" : $"Last error: {snapshot.LastError}";\n            _inspectorError.ForeColor = string.IsNullOrWhiteSpace(snapshot.LastError) ? FluentTheme.Muted : Color.OrangeRed;',
-              '            _inspectorRetries.Text = $"Total CDP retries: {snapshot.PassiveReadRetries}  •  Consecutive: {snapshot.ConsecutivePassiveReadFailures}";\n            _inspectorCdp.Text = $"Last CDP: {snapshot.LastCdpEvent}  •  Recovery: {snapshot.LastRecovery}";\n            _inspectorError.Text = !string.IsNullOrWhiteSpace(snapshot.LastError)\n                ? $"Current error: {snapshot.LastError}"\n                : string.IsNullOrWhiteSpace(snapshot.LastTransientError)\n                    ? "Current error: —"\n                    : $"Last transient (recovered): {snapshot.LastTransientError}";\n            _inspectorError.ForeColor = !string.IsNullOrWhiteSpace(snapshot.LastError) ? Color.OrangeRed : FluentTheme.Muted;')
+              '    private readonly Label _inspectorRetries = InspectorValue("CDP retries: 0");',
+              '    private readonly Label _inspectorRetries = InspectorValue("Total CDP retries: 0  •  Consecutive: 0");')
+          replace_once(
+              form,
+              '''            _inspectorRetries.Text = $"CDP retries: {snapshot.PassiveReadRetries}";
+            _inspectorCdp.Text = $"Last CDP: {snapshot.LastCdpEvent}";
+            _inspectorError.Text = string.IsNullOrWhiteSpace(snapshot.LastError) ? "Last error: —" : $"Last error: {snapshot.LastError}";
+            _inspectorError.ForeColor = string.IsNullOrWhiteSpace(snapshot.LastError) ? FluentTheme.Muted : Color.OrangeRed;''',
+              '''            _inspectorRetries.Text = $"Total CDP retries: {snapshot.PassiveReadRetries}  •  Consecutive: {snapshot.ConsecutivePassiveReadFailures}";
+            _inspectorCdp.Text = $"Last CDP: {snapshot.LastCdpEvent}  •  Recovery: {snapshot.LastRecovery}";
+            _inspectorError.Text = !string.IsNullOrWhiteSpace(snapshot.LastError)
+                ? $"Current error: {snapshot.LastError}"
+                : string.IsNullOrWhiteSpace(snapshot.LastTransientError)
+                    ? "Current error: —"
+                    : $"Last transient (recovered): {snapshot.LastTransientError}";
+            _inspectorError.ForeColor = !string.IsNullOrWhiteSpace(snapshot.LastError) ? Color.OrangeRed : FluentTheme.Muted;''')
 
           gate = '.github/workflows/qa-monitor-start-chrome-launch.yml'
           replace_once(
               gate,
               "          Write-Host 'PASS: Monitor Only can launch Chrome only from the explicit Start Monitor path.'",
-              '''          $runnerPath = 'src/GPTDeskTop/Services/SimpleMonitorRunner.cs'\n          $chromePath = 'src/GPTDeskTop/Services/ChromeDevToolsService.cs'\n          $poolPath = 'src/GPTDeskTop/Services/ChromeDevToolsSessionPool.cs'\n          $runner = Get-Content $runnerPath -Raw\n          $chrome = Get-Content $chromePath -Raw\n          $pool = Get-Content $poolPath -Raw\n\n          if ($runner -match 'System\\.Reflection|PassiveStateReader\\.Invoke|GetChatStateAsync\\s*\\(|ReloadTabAsync\\s*\\(|LaunchMonitorChrome\\s*\\(') {\n            throw 'Monitor Only runner regained a reflective or browser-mutating passive-read path.'\n          }\n          if ($runner -notmatch 'ReadChatStatePassiveAsync\\s*\\(') {\n            throw 'Monitor Only runner is not using the explicit passive chat-state API.'\n          }\n          if ($pool -notmatch 'PassiveRuntimeEvaluateTimeout\\s*=\\s*TimeSpan\\.FromSeconds\\(30\\)') {\n            throw 'Passive Runtime.evaluate timeout is not independently pinned to 30 seconds.'\n          }\n\n          $recoverStart = $chrome.IndexOf('private async Task<bool> RecoverMonitorTabAsync', [StringComparison]::Ordinal)\n          $recoverEnd = $chrome.IndexOf('private async Task<bool> RefreshConversationTabAsync', [StringComparison]::Ordinal)\n          if ($recoverStart -lt 0 -or $recoverEnd -le $recoverStart) { throw 'Could not isolate RecoverMonitorTabAsync.' }\n          $recoverBody = $chrome.Substring($recoverStart, $recoverEnd - $recoverStart)\n          if ($recoverBody -match 'ReloadTabAsync|CreateTabAsync|ReopenConversationTabAsync|RefreshConversationTabAsync|CloseTabAsync|LaunchMonitorChrome') {\n            throw 'RecoverMonitorTabAsync contains a browser mutation; Monitor Only recovery must be passive rebind only.'\n          }\n\n          $stuckStart = $chrome.IndexOf('private async Task<bool> RefreshStuckComposerAsync', [StringComparison]::Ordinal)\n          $stuckEnd = $chrome.IndexOf('public async Task<bool> SendChatMessageAsync', [StringComparison]::Ordinal)\n          if ($stuckStart -lt 0 -or $stuckEnd -le $stuckStart) { throw 'Could not isolate RefreshStuckComposerAsync.' }\n          $stuckBody = $chrome.Substring($stuckStart, $stuckEnd - $stuckStart)\n          if ($stuckBody -match 'ReloadTabAsync|Page\\.reload|CreateTabAsync|CloseTabAsync|LaunchMonitorChrome') {\n            throw 'Stuck-composer recovery contains a hidden browser mutation.'\n          }\n\n          Write-Host 'PASS: Monitor Only launch, passive-read timeout, passive recovery, and no-hidden-refresh contracts are enforced.' ''')
+              '''          $runnerPath = 'src/GPTDeskTop/Services/SimpleMonitorRunner.cs'
+          $chromePath = 'src/GPTDeskTop/Services/ChromeDevToolsService.cs'
+          $poolPath = 'src/GPTDeskTop/Services/ChromeDevToolsSessionPool.cs'
+          $runner = Get-Content $runnerPath -Raw
+          $chrome = Get-Content $chromePath -Raw
+          $pool = Get-Content $poolPath -Raw
+
+          if ($runner -match 'System\.Reflection|PassiveStateReader\.Invoke|GetChatStateAsync\s*\(|ReloadTabAsync\s*\(|LaunchMonitorChrome\s*\(') {
+            throw 'Monitor Only runner regained a reflective or browser-mutating passive-read path.'
+          }
+          if ($runner -notmatch 'ReadChatStatePassiveAsync\s*\(') {
+            throw 'Monitor Only runner is not using the explicit passive chat-state API.'
+          }
+          if ($pool -notmatch 'PassiveRuntimeEvaluateTimeout\s*=\s*TimeSpan\.FromSeconds\(30\)') {
+            throw 'Passive Runtime.evaluate timeout is not independently pinned to 30 seconds.'
+          }
+          if ($chrome -match 'Process\.Start\s*\(|LaunchMonitorChrome\s*\(') {
+            throw 'ChromeDevToolsService still contains a browser-launch boundary. Start Monitor must own the only launch.'
+          }
+
+          $recoverStart = $chrome.IndexOf('private async Task<bool> RecoverMonitorTabAsync', [StringComparison]::Ordinal)
+          $recoverEnd = $chrome.IndexOf('private async Task<bool> RefreshConversationTabAsync', [StringComparison]::Ordinal)
+          if ($recoverStart -lt 0 -or $recoverEnd -le $recoverStart) { throw 'Could not isolate RecoverMonitorTabAsync.' }
+          $recoverBody = $chrome.Substring($recoverStart, $recoverEnd - $recoverStart)
+          if ($recoverBody -match 'ReloadTabAsync|CreateTabAsync|ReopenConversationTabAsync|RefreshConversationTabAsync|CloseTabAsync|LaunchMonitorChrome') {
+            throw 'RecoverMonitorTabAsync contains a browser mutation.'
+          }
+
+          $stuckStart = $chrome.IndexOf('private async Task<bool> RefreshStuckComposerAsync', [StringComparison]::Ordinal)
+          $stuckEnd = $chrome.IndexOf('public async Task<bool> SendChatMessageAsync', [StringComparison]::Ordinal)
+          if ($stuckStart -lt 0 -or $stuckEnd -le $stuckStart) { throw 'Could not isolate RefreshStuckComposerAsync.' }
+          $stuckBody = $chrome.Substring($stuckStart, $stuckEnd - $stuckStart)
+          if ($stuckBody -match 'ReloadTabAsync|Page\.reload|CreateTabAsync|CloseTabAsync|LaunchMonitorChrome') {
+            throw 'Stuck-composer recovery contains a hidden browser mutation.'
+          }
+
+          Write-Host 'PASS: Start-only launch, passive timeout, passive recovery and diagnostics contracts are enforced.' ''')
 
           test = Path('tests/GPTDeskTop.RuntimeTests/MonitorOnlyPassiveCdpHardeningRegressionTests.cs')
-          test.write_text(r'''namespace GPTDeskTop.RuntimeTests;\n\npublic sealed class MonitorOnlyPassiveCdpHardeningRegressionTests\n{\n    private static string ReadSource(params string[] parts)\n    {\n        var path = Path.GetFullPath(Path.Combine(\n            AppContext.BaseDirectory,\n            "..", "..", "..", "..", "..",\n            Path.Combine(parts)));\n        return File.ReadAllText(path);\n    }\n\n    [Fact]\n    public void PassiveRuntimeEvaluateHasIndependentThirtySecondTimeout()\n    {\n        var pool = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsSessionPool.cs");\n        var chrome = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");\n        Assert.Contains("PassiveRuntimeEvaluateTimeout = TimeSpan.FromSeconds(30)", pool, StringComparison.Ordinal);\n        Assert.Contains("ReadChatStatePassiveAsync", chrome, StringComparison.Ordinal);\n        Assert.Contains("ChromeDevToolsSessionPool.PassiveRuntimeEvaluateTimeout", chrome, StringComparison.Ordinal);\n    }\n\n    [Fact]\n    public void MonitorOnlyPassiveReaderUsesTypedApiAndClearsCurrentErrorAfterRecovery()\n    {\n        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");\n        Assert.DoesNotContain("System.Reflection", runner, StringComparison.Ordinal);\n        Assert.DoesNotContain("PassiveStateReader.Invoke", runner, StringComparison.Ordinal);\n        Assert.Contains("chrome.ReadChatStatePassiveAsync", runner, StringComparison.Ordinal);\n        Assert.Contains("_lastError = string.Empty", runner, StringComparison.Ordinal);\n        Assert.Contains("_consecutivePassiveReadFailures = 0", runner, StringComparison.Ordinal);\n        Assert.Contains("_lastRecovery = attempt > 1 ? \"Recovered\" : \"Healthy\"", runner, StringComparison.Ordinal);\n    }\n\n    [Fact]\n    public void MonitorOnlyRecoveryCannotReloadCreateOrRelaunchBrowser()\n    {\n        var chrome = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");\n        var recoverStart = chrome.IndexOf("private async Task<bool> RecoverMonitorTabAsync", StringComparison.Ordinal);\n        var recoverEnd = chrome.IndexOf("private async Task<bool> RefreshConversationTabAsync", StringComparison.Ordinal);\n        Assert.True(recoverStart >= 0 && recoverEnd > recoverStart);\n        var recover = chrome[recoverStart..recoverEnd];\n        Assert.DoesNotContain("ReloadTabAsync", recover, StringComparison.Ordinal);\n        Assert.DoesNotContain("CreateTabAsync", recover, StringComparison.Ordinal);\n        Assert.DoesNotContain("CloseTabAsync", recover, StringComparison.Ordinal);\n        Assert.DoesNotContain("LaunchMonitorChrome", recover, StringComparison.Ordinal);\n\n        var stuckStart = chrome.IndexOf("private async Task<bool> RefreshStuckComposerAsync", StringComparison.Ordinal);\n        var stuckEnd = chrome.IndexOf("public async Task<bool> SendChatMessageAsync", StringComparison.Ordinal);\n        Assert.True(stuckStart >= 0 && stuckEnd > stuckStart);\n        var stuck = chrome[stuckStart..stuckEnd];\n        Assert.DoesNotContain("ReloadTabAsync", stuck, StringComparison.Ordinal);\n        Assert.DoesNotContain("Page.reload", stuck, StringComparison.Ordinal);\n    }\n\n    [Fact]\n    public void InspectorSeparatesTotalRetriesConsecutiveFailuresAndRecoveredTransientError()\n    {\n        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");\n        var form = ReadSource("src", "GPTDeskTop", "UI", "SimpleMonitorForm.cs");\n        Assert.Contains("ConsecutivePassiveReadFailures", runner, StringComparison.Ordinal);\n        Assert.Contains("LastRecovery", runner, StringComparison.Ordinal);\n        Assert.Contains("LastTransientError", runner, StringComparison.Ordinal);\n        Assert.Contains("Total CDP retries", form, StringComparison.Ordinal);\n        Assert.Contains("Consecutive:", form, StringComparison.Ordinal);\n        Assert.Contains("Last transient (recovered)", form, StringComparison.Ordinal);\n    }\n}\n''', encoding='utf-8', newline='\n')
+          test.write_text('''namespace GPTDeskTop.RuntimeTests;
 
-          # Remove this one-shot workflow from the resulting product commit.
+public sealed class MonitorOnlyPassiveCdpHardeningRegressionTests
+{
+    private static string ReadSource(params string[] parts)
+    {
+        var path = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..",
+            Path.Combine(parts)));
+        return File.ReadAllText(path);
+    }
+
+    [Fact]
+    public void PassiveRuntimeEvaluateHasIndependentThirtySecondTimeout()
+    {
+        var pool = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsSessionPool.cs");
+        var chrome = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
+        Assert.Contains("PassiveRuntimeEvaluateTimeout = TimeSpan.FromSeconds(30)", pool, StringComparison.Ordinal);
+        Assert.Contains("ReadChatStatePassiveAsync", chrome, StringComparison.Ordinal);
+        Assert.Contains("ChromeDevToolsSessionPool.PassiveRuntimeEvaluateTimeout", chrome, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PassiveReaderUsesTypedApiAndClearsCurrentErrorAfterRecovery()
+    {
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
+        Assert.DoesNotContain("System.Reflection", runner, StringComparison.Ordinal);
+        Assert.DoesNotContain("PassiveStateReader.Invoke", runner, StringComparison.Ordinal);
+        Assert.Contains("chrome.ReadChatStatePassiveAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("_lastError = string.Empty", runner, StringComparison.Ordinal);
+        Assert.Contains("_consecutivePassiveReadFailures = 0", runner, StringComparison.Ordinal);
+        Assert.Contains("_lastRecovery = attempt > 1 ? \"Recovered\" : \"Healthy\"", runner, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RecoveryCannotReloadCreateOrRelaunchBrowser()
+    {
+        var chrome = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
+        Assert.DoesNotContain("Process.Start(", chrome, StringComparison.Ordinal);
+        Assert.DoesNotContain("LaunchMonitorChrome(", chrome, StringComparison.Ordinal);
+
+        var recoverStart = chrome.IndexOf("private async Task<bool> RecoverMonitorTabAsync", StringComparison.Ordinal);
+        var recoverEnd = chrome.IndexOf("private async Task<bool> RefreshConversationTabAsync", StringComparison.Ordinal);
+        Assert.True(recoverStart >= 0 && recoverEnd > recoverStart);
+        var recover = chrome[recoverStart..recoverEnd];
+        Assert.DoesNotContain("ReloadTabAsync", recover, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateTabAsync", recover, StringComparison.Ordinal);
+        Assert.DoesNotContain("CloseTabAsync", recover, StringComparison.Ordinal);
+
+        var stuckStart = chrome.IndexOf("private async Task<bool> RefreshStuckComposerAsync", StringComparison.Ordinal);
+        var stuckEnd = chrome.IndexOf("public async Task<bool> SendChatMessageAsync", StringComparison.Ordinal);
+        Assert.True(stuckStart >= 0 && stuckEnd > stuckStart);
+        var stuck = chrome[stuckStart..stuckEnd];
+        Assert.DoesNotContain("ReloadTabAsync", stuck, StringComparison.Ordinal);
+        Assert.DoesNotContain("Page.reload", stuck, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void InspectorSeparatesTotalRetriesConsecutiveFailuresAndRecoveredTransientError()
+    {
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
+        var form = ReadSource("src", "GPTDeskTop", "UI", "SimpleMonitorForm.cs");
+        Assert.Contains("ConsecutivePassiveReadFailures", runner, StringComparison.Ordinal);
+        Assert.Contains("LastRecovery", runner, StringComparison.Ordinal);
+        Assert.Contains("LastTransientError", runner, StringComparison.Ordinal);
+        Assert.Contains("Total CDP retries", form, StringComparison.Ordinal);
+        Assert.Contains("Consecutive:", form, StringComparison.Ordinal);
+        Assert.Contains("Last transient (recovered)", form, StringComparison.Ordinal);
+    }
+}
+''', encoding='utf-8', newline='\n')
+
           Path('.github/workflows/v2033-hardening-patch.yml').unlink()
           print('Patch applied successfully.')
           '@ | Set-Content -Path _v2033_patch.py -Encoding utf8
