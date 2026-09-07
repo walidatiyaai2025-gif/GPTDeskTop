@@ -60,16 +60,19 @@ jobs:
             throw 'Runtime recovery can no longer prove that explicit Start Monitor authorization existed.'
           }
 
-          if ($session -notmatch 'public async Task EnsureConnectedAsync[\s\S]*?_ = await CanReadEndpointAsync') {
-            throw 'Pre-start EnsureConnectedAsync is no longer a passive endpoint probe.'
+          if ($session -notmatch 'public async Task EnsureConnectedAsync[\s\S]*?_ = await TryEnsureConnectedAsync') {
+            throw 'Pre-start EnsureConnectedAsync no longer delegates only to the passive boolean endpoint probe.'
+          }
+          if ($session -notmatch 'public Task<bool> TryEnsureConnectedAsync[\s\S]*?=> CanReadEndpointAsync\(cancellationToken\);') {
+            throw 'TryEnsureConnectedAsync must remain a direct passive endpoint probe.'
           }
 
           $ensureStart = $session.IndexOf('public async Task EnsureConnectedAsync', [StringComparison]::Ordinal)
           $getTabsStart = $session.IndexOf('public async Task<IReadOnlyList<ChromeTab>> GetConversationTabsAsync', [StringComparison]::Ordinal)
-          if ($ensureStart -lt 0 -or $getTabsStart -le $ensureStart) { throw 'Could not isolate EnsureConnectedAsync.' }
+          if ($ensureStart -lt 0 -or $getTabsStart -le $ensureStart) { throw 'Could not isolate passive connection probes.' }
           $ensureBody = $session.Substring($ensureStart, $getTabsStart - $ensureStart)
           if ($ensureBody -match 'Process\.Start|LaunchChromeForMonitorStartAsync|CreateTabAsync|CreateNewChatTabAsync|RecoverAfterAuthorizedStartAsync') {
-            throw 'Pre-start EnsureConnectedAsync contains a browser mutation.'
+            throw 'Pre-start connection probes contain a browser mutation.'
           }
 
           $getTabsEnd = $session.IndexOf('public async Task<ChromeTab?> ResolveConversationAsync', [StringComparison]::Ordinal)
@@ -101,4 +104,4 @@ jobs:
             throw 'SimpleMonitorRunner may request authorized session recovery but may not own the Chrome process-launch primitive.'
           }
 
-          Write-Host 'PASS: Chrome launch remains gated by explicit Start Monitor authorization; runtime recovery can reuse only that same authorized selected profile.'
+          Write-Host 'PASS: Chrome launch remains gated by explicit Start Monitor authorization; passive probes stay launch-free; runtime recovery reuses only the same authorized selected profile.'
