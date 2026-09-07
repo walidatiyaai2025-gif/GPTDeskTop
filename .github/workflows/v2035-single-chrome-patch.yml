@@ -12,7 +12,6 @@ permissions:
 
 jobs:
   patch-test-commit:
-    if: github.event.head_commit.message == 'chore: add v2.0.35 single-chrome validation workflow'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +22,10 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+
+      - name: Correct single-Chrome generator
+        shell: pwsh
+        run: python tools/v2035_single_chrome_prepare.py
 
       - name: Apply single-Chrome ownership patch
         shell: pwsh
