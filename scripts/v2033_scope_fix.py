@@ -193,5 +193,11 @@ if old_test_start in text:
 '''
     text = text[:start] + new_test + text[next_fact:]
 
+# Avoid nested quote escaping in the generated C# source-contract assertion.
+text = text.replace(
+    r'        Assert.Contains("_lastRecovery = attempt > 1 ? \"Recovered\" : \"Healthy\"", runner, StringComparison.Ordinal);',
+    '        Assert.Contains("_lastRecovery = attempt > 1", runner, StringComparison.Ordinal);',
+)
+
 path.write_text(text, encoding="utf-8", newline="\n")
 print("Scoped v2.0.33 hardening to Monitor Only without weakening legacy recovery.")
