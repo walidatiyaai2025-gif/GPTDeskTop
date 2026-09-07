@@ -20,7 +20,7 @@ internal sealed class SimpleMonitorSafetyGate
     private static readonly SemaphoreSlim PhysicalSendGate = new(1, 1);
     private static readonly MethodInfo EvaluateMethod = typeof(ChromeDevToolsService)
         .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
-        .Single(method => method.Name == "EvaluateAsync" && method.GetParameters().Length == 4);
+        .Single(method => method.Name == "EvaluateAsync" && method.GetParameters().Length == 5);
 
     private const string RateLimitProbeExpression = """
 (() => {
@@ -423,7 +423,7 @@ internal sealed class SimpleMonitorSafetyGate
             {
                 var task = (Task<JsonElement>)(EvaluateMethod.Invoke(
                     chrome,
-                    new object[] { tab, RateLimitProbeExpression, cancellationToken, false })
+                    new object?[] { tab, RateLimitProbeExpression, cancellationToken, false, null })
                     ?? throw new InvalidOperationException("Rate-limit probe returned no task."));
                 var value = await task.ConfigureAwait(false);
                 return value.ValueKind == JsonValueKind.String ? value.GetString() ?? string.Empty : string.Empty;
