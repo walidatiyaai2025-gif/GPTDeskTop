@@ -11,8 +11,8 @@ def remove_between(start_marker: str, end_marker: str) -> None:
     text = text[:start] + text[end:]
 
 
-# Do not delete or replace legacy ChromeDevToolsService recovery/launcher behavior.
-# Other product modes depend on it. Monitor Only gets an instance-level no-mutation policy.
+# Preserve legacy ChromeDevToolsService recovery/launcher behavior. Monitor Only
+# gets an instance-level no-mutation policy instead of changing shared recovery.
 remove_between(
     'replace_block(\n    chrome,\n    "    public Process LaunchMonitorChrome',
     'replace_block(\n    chrome,\n    "    private async Task<bool> RecoverMonitorTabAsync',
@@ -26,8 +26,6 @@ remove_between(
     'replace_once(\n    chrome,\n    \'    private async Task<JsonElement> EvaluateAsync',
 )
 
-# Add an instance-level recovery policy. Legacy callers keep the default true;
-# SimpleMonitorProfileSession explicitly opts out of browser mutation recovery.
 runner_marker = '\nrunner = "src/GPTDeskTop/Services/SimpleMonitorRunner.cs"\n'
 extra = r'''
 replace_once(
@@ -123,6 +121,32 @@ replace_once(
             SmartAutoFollowNearBottomPixels = 180
         }, allowBrowserMutationRecovery: false);''',
 )
+
+# Update source-contract tests for the intentional timeout parameterization while
+# preserving their semantic assertions.
+stability = "tests/GPTDeskTop.RuntimeTests/ChromeDevToolsLongRunningStabilityRegressionTests.cs"
+replace_once(
+    stability,
+    'Assert.Contains("commandCts.CancelAfter(CommandTimeout)", source, StringComparison.Ordinal);',
+    'Assert.Contains("commandCts.CancelAfter(commandTimeout)", source, StringComparison.Ordinal);',
+)
+replace_once(
+    stability,
+    'Assert.Contains("=> _sessionPool.SendCommandAsync(tab, method, parameters, cancellationToken, extractRuntimeValue);", source, StringComparison.Ordinal);',
+    'Assert.Contains("=> _sessionPool.SendCommandAsync(tab, method, parameters, cancellationToken, extractRuntimeValue, commandTimeout);", source, StringComparison.Ordinal);',
+)
+
+hotloop = "tests/GPTDeskTop.RuntimeTests/MonitorHotLoopPerformanceRegressionTests.cs"
+replace_once(
+    hotloop,
+    '"var value = await EvaluateAsync(tab, ChatStateReadExpression, cancellationToken, false);",',
+    '"var value = await EvaluateAsync(tab, ChatStateReadExpression, cancellationToken, false, commandTimeout);",',
+)
+replace_once(
+    hotloop,
+    '"value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false);",',
+    '"value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false, commandTimeout);",',
+)
 '''
 text = text.replace(runner_marker, extra + runner_marker, 1)
 
@@ -151,11 +175,22 @@ if recover_gate_start in text:
     text = text[:start] + replacement + text[end:]
 
 # Replace the generated global-recovery regression with an instance-policy test.
-old_test_start = '    [Fact]\n    public void RecoveryCannotReloadCreateOrRelaunchBrowser()'
+old_test_start = "    [Fact]\n    public void RecoveryCannotReloadCreateOrRelaunchBrowser()"
 if old_test_start in text:
     start = text.index(old_test_start)
-    next_fact = text.index('    [Fact]', start + len(old_test_start))
-    new_test = '''    [Fact]\n    public void MonitorOnlyDisablesBrowserMutatingRecovery()\n    {\n        var session = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");\n        var chrome = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");\n\n        Assert.Contains("allowBrowserMutationRecovery: false", session, StringComparison.Ordinal);\n        Assert.Contains("if (!_allowBrowserMutationRecovery)", chrome, StringComparison.Ordinal);\n        Assert.Contains("TryPassiveRebindConversationAsync", chrome, StringComparison.Ordinal);\n    }\n\n'''
+    next_fact = text.index("    [Fact]", start + len(old_test_start))
+    new_test = '''    [Fact]
+    public void MonitorOnlyDisablesBrowserMutatingRecovery()
+    {
+        var session = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
+        var chrome = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
+
+        Assert.Contains("allowBrowserMutationRecovery: false", session, StringComparison.Ordinal);
+        Assert.Contains("if (!_allowBrowserMutationRecovery)", chrome, StringComparison.Ordinal);
+        Assert.Contains("TryPassiveRebindConversationAsync", chrome, StringComparison.Ordinal);
+    }
+
+'''
     text = text[:start] + new_test + text[next_fact:]
 
 path.write_text(text, encoding="utf-8", newline="\n")
