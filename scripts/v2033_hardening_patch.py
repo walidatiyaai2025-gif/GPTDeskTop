@@ -1,5 +1,4 @@
 from pathlib import Path
-import re
 
 
 def read(path: str) -> str:
@@ -26,12 +25,18 @@ def replace_exact(path: str, old: str, new: str, expected: int) -> None:
     write(path, text.replace(old, new))
 
 
-def sub_once(path: str, pattern: str, replacement: str) -> None:
+def replace_block(path: str, start_marker: str, end_marker: str, replacement: str) -> None:
     text = read(path)
-    updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
-    if count != 1:
-        raise SystemExit(f"{path}: expected one regex match, found {count}: {pattern[:120]!r}")
-    write(path, updated)
+    start_count = text.count(start_marker)
+    end_count = text.count(end_marker)
+    if start_count != 1 or end_count < 1:
+        raise SystemExit(
+            f"{path}: block markers invalid; start={start_count}, end={end_count}, "
+            f"start_marker={start_marker[:100]!r}, end_marker={end_marker[:100]!r}"
+        )
+    start = text.index(start_marker)
+    end = text.index(end_marker, start + len(start_marker))
+    write(path, text[:start] + replacement + text[end:])
 
 
 pool = "src/GPTDeskTop/Services/ChromeDevToolsSessionPool.cs"
@@ -69,7 +74,11 @@ replace_once(
     "            CancellationToken cancellationToken,\n            TimeSpan commandTimeout,\n"
     "            bool extractRuntimeValue)\n        {",
 )
-replace_once(pool, "_commandGate.WaitAsync(CommandTimeout, cancellationToken)", "_commandGate.WaitAsync(commandTimeout, cancellationToken)")
+replace_once(
+    pool,
+    "_commandGate.WaitAsync(CommandTimeout, cancellationToken)",
+    "_commandGate.WaitAsync(commandTimeout, cancellationToken)",
+)
 replace_once(pool, "commandCts.CancelAfter(CommandTimeout);", "commandCts.CancelAfter(commandTimeout);")
 replace_exact(pool, "CommandTimeout.TotalSeconds", "commandTimeout.TotalSeconds", 2)
 
@@ -93,14 +102,16 @@ replace_once(
         if (value.ValueKind == JsonValueKind.Null)
             value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false, commandTimeout);''',
 )
-sub_once(
+replace_block(
     chrome,
-    r"    public Process LaunchMonitorChrome\(string\? startUrl = null\)\n    \{.*?\n    \}\n    public async Task<ChromeTab> CreateTabAsync",
+    "    public Process LaunchMonitorChrome(string? startUrl = null)\n",
     "    public async Task<ChromeTab> CreateTabAsync",
+    "",
 )
-sub_once(
+replace_block(
     chrome,
-    r"    private async Task<bool> RecoverMonitorTabAsync\(ChromeTab tab, CancellationToken cancellationToken\)\n    \{.*?\n    \}\n    private async Task<bool> RefreshConversationTabAsync",
+    "    private async Task<bool> RecoverMonitorTabAsync(ChromeTab tab, CancellationToken cancellationToken)\n",
+    "    private async Task<bool> RefreshConversationTabAsync",
     '''    private async Task<bool> RecoverMonitorTabAsync(ChromeTab tab, CancellationToken cancellationToken)
     {
         // Passive recovery only: retire the CDP session and rebind to an already-live target
@@ -116,11 +127,12 @@ sub_once(
         RebindTab(tab, replacement);
         return true;
     }
-    private async Task<bool> RefreshConversationTabAsync''',
+''',
 )
-sub_once(
+replace_block(
     chrome,
-    r"    private async Task<bool> RefreshStuckComposerAsync\(ChromeTab tab, CancellationToken cancellationToken\)\n    \{.*?\n    \}\n    public async Task<bool> SendChatMessageAsync",
+    "    private async Task<bool> RefreshStuckComposerAsync(ChromeTab tab, CancellationToken cancellationToken)\n",
+    "    public async Task<bool> SendChatMessageAsync",
     '''    private async Task<bool> RefreshStuckComposerAsync(ChromeTab tab, CancellationToken cancellationToken)
     {
         // Keep uncertain-send recovery passive. Rebind the existing target/session only;
@@ -147,7 +159,7 @@ sub_once(
             return false;
         }
     }
-    public async Task<bool> SendChatMessageAsync''',
+''',
 )
 replace_once(
     chrome,
@@ -162,14 +174,10 @@ replace_once(
 
 runner = "src/GPTDeskTop/Services/SimpleMonitorRunner.cs"
 replace_once(runner, "using System.Reflection;\n", "")
-replace_once(
+replace_block(
     runner,
-    '''    private static readonly MethodInfo PassiveStateReader = typeof(ChromeDevToolsService).GetMethod(
-        "ReadChatStateCoreAsync",
-        BindingFlags.Instance | BindingFlags.NonPublic)
-        ?? throw new MissingMethodException(typeof(ChromeDevToolsService).FullName, "ReadChatStateCoreAsync");
-
-''',
+    "    private static readonly MethodInfo PassiveStateReader = typeof(ChromeDevToolsService).GetMethod(\n",
+    "    private readonly object _sync = new();",
     "",
 )
 replace_once(
@@ -236,16 +244,19 @@ replace_once(
                 _lastTransientError = ex.Message;
                 _lastError = ex.Message;''',
 )
-sub_once(
+replace_block(
     runner,
-    r"    private static Task<ChatPageState> InvokePassiveStateReaderAsync\(\n        ChromeDevToolsService chrome,\n        ChromeTab tab,\n        CancellationToken cancellationToken\)\n        => SimpleMonitorPassiveReadGate.RunAsync\(async \(\) =>\n        \{.*?\n        \}, cancellationToken\);",
+    "    private static Task<ChatPageState> InvokePassiveStateReaderAsync(\n",
+    "    private static bool IsTransientRuntimeEvaluateTimeout",
     '''    private static Task<ChatPageState> InvokePassiveStateReaderAsync(
         ChromeDevToolsService chrome,
         ChromeTab tab,
         CancellationToken cancellationToken)
         => SimpleMonitorPassiveReadGate.RunAsync(
             () => chrome.ReadChatStatePassiveAsync(tab, cancellationToken),
-            cancellationToken);''',
+            cancellationToken);
+
+''',
 )
 replace_once(
     runner,
@@ -288,7 +299,7 @@ gate = ".github/workflows/qa-monitor-start-chrome-launch.yml"
 replace_once(
     gate,
     "          Write-Host 'PASS: Monitor Only can launch Chrome only from the explicit Start Monitor path.'",
-    '''          $runnerPath = 'src/GPTDeskTop/Services/SimpleMonitorRunner.cs'
+    r'''          $runnerPath = 'src/GPTDeskTop/Services/SimpleMonitorRunner.cs'
           $chromePath = 'src/GPTDeskTop/Services/ChromeDevToolsService.cs'
           $poolPath = 'src/GPTDeskTop/Services/ChromeDevToolsSessionPool.cs'
           $runner = Get-Content $runnerPath -Raw
