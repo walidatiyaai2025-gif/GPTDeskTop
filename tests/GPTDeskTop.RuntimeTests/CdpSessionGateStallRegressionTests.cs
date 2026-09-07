@@ -9,13 +9,25 @@ public sealed class CdpSessionGateStallRegressionTests
             Path.Combine(segments)));
 
     [Fact]
-    public void SessionGateWaitIsBoundedByTheCdpCommandTimeout()
+    public void SessionGateWaitIsBoundedByTheConfiguredCdpTimeout()
     {
         var source = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChromeDevToolsSessionPool.cs"));
 
         Assert.Contains(
-            "_commandGate.WaitAsync(CommandTimeout, cancellationToken)",
+            "CommandTimeout = TimeSpan.FromSeconds(12)",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "PassiveRuntimeEvaluateTimeout = TimeSpan.FromSeconds(30)",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "commandTimeout ?? CommandTimeout",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "_commandGate.WaitAsync(commandTimeout, cancellationToken)",
             source,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
@@ -35,14 +47,17 @@ public sealed class CdpSessionGateStallRegressionTests
             "src", "GPTDeskTop", "Services", "ChromeDevToolsSessionPool.cs"));
 
         var boundedWait = source.IndexOf(
-            "_commandGate.WaitAsync(CommandTimeout, cancellationToken)",
+            "_commandGate.WaitAsync(commandTimeout, cancellationToken)",
             StringComparison.Ordinal);
-        var markBroken = source.IndexOf("MarkBroken();", boundedWait, StringComparison.Ordinal);
-        var timeout = source.IndexOf(
-            "timed out waiting for the session gate",
-            markBroken,
-            StringComparison.Ordinal);
-        var commandBody = source.IndexOf("using var commandCts", boundedWait, StringComparison.Ordinal);
+        var markBroken = boundedWait >= 0
+            ? source.IndexOf("MarkBroken();", boundedWait, StringComparison.Ordinal)
+            : -1;
+        var timeout = markBroken >= 0
+            ? source.IndexOf("timed out waiting for the session gate", markBroken, StringComparison.Ordinal)
+            : -1;
+        var commandBody = timeout >= 0
+            ? source.IndexOf("using var commandCts", timeout, StringComparison.Ordinal)
+            : -1;
 
         Assert.True(boundedWait >= 0);
         Assert.True(markBroken > boundedWait);
