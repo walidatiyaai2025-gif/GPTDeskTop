@@ -23,12 +23,16 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Scope hardening to Monitor Only paths
+        run: python scripts/v2033_scope_fix.py
+
       - name: Apply Monitor Only hardening
         run: python scripts/v2033_hardening_patch.py
 
       - name: Remove one-shot patch machinery
         shell: pwsh
         run: |
+          Remove-Item scripts/v2033_scope_fix.py -Force
           Remove-Item scripts/v2033_hardening_patch.py -Force
           Remove-Item .github/workflows/v2033-hardening-patch.yml -Force
 
