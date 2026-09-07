@@ -12,10 +12,10 @@ public sealed class SimpleMonitorMessagePlanTests
           "schemaVersion": 1,
           "name": "Night work",
           "loop": true,
-          "defaultDelaySeconds": 15,
+          "defaultDelaySeconds": 30,
           "messages": [
-            { "label": "one", "text": "first", "enabled": true, "delaySeconds": 20 },
-            { "label": "skip", "text": "disabled", "enabled": false, "delaySeconds": 15 },
+            { "label": "one", "text": "first", "enabled": true, "delaySeconds": 45 },
+            { "label": "skip", "text": "disabled", "enabled": false, "delaySeconds": 30 },
             { "label": "two", "text": "second", "enabled": true }
           ]
         }
@@ -25,11 +25,11 @@ public sealed class SimpleMonitorMessagePlanTests
 
         Assert.Equal("Night work", plan.Name);
         Assert.True(plan.Loop);
-        Assert.Equal(15, plan.DefaultDelaySeconds);
+        Assert.Equal(30, plan.DefaultDelaySeconds);
         Assert.Equal(3, plan.Messages.Count);
-        Assert.Equal(20, plan.Messages[0].EffectiveDelaySeconds(plan.DefaultDelaySeconds));
+        Assert.Equal(45, plan.Messages[0].EffectiveDelaySeconds(plan.DefaultDelaySeconds));
         Assert.False(plan.Messages[1].Enabled);
-        Assert.Equal(15, plan.Messages[2].EffectiveDelaySeconds(plan.DefaultDelaySeconds));
+        Assert.Equal(30, plan.Messages[2].EffectiveDelaySeconds(plan.DefaultDelaySeconds));
     }
 
     [Fact]
@@ -58,8 +58,8 @@ public sealed class SimpleMonitorMessagePlanTests
           "schemaVersion": 1,
           "name": "none",
           "loop": false,
-          "defaultDelaySeconds": 15,
-          "messages": [ { "text": "disabled", "enabled": false, "delaySeconds": 15 } ]
+          "defaultDelaySeconds": 30,
+          "messages": [ { "text": "disabled", "enabled": false, "delaySeconds": 30 } ]
         }
         """;
 
@@ -86,7 +86,7 @@ public sealed class SimpleMonitorMessagePlanTests
         var prompt = SimpleMonitorMessagePlanService.CreateChatGptPrompt();
 
         Assert.Contains("ONLY valid JSON", prompt);
-        Assert.Contains("between 15 and 3600", prompt);
+        Assert.Contains("between 30 and 3600", prompt);
         Assert.Contains("loop=false", prompt);
     }
 }
