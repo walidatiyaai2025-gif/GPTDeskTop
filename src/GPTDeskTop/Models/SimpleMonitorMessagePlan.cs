@@ -5,7 +5,7 @@ public sealed class SimpleMonitorMessagePlan
     public int SchemaVersion { get; init; } = 1;
     public string Name { get; init; } = "Message Plan";
     public bool Loop { get; init; } = true;
-    public int DefaultDelaySeconds { get; init; } = 15;
+    public int DefaultDelaySeconds { get; init; } = 30;
     public List<SimpleMonitorMessageStep> Messages { get; init; } = [];
 }
 
