@@ -25,7 +25,7 @@ jobs:
 
       - name: Apply pacing patch
         shell: pwsh
-        run: python tools/v2035_patch_v3.py
+        run: python tools/v2035_patch_v4.py
 
       - name: Runtime regression tests
         shell: pwsh
@@ -45,9 +45,11 @@ jobs:
           git add src/GPTDeskTop/Services/SimpleMonitorRunner.cs
           git add src/GPTDeskTop/UI/SimpleMonitorForm.cs
           git add tests/GPTDeskTop.RuntimeTests/SimpleMonitorRateLimitOverlayRegressionTests.cs
+          git add tests/GPTDeskTop.RuntimeTests/SimpleMonitorRateLimitSafetyRegressionTests.cs
           git add tests/GPTDeskTop.RuntimeTests/SimpleMonitorModeRegressionTests.cs
           git add tests/GPTDeskTop.RuntimeTests/MonitorOnlyVisualHotfixRegressionTests.cs
           git add tests/GPTDeskTop.RuntimeTests/SimpleMonitorPacingRegressionTests.cs
+          git add tests/GPTDeskTop.RuntimeTests/RuntimeFlightRecorderTests.cs
           git diff --cached --check
           git commit -m "fix: pace Monitor Only sends to reduce rate limiting"
           git push origin HEAD:fix/v2035-monitor-pacing
