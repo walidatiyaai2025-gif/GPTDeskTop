@@ -11,6 +11,7 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
     internal const int ReceiveBufferSize = 64 * 1024;
     internal const int MaxDevToolsMessageBytes = 2 * 1024 * 1024;
     internal static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(12);
+    internal static readonly TimeSpan PassiveRuntimeEvaluateTimeout = TimeSpan.FromSeconds(30);
 
     private readonly object _sync = new();
     private readonly Dictionary<string, DevToolsSession> _sessions = new(StringComparer.Ordinal);
@@ -21,7 +22,8 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
         string method,
         object parameters,
         CancellationToken cancellationToken,
-        bool extractRuntimeValue = false)
+        bool extractRuntimeValue = false,
+        TimeSpan? commandTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(tab);
         if (string.IsNullOrWhiteSpace(tab.Id))
@@ -33,7 +35,7 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
         if (recordCommandLifecycle)
             RuntimeFlightRecorder.Record("CDP", "CommandRequested", "started", method, tabId: tab.Id, conversationRef: tab.Url);
         var session = GetOrCreateSession(tab);
-        return SendInstrumentedAsync(session, tab, method, parameters, cancellationToken, extractRuntimeValue, recordCommandLifecycle);
+        return SendInstrumentedAsync(session, tab, method, parameters, cancellationToken, extractRuntimeValue, commandTimeout ?? CommandTimeout, recordCommandLifecycle);
     }
 
     private static async Task<JsonElement> SendInstrumentedAsync(
@@ -43,11 +45,12 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
         object parameters,
         CancellationToken cancellationToken,
         bool extractRuntimeValue,
+        TimeSpan commandTimeout,
         bool recordCommandLifecycle)
     {
         try
         {
-            var result = await session.SendCommandAsync(method, parameters, cancellationToken, extractRuntimeValue).ConfigureAwait(false);
+            var result = await session.SendCommandAsync(method, parameters, cancellationToken, commandTimeout, extractRuntimeValue).ConfigureAwait(false);
             if (recordCommandLifecycle)
                 RuntimeFlightRecorder.Record("CDP", "CommandCompleted", "success", method, tabId: tab.Id, conversationRef: tab.Url);
             return result;
@@ -209,16 +212,17 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
             string method,
             object parameters,
             CancellationToken cancellationToken,
+            TimeSpan commandTimeout,
             bool extractRuntimeValue)
         {
-            if (!await _commandGate.WaitAsync(CommandTimeout, cancellationToken).ConfigureAwait(false))
+            if (!await _commandGate.WaitAsync(commandTimeout, cancellationToken).ConfigureAwait(false))
             {
                 // A command can become wedged while holding the session gate even when the
                 // underlying transport never surfaces an exception. Bound the queue wait too,
                 // retire this session, and let the pool create a clean session on the next poll.
                 MarkBroken();
                 throw new TimeoutException(
-                    $"Chrome DevTools command '{method}' timed out waiting for the session gate after {CommandTimeout.TotalSeconds:0} seconds.");
+                    $"Chrome DevTools command '{method}' timed out waiting for the session gate after {commandTimeout.TotalSeconds:0} seconds.");
             }
 
             try
@@ -227,7 +231,7 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
                     throw new IOException("Chrome DevTools session was invalidated before the command could run.");
 
                 using var commandCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                commandCts.CancelAfter(CommandTimeout);
+                commandCts.CancelAfter(commandTimeout);
                 var commandToken = commandCts.Token;
 
                 try
@@ -315,7 +319,7 @@ internal sealed class ChromeDevToolsSessionPool : IDisposable
                 {
                     MarkBroken();
                     throw new TimeoutException(
-                        $"Chrome DevTools command '{method}' timed out after {CommandTimeout.TotalSeconds:0} seconds.");
+                        $"Chrome DevTools command '{method}' timed out after {commandTimeout.TotalSeconds:0} seconds.");
                 }
                 catch (OperationCanceledException)
                 {

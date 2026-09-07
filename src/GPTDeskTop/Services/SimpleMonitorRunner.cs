@@ -1,4 +1,3 @@
-using System.Reflection;
 using GPTDeskTop.Data;
 using GPTDeskTop.Models;
 
@@ -11,6 +10,9 @@ public sealed record SimpleMonitorInspectorSnapshot(
     int SentMessages,
     int PendingMessages,
     int PassiveReadRetries,
+    int ConsecutivePassiveReadFailures,
+    string LastRecovery,
+    string LastTransientError,
     string LastCdpEvent,
     string LastError);
 
@@ -19,17 +21,15 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
     private const string ConversationSetting = "SimpleMonitor.ConversationUrl";
     private const int MaxConsecutiveFreshTargetAttempts = 3;
 
-    private static readonly MethodInfo PassiveStateReader = typeof(ChromeDevToolsService).GetMethod(
-        "ReadChatStateCoreAsync",
-        BindingFlags.Instance | BindingFlags.NonPublic)
-        ?? throw new MissingMethodException(typeof(ChromeDevToolsService).FullName, "ReadChatStateCoreAsync");
-
     private readonly object _sync = new();
     private readonly LocalDatabase? _database;
     private readonly SimpleMonitorSafetyGate _safety;
     private CancellationTokenSource? _cancellation;
     private Task? _worker;
     private int _passiveReadRetries;
+    private int _consecutivePassiveReadFailures;
+    private string _lastRecovery = "Healthy";
+    private string _lastTransientError = string.Empty;
     private int _sentMessages;
     private int _pendingMessages;
     private int _currentMessage;
@@ -131,6 +131,9 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             _cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var token = _cancellation.Token;
             _passiveReadRetries = 0;
+            _consecutivePassiveReadFailures = 0;
+            _lastRecovery = "Healthy";
+            _lastTransientError = string.Empty;
             _sentMessages = messages.Count(message => message is not null && message.Enabled && message.Sent);
             _pendingMessages = runtimeMessages.Length;
             _currentMessage = 0;
@@ -610,6 +613,9 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             {
                 _lastCdpEvent = attempt == 1 ? "Runtime.evaluate passive read" : $"Runtime.evaluate retry {attempt - 1}/{maxAttempts - 1}";
                 var state = await InvokePassiveStateReaderAsync(chrome, tab, cancellationToken).ConfigureAwait(false);
+                _consecutivePassiveReadFailures = 0;
+                _lastRecovery = attempt > 1 ? "Recovered" : "Healthy";
+                _lastError = string.Empty;
                 if (attempt > 1) _lastCdpEvent = "Runtime.evaluate recovered";
                 PublishInspector("ReadingChatState");
                 return state;
@@ -617,6 +623,9 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             catch (Exception ex) when (IsTransientRuntimeEvaluateTimeout(ex) && attempt < maxAttempts)
             {
                 _passiveReadRetries++;
+                _consecutivePassiveReadFailures++;
+                _lastRecovery = "Retrying";
+                _lastTransientError = ex.Message;
                 _lastError = ex.Message;
                 _lastCdpEvent = $"Runtime.evaluate timeout; safe passive retry {attempt}/{maxAttempts - 1}";
                 StatusChanged?.Invoke($"Chrome state read timed out. Retrying safely ({attempt}/{maxAttempts - 1}) before any message mutation...");
@@ -625,6 +634,9 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             }
             catch (Exception ex) when (IsTransientRuntimeEvaluateTimeout(ex))
             {
+                _consecutivePassiveReadFailures++;
+                _lastRecovery = "Exhausted";
+                _lastTransientError = ex.Message;
                 _lastError = ex.Message;
                 _lastCdpEvent = "Runtime.evaluate timeout exhausted";
                 PublishInspector("ConversationRollover");
@@ -640,21 +652,9 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         ChromeDevToolsService chrome,
         ChromeTab tab,
         CancellationToken cancellationToken)
-        => SimpleMonitorPassiveReadGate.RunAsync(async () =>
-        {
-            try
-            {
-                var task = (Task<ChatPageState>)(PassiveStateReader.Invoke(
-                    chrome,
-                    new object[] { tab, cancellationToken })
-                    ?? throw new InvalidOperationException("Passive chat-state reader returned no task."));
-                return await task.ConfigureAwait(false);
-            }
-            catch (TargetInvocationException ex) when (ex.InnerException is not null)
-            {
-                throw ex.InnerException;
-            }
-        }, cancellationToken);
+        => SimpleMonitorPassiveReadGate.RunAsync(
+            () => chrome.ReadChatStatePassiveAsync(tab, cancellationToken),
+            cancellationToken);
 
     private static bool IsTransientRuntimeEvaluateTimeout(Exception ex)
     {
@@ -754,6 +754,9 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             _sentMessages,
             _pendingMessages,
             _passiveReadRetries,
+            _consecutivePassiveReadFailures,
+            _lastRecovery,
+            _lastTransientError,
             _lastCdpEvent,
             _lastError));
 

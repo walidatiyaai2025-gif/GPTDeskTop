@@ -83,7 +83,7 @@ public sealed class SimpleMonitorForm : Form
     private readonly Label _inspectorState = InspectorValue("State: Idle");
     private readonly Label _inspectorMessage = InspectorValue("Current: —");
     private readonly Label _inspectorProgress = InspectorValue("Sent: 0  •  Pending: 0");
-    private readonly Label _inspectorRetries = InspectorValue("CDP retries: 0");
+    private readonly Label _inspectorRetries = InspectorValue("Total CDP retries: 0  •  Consecutive: 0");
     private readonly Label _inspectorCdp = InspectorValue("Last CDP: Idle");
     private readonly Label _inspectorError = new()
     {
@@ -1033,10 +1033,14 @@ public sealed class SimpleMonitorForm : Form
             _inspectorState.Text = $"State: {snapshot.State}";
             _inspectorMessage.Text = snapshot.CurrentMessage <= 0 ? "Current: —" : $"Current: {snapshot.CurrentMessage}/{snapshot.TotalMessages}";
             _inspectorProgress.Text = $"Sent: {snapshot.SentMessages}  •  Pending: {snapshot.PendingMessages}";
-            _inspectorRetries.Text = $"CDP retries: {snapshot.PassiveReadRetries}";
-            _inspectorCdp.Text = $"Last CDP: {snapshot.LastCdpEvent}";
-            _inspectorError.Text = string.IsNullOrWhiteSpace(snapshot.LastError) ? "Last error: —" : $"Last error: {snapshot.LastError}";
-            _inspectorError.ForeColor = string.IsNullOrWhiteSpace(snapshot.LastError) ? FluentTheme.Muted : Color.OrangeRed;
+            _inspectorRetries.Text = $"Total CDP retries: {snapshot.PassiveReadRetries}  •  Consecutive: {snapshot.ConsecutivePassiveReadFailures}";
+            _inspectorCdp.Text = $"Last CDP: {snapshot.LastCdpEvent}  •  Recovery: {snapshot.LastRecovery}";
+            _inspectorError.Text = !string.IsNullOrWhiteSpace(snapshot.LastError)
+                ? $"Current error: {snapshot.LastError}"
+                : string.IsNullOrWhiteSpace(snapshot.LastTransientError)
+                    ? "Current error: —"
+                    : $"Last transient (recovered): {snapshot.LastTransientError}";
+            _inspectorError.ForeColor = !string.IsNullOrWhiteSpace(snapshot.LastError) ? Color.OrangeRed : FluentTheme.Muted;
         });
 
     private void PostToUi(Action action)
