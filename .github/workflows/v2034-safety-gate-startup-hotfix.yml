@@ -41,6 +41,20 @@ jobs:
           if (-not $props.Contains($oldVersion)) { throw 'Canonical 2.0.33 version marker was not found.' }
           Set-Content $propsPath ($props.Replace($oldVersion, $newVersion)) -NoNewline -Encoding utf8
 
+          $versionTests = @(
+            'tests/GPTDeskTop.RuntimeTests/SimpleMonitorModeRegressionTests.cs',
+            'tests/GPTDeskTop.RuntimeTests/SimpleMonitorRateLimitOverlayRegressionTests.cs',
+            'tests/GPTDeskTop.RuntimeTests/MonitorOnlyVisualHotfixRegressionTests.cs'
+          )
+          foreach ($versionTest in $versionTests) {
+            $testSource = Get-Content $versionTest -Raw
+            if (-not $testSource.Contains('2.0.33')) { throw "Expected 2.0.33 assertion was not found in $versionTest." }
+            $testSource = $testSource.Replace('2.0.33', '2.0.34')
+            $testSource = $testSource.Replace('ThirtyThree', 'ThirtyFour')
+            $testSource = $testSource.Replace('Version2033', 'Version2034')
+            Set-Content $versionTest $testSource -NoNewline -Encoding utf8
+          }
+
           $testPath = 'tests/GPTDeskTop.RuntimeTests/SimpleMonitorSafetyGateStartupRegressionTests.cs'
           @'
           using System.Runtime.CompilerServices;
@@ -87,9 +101,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- Directory.Build.props `
             src/GPTDeskTop/Services/SimpleMonitorSafetyGate.cs `
-            tests/GPTDeskTop.RuntimeTests/SimpleMonitorSafetyGateStartupRegressionTests.cs
+            tests/GPTDeskTop.RuntimeTests/SimpleMonitorSafetyGateStartupRegressionTests.cs `
+            tests/GPTDeskTop.RuntimeTests/SimpleMonitorModeRegressionTests.cs `
+            tests/GPTDeskTop.RuntimeTests/SimpleMonitorRateLimitOverlayRegressionTests.cs `
+            tests/GPTDeskTop.RuntimeTests/MonitorOnlyVisualHotfixRegressionTests.cs
           git diff --cached --check
           $staged = @(git diff --cached --name-only)
-          if ($staged.Count -ne 3) { throw "Expected exactly 3 staged hotfix files; found $($staged.Count)." }
+          if ($staged.Count -ne 6) { throw "Expected exactly 6 staged hotfix files; found $($staged.Count)." }
           git commit -m "fix(startup): repair SimpleMonitorSafetyGate initialization"
           git push origin HEAD:fix/v2034-safety-gate-startup
