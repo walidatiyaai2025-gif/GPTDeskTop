@@ -102,6 +102,38 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
+    public void FreshTargetFailureWaitsFifteenMinutesAndKeepsTheWorkerAlive()
+    {
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
+        var session = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
+
+        Assert.Contains("CleanFreshTargetRecoveryDelay = TimeSpan.FromMinutes(15)", runner, StringComparison.Ordinal);
+        Assert.Contains("RECOVERY WAIT", runner, StringComparison.Ordinal);
+        Assert.Contains("Start Monitor remains running", runner, StringComparison.Ordinal);
+        Assert.Contains("RecoverAfterAuthorizedStartAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("same pending message", runner, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CloseAutomationOwnedChatTabsAsync", session, StringComparison.Ordinal);
+        Assert.Contains("about:blank", session, StringComparison.Ordinal);
+        Assert.DoesNotContain("A fresh ChatGPT conversation could not be established after {MaxConsecutiveFreshTargetAttempts} attempts", runner, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SameSelectedManagedProfileOwnsStartAndRecoveryWithoutTouchingNormalChrome()
+    {
+        var session = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
+        var ownership = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorChromeOwnershipGate.cs");
+
+        Assert.Contains("_startLaunchAuthorized = true", session, StringComparison.Ordinal);
+        Assert.Contains("EnsureStartAuthorizedBrowserAvailableAsync", session, StringComparison.Ordinal);
+        Assert.Contains("if (!_startLaunchAuthorized)", session, StringComparison.Ordinal);
+        Assert.Contains("Profile.ManagedUserDataDirectory", session, StringComparison.Ordinal);
+        Assert.Contains("CloseOtherManagedSessionsAsync", ownership, StringComparison.Ordinal);
+        Assert.Contains("selected profile remains on", ownership, StringComparison.Ordinal);
+        Assert.Contains("GPTDeskTop-managed automation sessions", session, StringComparison.Ordinal);
+        Assert.Contains("never kill the user's ordinary Chrome process", session, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void RateLimitNeverUsesFreshChatAsBypass()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
@@ -213,9 +245,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointThirtySeven()
+    public void ProductVersionIsBumpedToTwoPointZeroPointThirtyEight()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.37</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.38</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }

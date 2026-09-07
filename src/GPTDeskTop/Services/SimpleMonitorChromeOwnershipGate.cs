@@ -58,29 +58,33 @@ internal static class SimpleMonitorChromeOwnershipGate
         }
     }
 
-    internal static async Task<ChromeTab> EnsureExclusiveBeforeSendAsync(ChromeDevToolsService selectedChrome, ChromeTab requestedTab, Action<string>? status, CancellationToken cancellationToken)
+    internal static async Task CloseOtherManagedSessionsAsync(
+        ChromeDevToolsService selectedChrome,
+        Action<string>? status,
+        CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(selectedChrome);
-        ArgumentNullException.ThrowIfNull(requestedTab);
-        Registration registration;
-        lock (RegistrationSync)
-        {
-            if (!Registrations.TryGetValue(selectedChrome, out var found))
-                throw new InvalidOperationException("Monitor Only Chrome ownership is not registered. Physical send is blocked.");
-            registration = found;
-        }
-
-        status?.Invoke("SINGLE CHROME GATE — verifying one GPTDeskTop Chrome before physical send...");
+        var registration = GetRegistration(selectedChrome);
         foreach (var port in DiscoverManagedPorts(registration))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (port == registration.DebuggingPort) continue;
             if (!await IsEndpointAliveAsync(port, cancellationToken).ConfigureAwait(false)) continue;
-            status?.Invoke($"SINGLE CHROME GATE — closing extra GPTDeskTop Chrome on CDP port {port} before send.");
+
+            status?.Invoke($"SINGLE PROFILE — closing stale GPTDeskTop Chrome on CDP port {port}; selected profile remains on {registration.DebuggingPort}.");
             await CloseBrowserAtPortAsync(port, cancellationToken).ConfigureAwait(false);
             if (!await WaitForEndpointClosedAsync(port, cancellationToken).ConfigureAwait(false))
-                throw new InvalidOperationException($"Extra GPTDeskTop Chrome on CDP port {port} is still alive. Physical send is blocked.");
+                throw new InvalidOperationException($"A stale GPTDeskTop Chrome on CDP port {port} is still alive. The selected profile session cannot be made exclusive safely.");
         }
+    }
+
+    internal static async Task<ChromeTab> EnsureExclusiveBeforeSendAsync(ChromeDevToolsService selectedChrome, ChromeTab requestedTab, Action<string>? status, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(selectedChrome);
+        ArgumentNullException.ThrowIfNull(requestedTab);
+        _ = GetRegistration(selectedChrome);
+
+        status?.Invoke("SINGLE CHROME GATE — verifying one GPTDeskTop Chrome before physical send...");
+        await CloseOtherManagedSessionsAsync(selectedChrome, status, cancellationToken).ConfigureAwait(false);
 
         var tabs = await selectedChrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
         var keeper = ResolveKeeper(tabs, requestedTab)
@@ -120,6 +124,16 @@ internal static class SimpleMonitorChromeOwnershipGate
             }
             return 12000 + (int)(hash % 10000);
         }
+    }
+
+    private static Registration GetRegistration(ChromeDevToolsService chrome)
+    {
+        ArgumentNullException.ThrowIfNull(chrome);
+        lock (RegistrationSync)
+        {
+            if (Registrations.TryGetValue(chrome, out var registration)) return registration;
+        }
+        throw new InvalidOperationException("Monitor Only Chrome ownership is not registered. Browser mutation is blocked.");
     }
 
     private static IReadOnlyList<int> DiscoverManagedPorts(Registration selected)

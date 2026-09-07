@@ -20,6 +20,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
 {
     private const string ConversationSetting = "SimpleMonitor.ConversationUrl";
     private const int MaxConsecutiveFreshTargetAttempts = 3;
+    private static readonly TimeSpan CleanFreshTargetRecoveryDelay = TimeSpan.FromMinutes(15);
 
     private readonly object _sync = new();
     private readonly LocalDatabase? _database;
@@ -437,41 +438,87 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         string reason,
         CancellationToken cancellationToken)
     {
-        Exception? last = null;
-        for (var attempt = 1; attempt <= MaxConsecutiveFreshTargetAttempts; attempt++)
+        var recoveryCycle = 0;
+        while (true)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
+            Exception? last = null;
+            for (var attempt = 1; attempt <= MaxConsecutiveFreshTargetAttempts; attempt++)
             {
-                SetStatus($"NEW CHAT — {reason}. Creating fresh conversation ({attempt}/{MaxConsecutiveFreshTargetAttempts})...", "CreatingFreshChat");
-                _lastCdpEvent = "Target.createTarget https://chatgpt.com/";
-                var tab = await session.CreateFreshConversationTabAsync(cancellationToken).ConfigureAwait(false);
-
-                // Wait for the new root page to become readable without loading a stored message.
-                var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
-                while (DateTimeOffset.UtcNow < deadline)
+                cancellationToken.ThrowIfCancellationRequested();
+                try
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var live = await session.RefreshLiveTabAsync(tab, cancellationToken).ConfigureAwait(false);
-                    if (live is null)
+                    SetStatus($"NEW CHAT — {reason}. Creating fresh conversation ({attempt}/{MaxConsecutiveFreshTargetAttempts})...", "CreatingFreshChat");
+                    _lastCdpEvent = "Target.createTarget https://chatgpt.com/";
+                    var tab = await session.CreateFreshConversationTabAsync(cancellationToken).ConfigureAwait(false);
+
+                    // Wait for the new root page to become readable without loading a stored message.
+                    var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
+                    while (DateTimeOffset.UtcNow < deadline)
                     {
-                        await Task.Delay(250, cancellationToken).ConfigureAwait(false);
-                        continue;
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var live = await session.RefreshLiveTabAsync(tab, cancellationToken).ConfigureAwait(false);
+                        if (live is null)
+                        {
+                            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+                        try
+                        {
+                            _ = await InvokePassiveStateReaderAsync(session.Chrome, live, cancellationToken).ConfigureAwait(false);
+                            _lastRecovery = recoveryCycle == 0 ? "Healthy" : $"Recovered after clean retry {recoveryCycle}";
+                            _lastTransientError = string.Empty;
+                            _lastError = string.Empty;
+                            SetStatus("Fresh ChatGPT conversation ready. Pending message remains unsent until the send gate opens.", "FreshChatReady");
+                            return live;
+                        }
+                        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsTransientRuntimeEvaluateTimeout(ex))
+                        {
+                            last = ex;
+                            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+                        }
                     }
-                    try
-                    {
-                        _ = await InvokePassiveStateReaderAsync(session.Chrome, live, cancellationToken).ConfigureAwait(false);
-                        SetStatus("Fresh ChatGPT conversation ready. Pending message remains unsent until the send gate opens.", "FreshChatReady");
-                        return live;
-                    }
-                    catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsTransientRuntimeEvaluateTimeout(ex))
-                    {
-                        await Task.Delay(250, cancellationToken).ConfigureAwait(false);
-                    }
+
+                    last = new TimeoutException("Fresh ChatGPT target did not become readable within 30 seconds.");
+                    await session.Chrome.CloseTabAsync(tab, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    last = ex;
                 }
 
-                last = new TimeoutException("Fresh ChatGPT target did not become readable within 30 seconds.");
-                await session.Chrome.CloseTabAsync(tab, CancellationToken.None).ConfigureAwait(false);
+                if (attempt < MaxConsecutiveFreshTargetAttempts)
+                    await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken).ConfigureAwait(false);
+            }
+
+            recoveryCycle++;
+            _lastTransientError = last?.Message ?? "Fresh ChatGPT target did not become ready.";
+            _lastError = string.Empty;
+            _lastRecovery = $"Waiting 15m for clean retry {recoveryCycle}";
+            _lastCdpEvent = "Fresh target attempts exhausted before physical submit; message remains pending";
+            SetStatus(
+                $"RECOVERY WAIT — fresh ChatGPT could not be established after {MaxConsecutiveFreshTargetAttempts} attempts. No physical send was entered, so the pending message is safe. Waiting 15 minutes before clean retry {recoveryCycle}; Start Monitor remains running.",
+                "RecoveryWait");
+
+            await Task.Delay(CleanFreshTargetRecoveryDelay, cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                SetStatus(
+                    $"CLEAN RECOVERY — retry {recoveryCycle}. Closing only GPTDeskTop-owned ChatGPT tabs and re-establishing the same selected Chrome profile/session.",
+                    "RecoveringSession");
+                await session.RecoverAfterAuthorizedStartAsync(
+                    status => SetStatus(status, "RecoveringSession"),
+                    cancellationToken).ConfigureAwait(false);
+                _lastRecovery = $"Clean retry {recoveryCycle} prepared";
+                _lastCdpEvent = "Selected managed Chrome session clean recovery complete";
+                _lastError = string.Empty;
+                SetStatus(
+                    "CLEAN RECOVERY — same selected Chrome profile/session is ready. Retrying the same pending message from a fresh chat; no sent checkpoint was changed.",
+                    "RecoveringSession");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -479,15 +526,15 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                last = ex;
+                _lastTransientError = ex.Message;
+                _lastRecovery = $"Clean retry {recoveryCycle} could not reattach";
+                _lastCdpEvent = "Selected managed Chrome recovery failed; retry loop remains alive";
+                _lastError = string.Empty;
+                SetStatus(
+                    $"CLEAN RECOVERY — same-profile reattach is not ready yet ({ex.Message}). The monitor remains running; a new bounded attempt cycle will continue and will wait another 15 minutes if needed.",
+                    "RecoveringSession");
             }
-
-            if (attempt < MaxConsecutiveFreshTargetAttempts)
-                await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken).ConfigureAwait(false);
         }
-
-        throw new SimpleMonitorBlockedException(
-            $"A fresh ChatGPT conversation could not be established after {MaxConsecutiveFreshTargetAttempts} attempts. {last?.Message}");
     }
 
     private async Task<ChromeTab> RollOverBeforeSendAsync(
