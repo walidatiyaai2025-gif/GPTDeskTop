@@ -9,15 +9,21 @@ start = text.index(launch_block)
 end = text.index(recover_block, start)
 text = text[:start] + text[end:]
 
-global_gate = "          if ($chrome -match 'Process\\\\.Start\\\\s*\\\\(|LaunchMonitorChrome\\\\s*\\\\(') {"
-start = text.index(global_gate)
-end_marker = "\n\n          $recoverStart ="
+# The QA hardening must constrain Monitor Only recovery methods, not ban the legacy
+# launcher API used by other product workflows. Locate this temporary global check by
+# its stable PowerShell prefix instead of brittle escaped-regex text.
+global_gate_start = "          if ($chrome -match 'Process"
+start = text.index(global_gate_start)
+end_marker = "          $recoverStart ="
 end = text.index(end_marker, start)
-text = text[:start] + text[end + 2:]
+text = text[:start] + text[end:]
 
 text = text.replace(
-    '        Assert.DoesNotContain("Process.Start(", chrome, StringComparison.Ordinal);\n'
-    '        Assert.DoesNotContain("LaunchMonitorChrome(", chrome, StringComparison.Ordinal);\n\n',
+    '        Assert.DoesNotContain("Process.Start(", chrome, StringComparison.Ordinal);\n',
+    '',
+)
+text = text.replace(
+    '        Assert.DoesNotContain("LaunchMonitorChrome(", chrome, StringComparison.Ordinal);\n',
     '',
 )
 
