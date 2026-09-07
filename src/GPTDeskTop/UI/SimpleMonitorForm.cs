@@ -62,7 +62,7 @@ public sealed class SimpleMonitorForm : Form
         AutoEllipsis = true
     };
 
-    private readonly NumericUpDown _delaySeconds = new() { Minimum = 15, Maximum = 3600, Value = 15, Width = 90 };
+    private readonly NumericUpDown _delaySeconds = new() { Minimum = 30, Maximum = 3600, Value = 30, Width = 90 };
     private readonly Button _startButton = new() { Text = "Start Monitor", AutoSize = true };
     private readonly Button _stopButton = new() { Text = "Stop", AutoSize = true, Enabled = false };
     private readonly Label _statusLabel = new()

@@ -8,7 +8,9 @@ namespace GPTDeskTop.Services;
 internal sealed class SimpleMonitorSafetyGate
 {
     private const string StateSetting = "SimpleMonitor.SafetyState.v1";
-    internal static readonly TimeSpan MinimumSendGap = TimeSpan.FromSeconds(15);
+    internal static readonly TimeSpan MinimumSendGap = TimeSpan.FromSeconds(30);
+    internal const int MicroBreakEveryConfirmedMessages = 25;
+    internal static readonly TimeSpan MicroBreakDuration = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan[] BackoffSchedule =
     [
         TimeSpan.FromMinutes(5),
@@ -136,15 +138,23 @@ internal sealed class SimpleMonitorSafetyGate
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         await PhysicalSendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        FileStream? crossProcessLease = null;
         var release = true;
         try
         {
+            crossProcessLease = await SimpleMonitorChromeOwnershipGate.AcquireGlobalSendLeaseAsync(status, cancellationToken).ConfigureAwait(false);
             while (true)
             {
+                var ownershipTab = await tabResolver(cancellationToken).ConfigureAwait(false);
+                _ = await SimpleMonitorChromeOwnershipGate.EnsureExclusiveBeforeSendAsync(
+                    chrome, ownershipTab, status, cancellationToken).ConfigureAwait(false);
+
                 await WaitForRateLimitClearAsync(chrome, tabResolver, status, cancellationToken).ConfigureAwait(false);
                 await WaitForQuietWindowAsync(status, cancellationToken).ConfigureAwait(false);
 
                 var tab = await tabResolver(cancellationToken).ConfigureAwait(false);
+                tab = await SimpleMonitorChromeOwnershipGate.EnsureExclusiveBeforeSendAsync(
+                    chrome, tab, status, cancellationToken).ConfigureAwait(false);
                 var state = await stateReader(tab, cancellationToken).ConfigureAwait(false);
                 if (state.IsGenerating)
                 {
@@ -161,13 +171,18 @@ internal sealed class SimpleMonitorSafetyGate
                 }
 
                 release = false;
-                return new SendPermit(this, tab, state);
+                var transferredLease = crossProcessLease;
+                crossProcessLease = null;
+                return new SendPermit(this, tab, state, transferredLease);
             }
         }
         finally
         {
             if (release)
+            {
+                crossProcessLease?.Dispose();
                 PhysicalSendGate.Release();
+            }
         }
     }
 
@@ -220,7 +235,7 @@ internal sealed class SimpleMonitorSafetyGate
                 }
 
                 await ClearRateLimitAsync(cancellationToken).ConfigureAwait(false);
-                status?.Invoke("RATE LIMIT CLEARED — safe probe passed. Normal 15-second send gate remains enforced.");
+                status?.Invoke("RATE LIMIT CLEARED — safe probe passed. Normal 30-second send gate remains enforced.");
                 return;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -299,6 +314,7 @@ internal sealed class SimpleMonitorSafetyGate
         while (true)
         {
             DateTimeOffset notBefore;
+            DateTimeOffset? microBreakUntil;
             lock (_sync)
             {
                 notBefore = _startupQuietUntilUtc;
@@ -306,13 +322,19 @@ internal sealed class SimpleMonitorSafetyGate
                     notBefore = Max(notBefore, physical + MinimumSendGap);
                 if (_state.LastResponseCompletedUtc is { } completed)
                     notBefore = Max(notBefore, completed + MinimumSendGap);
+                microBreakUntil = _state.MicroBreakUntilUtc;
+                if (microBreakUntil is { } pause)
+                    notBefore = Max(notBefore, pause);
             }
 
             var remaining = notBefore - DateTimeOffset.UtcNow;
             if (remaining <= TimeSpan.Zero)
                 return;
 
-            status?.Invoke($"SEND GATE — safety quiet period {FormatRemaining(remaining)}. No physical send yet.");
+            var microBreakActive = microBreakUntil is { } breakUntil && breakUntil > DateTimeOffset.UtcNow;
+            status?.Invoke(microBreakActive
+                ? $"SEND GATE — scheduled 2-minute micro-break after {MicroBreakEveryConfirmedMessages} confirmed messages; {FormatRemaining(remaining)} remaining. No physical send yet."
+                : $"SEND GATE — safety quiet period {FormatRemaining(remaining)}. No physical send yet.");
             await Task.Delay(remaining > TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : remaining, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -324,6 +346,31 @@ internal sealed class SimpleMonitorSafetyGate
         lock (_sync)
         {
             next = _state with { LastPhysicalAttemptUtc = DateTimeOffset.UtcNow };
+            _state = next;
+        }
+        await PersistAsync(next, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    internal async Task RecordConfirmedDeliveryAsync(CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        DurableState next;
+        lock (_sync)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var count = Math.Max(0, _state.ConfirmedSendsSinceMicroBreak) + 1;
+            DateTimeOffset? microBreakUntil = _state.MicroBreakUntilUtc is { } existing && existing > now ? existing : null;
+            if (count >= MicroBreakEveryConfirmedMessages)
+            {
+                count = 0;
+                microBreakUntil = now + MicroBreakDuration;
+            }
+
+            next = _state with
+            {
+                ConfirmedSendsSinceMicroBreak = count,
+                MicroBreakUntilUtc = microBreakUntil
+            };
             _state = next;
         }
         await PersistAsync(next, CancellationToken.None).ConfigureAwait(false);
@@ -456,10 +503,12 @@ internal sealed class SimpleMonitorSafetyGate
     internal sealed class SendPermit : IAsyncDisposable
     {
         private SimpleMonitorSafetyGate? _owner;
+        private IDisposable? _crossProcessLease;
 
-        internal SendPermit(SimpleMonitorSafetyGate owner, ChromeTab tab, ChatPageState state)
+        internal SendPermit(SimpleMonitorSafetyGate owner, ChromeTab tab, ChatPageState state, IDisposable? crossProcessLease)
         {
             _owner = owner;
+            _crossProcessLease = crossProcessLease;
             Tab = tab;
             State = state;
         }
@@ -472,8 +521,12 @@ internal sealed class SimpleMonitorSafetyGate
 
         public ValueTask DisposeAsync()
         {
-            var owner = Interlocked.Exchange(ref _owner, null);
-            owner?.ReleasePhysicalSendGate();
+            var lease = Interlocked.Exchange(ref _crossProcessLease, null);
+            try { lease?.Dispose(); } finally
+            {
+                var owner = Interlocked.Exchange(ref _owner, null);
+                owner?.ReleasePhysicalSendGate();
+            }
             return ValueTask.CompletedTask;
         }
     }
@@ -485,9 +538,11 @@ internal sealed class SimpleMonitorSafetyGate
         int BackoffIndex,
         DateTimeOffset? RetryAtUtc,
         DateTimeOffset? DetectedAtUtc,
-        string LastRateLimitText)
+        string LastRateLimitText,
+        int ConfirmedSendsSinceMicroBreak,
+        DateTimeOffset? MicroBreakUntilUtc)
     {
-        internal static DurableState Empty { get; } = new(null, null, false, 0, null, null, string.Empty);
+        internal static DurableState Empty { get; } = new(null, null, false, 0, null, null, string.Empty, 0, null);
     }
 }
 

@@ -33,7 +33,7 @@ public sealed class SimpleMonitorModeRegressionTests
         var hotfix = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyVisualHotfix.cs");
 
         Assert.Contains("Chrome profile", source, StringComparison.Ordinal);
-        Assert.Contains("Minimum = 15", source, StringComparison.Ordinal);
+        Assert.Contains("Minimum = 30", source, StringComparison.Ordinal);
         Assert.Contains("Stored message sequence", source, StringComparison.Ordinal);
         Assert.Contains("Load JSON Plan", source, StringComparison.Ordinal);
         Assert.Contains("Download Sample JSON", source, StringComparison.Ordinal);
@@ -213,9 +213,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointThirtyFour()
+    public void ProductVersionIsBumpedToTwoPointZeroPointThirtyFive()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.34</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.35</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }

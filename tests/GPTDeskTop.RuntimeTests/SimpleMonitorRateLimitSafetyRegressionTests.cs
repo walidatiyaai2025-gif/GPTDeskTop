@@ -35,7 +35,7 @@ public sealed class SimpleMonitorRateLimitSafetyRegressionTests
         var form = ReadSource("src", "GPTDeskTop", "UI", "SimpleMonitorForm.cs");
         var footer = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyExperienceController.cs");
 
-        Assert.Contains("MinimumSendGap = TimeSpan.FromSeconds(15)", safety, StringComparison.Ordinal);
+        Assert.Contains("MinimumSendGap = TimeSpan.FromSeconds(30)", safety, StringComparison.Ordinal);
         Assert.Contains("_startupQuietUntilUtc", safety, StringComparison.Ordinal);
         Assert.Contains("LastPhysicalAttemptUtc", safety, StringComparison.Ordinal);
         Assert.Contains("LastResponseCompletedUtc", safety, StringComparison.Ordinal);

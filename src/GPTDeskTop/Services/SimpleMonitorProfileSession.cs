@@ -29,6 +29,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
             SmartAutoFollowThrottleMilliseconds = 400,
             SmartAutoFollowNearBottomPixels = 180
         }, allowBrowserMutationRecovery: false);
+        SimpleMonitorChromeOwnershipGate.Register(Chrome, Profile, DebuggingPort);
     }
 
     /// <summary>
@@ -312,6 +313,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
+        SimpleMonitorChromeOwnershipGate.Unregister(Chrome);
         try { _launchedProcess?.Dispose(); } catch { }
         _launchedProcess = null;
         lock (_freshTargetSync) _freshTargetBaselines.Clear();
