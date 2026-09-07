@@ -138,15 +138,23 @@ internal sealed class SimpleMonitorSafetyGate
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         await PhysicalSendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        FileStream? crossProcessLease = null;
         var release = true;
         try
         {
+            crossProcessLease = await SimpleMonitorChromeOwnershipGate.AcquireGlobalSendLeaseAsync(status, cancellationToken).ConfigureAwait(false);
             while (true)
             {
+                var ownershipTab = await tabResolver(cancellationToken).ConfigureAwait(false);
+                _ = await SimpleMonitorChromeOwnershipGate.EnsureExclusiveBeforeSendAsync(
+                    chrome, ownershipTab, status, cancellationToken).ConfigureAwait(false);
+
                 await WaitForRateLimitClearAsync(chrome, tabResolver, status, cancellationToken).ConfigureAwait(false);
                 await WaitForQuietWindowAsync(status, cancellationToken).ConfigureAwait(false);
 
                 var tab = await tabResolver(cancellationToken).ConfigureAwait(false);
+                tab = await SimpleMonitorChromeOwnershipGate.EnsureExclusiveBeforeSendAsync(
+                    chrome, tab, status, cancellationToken).ConfigureAwait(false);
                 var state = await stateReader(tab, cancellationToken).ConfigureAwait(false);
                 if (state.IsGenerating)
                 {
@@ -163,13 +171,18 @@ internal sealed class SimpleMonitorSafetyGate
                 }
 
                 release = false;
-                return new SendPermit(this, tab, state);
+                var transferredLease = crossProcessLease;
+                crossProcessLease = null;
+                return new SendPermit(this, tab, state, transferredLease);
             }
         }
         finally
         {
             if (release)
+            {
+                crossProcessLease?.Dispose();
                 PhysicalSendGate.Release();
+            }
         }
     }
 
@@ -490,10 +503,12 @@ internal sealed class SimpleMonitorSafetyGate
     internal sealed class SendPermit : IAsyncDisposable
     {
         private SimpleMonitorSafetyGate? _owner;
+        private IDisposable? _crossProcessLease;
 
-        internal SendPermit(SimpleMonitorSafetyGate owner, ChromeTab tab, ChatPageState state)
+        internal SendPermit(SimpleMonitorSafetyGate owner, ChromeTab tab, ChatPageState state, IDisposable? crossProcessLease)
         {
             _owner = owner;
+            _crossProcessLease = crossProcessLease;
             Tab = tab;
             State = state;
         }
@@ -506,8 +521,12 @@ internal sealed class SimpleMonitorSafetyGate
 
         public ValueTask DisposeAsync()
         {
-            var owner = Interlocked.Exchange(ref _owner, null);
-            owner?.ReleasePhysicalSendGate();
+            var lease = Interlocked.Exchange(ref _crossProcessLease, null);
+            try { lease?.Dispose(); } finally
+            {
+                var owner = Interlocked.Exchange(ref _owner, null);
+                owner?.ReleasePhysicalSendGate();
+            }
             return ValueTask.CompletedTask;
         }
     }
