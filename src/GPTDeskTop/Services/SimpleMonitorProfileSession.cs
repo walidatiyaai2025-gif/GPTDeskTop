@@ -28,7 +28,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
             SmartAutoFollowEnabled = true,
             SmartAutoFollowThrottleMilliseconds = 400,
             SmartAutoFollowNearBottomPixels = 180
-        });
+        }, allowBrowserMutationRecovery: false);
     }
 
     /// <summary>

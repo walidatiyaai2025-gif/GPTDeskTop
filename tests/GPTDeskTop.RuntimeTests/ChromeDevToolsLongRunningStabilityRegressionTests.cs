@@ -19,7 +19,7 @@ public sealed class ChromeDevToolsLongRunningStabilityRegressionTests
 
         Assert.Contains("CommandTimeout = TimeSpan.FromSeconds(12)", source, StringComparison.Ordinal);
         Assert.Contains("CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)", source, StringComparison.Ordinal);
-        Assert.Contains("commandCts.CancelAfter(CommandTimeout)", source, StringComparison.Ordinal);
+        Assert.Contains("commandCts.CancelAfter(commandTimeout)", source, StringComparison.Ordinal);
         Assert.Contains("catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)", source, StringComparison.Ordinal);
         Assert.Contains("throw new TimeoutException", source, StringComparison.Ordinal);
     }
@@ -62,7 +62,7 @@ public sealed class ChromeDevToolsLongRunningStabilityRegressionTests
         Assert.Contains("_autoFollowSequences.Remove(tab.Id);", source, StringComparison.Ordinal);
         Assert.Contains("_sessionPool.Clear();", source, StringComparison.Ordinal);
         Assert.Contains("_monitorChromeProcess = null;", source, StringComparison.Ordinal);
-        Assert.Contains("=> _sessionPool.SendCommandAsync(tab, method, parameters, cancellationToken, extractRuntimeValue);", source, StringComparison.Ordinal);
+        Assert.Contains("=> _sessionPool.SendCommandAsync(tab, method, parameters, cancellationToken, extractRuntimeValue, commandTimeout);", source, StringComparison.Ordinal);
 
         // Verify target cleanup order semantically without coupling this regression to the
         // exact public method declaration/spelling used by the Chrome service.

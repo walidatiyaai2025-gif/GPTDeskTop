@@ -64,7 +64,7 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             source,
             StringComparison.Ordinal);
         Assert.Contains(
-            "var value = await EvaluateAsync(tab, ChatStateReadExpression, cancellationToken, false);",
+            "var value = await EvaluateAsync(tab, ChatStateReadExpression, cancellationToken, false, commandTimeout);",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -72,7 +72,7 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             source,
             StringComparison.Ordinal);
         Assert.Contains(
-            "value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false);",
+            "value = await EvaluateAsync(tab, BuildChatStateInstallExpression(), cancellationToken, false, commandTimeout);",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
