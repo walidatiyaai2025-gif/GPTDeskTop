@@ -103,7 +103,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         if (messages is null || messages.Count == 0)
             throw new ArgumentException("At least one stored message is required.", nameof(messages));
 
-        var normalizedDefaultDelay = Math.Clamp(defaultDelaySeconds, 15, 3600);
+        var normalizedDefaultDelay = Math.Clamp(defaultDelaySeconds, 30, 3600);
         var runtimeMessages = messages
             .Select((message, index) => new { message, index })
             .Where(item => item.message is not null && item.message.Enabled && (loop || !item.message.Sent))
@@ -262,7 +262,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     PublishInspector("Sending");
 
                     // Conservative durable send spacing: record the attempt before entering the
-                    // legacy verified sender. This preserves the global 15-second gate even when
+                    // legacy verified sender. This preserves the global 30-second gate even when
                     // the sender later reports an uncertain result.
                     await sendPermit.RecordPhysicalAttemptAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -316,6 +316,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 MessageSent?.Invoke(_currentMessage, _totalMessages, message);
                 if (checkpoint is not null)
                     await checkpoint(runtimeMessage.OriginalIndex, _totalMessages, message, cancellationToken).ConfigureAwait(false);
+                await _safety.RecordConfirmedDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
                 _sentMessages++;
                 _pendingMessages = Math.Max(0, _pendingMessages - 1);
                 _lastCdpEvent = "Delivery checkpoint committed";

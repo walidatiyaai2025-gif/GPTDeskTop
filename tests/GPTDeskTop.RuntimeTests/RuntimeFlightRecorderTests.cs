@@ -3,6 +3,10 @@ using GPTDeskTop.Services;
 
 namespace GPTDeskTop.RuntimeTests;
 
+[CollectionDefinition("RuntimeFlightRecorder serial", DisableParallelization = true)]
+public sealed class RuntimeFlightRecorderSerialCollection;
+
+[Collection("RuntimeFlightRecorder serial")]
 public sealed class RuntimeFlightRecorderTests
 {
     [Fact]
