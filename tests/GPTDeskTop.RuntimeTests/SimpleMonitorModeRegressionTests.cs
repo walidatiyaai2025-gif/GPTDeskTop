@@ -129,7 +129,8 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("Profile.ManagedUserDataDirectory", session, StringComparison.Ordinal);
         Assert.Contains("CloseOtherManagedSessionsAsync", ownership, StringComparison.Ordinal);
         Assert.Contains("selected profile remains on", ownership, StringComparison.Ordinal);
-        Assert.Contains("GPTDeskTop-managed automation sessions", session, StringComparison.Ordinal);
+        Assert.Contains("Only other GPTDeskTop-managed", session, StringComparison.Ordinal);
+        Assert.Contains("automation sessions are closed", session, StringComparison.Ordinal);
         Assert.Contains("never kill the user's ordinary Chrome process", session, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -245,9 +246,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointThirtyNine()
+    public void ProductVersionIsBumpedToTwoPointZeroPointForty()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.39</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.40</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }

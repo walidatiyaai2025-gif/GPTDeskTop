@@ -20,6 +20,29 @@ public sealed class MonitorConnectedChromeReuseRegressionTests
     }
 
     [Fact]
+    public void OnceSelectedEndpointWasObservedRuntimeCannotAutoLaunchAnotherChrome()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
+        var ensureStart = source.IndexOf("private async Task EnsureStartAuthorizedBrowserAvailableAsync", StringComparison.Ordinal);
+        var launchStart = source.IndexOf("private async Task LaunchChromeForMonitorStartAsync", StringComparison.Ordinal);
+
+        Assert.True(ensureStart >= 0);
+        Assert.True(launchStart > ensureStart);
+        var ensureRegion = source[ensureStart..launchStart];
+
+        Assert.Contains("if (_lastEndpointSeenUtc is not null)", ensureRegion, StringComparison.Ordinal);
+        Assert.Contains("runtime Chrome auto-launch is disabled", ensureRegion, StringComparison.Ordinal);
+        Assert.Contains("No new Chrome was opened", ensureRegion, StringComparison.Ordinal);
+        Assert.Contains("throw new TimeoutException", ensureRegion, StringComparison.Ordinal);
+
+        var observedGuard = ensureRegion.IndexOf("if (_lastEndpointSeenUtc is not null)", StringComparison.Ordinal);
+        var processLaunchCall = ensureRegion.IndexOf("await LaunchChromeForMonitorStartAsync", StringComparison.Ordinal);
+        Assert.True(observedGuard >= 0 && processLaunchCall > observedGuard);
+        var observedEndpointRegion = ensureRegion[observedGuard..processLaunchCall];
+        Assert.Contains("throw new TimeoutException", observedEndpointRegion, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LiveMonitorProcessIsNeverKilledToRecoverATransientCdpMiss()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
@@ -30,16 +53,45 @@ public sealed class MonitorConnectedChromeReuseRegressionTests
     }
 
     [Fact]
+    public void RuntimeRecoveryCannotReachTheProcessLaunchBoundary()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
+        var recoveryStart = source.IndexOf("public async Task RecoverAfterAuthorizedStartAsync", StringComparison.Ordinal);
+        var closeStart = source.IndexOf("public async Task CloseAutomationOwnedChatTabsAsync", StringComparison.Ordinal);
+        var passiveRecoveryStart = source.IndexOf("private async Task EnsureRuntimeSelectedBrowserAvailableAsync", StringComparison.Ordinal);
+        var startAvailabilityStart = source.IndexOf("private async Task EnsureStartAuthorizedBrowserAvailableAsync", StringComparison.Ordinal);
+
+        Assert.True(recoveryStart >= 0);
+        Assert.True(closeStart > recoveryStart);
+        Assert.True(passiveRecoveryStart > closeStart);
+        Assert.True(startAvailabilityStart > passiveRecoveryStart);
+
+        var recoveryRegion = source[recoveryStart..closeStart];
+        Assert.Contains("EnsureRuntimeSelectedBrowserAvailableAsync", recoveryRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnsureStartAuthorizedBrowserAvailableAsync", recoveryRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("Process.Start(", recoveryRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("LaunchChromeForMonitorStartAsync", recoveryRegion, StringComparison.Ordinal);
+
+        var passiveRecoveryRegion = source[passiveRecoveryStart..startAvailabilityStart];
+        Assert.DoesNotContain("Process.Start(", passiveRecoveryRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("LaunchChromeForMonitorStartAsync", passiveRecoveryRegion, StringComparison.Ordinal);
+        Assert.Contains("Runtime recovery is passive", passiveRecoveryRegion, StringComparison.Ordinal);
+        Assert.Contains("never opening Chrome", passiveRecoveryRegion, StringComparison.Ordinal);
+        Assert.Contains("Start Monitor remains alive", passiveRecoveryRegion, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PassiveConnectionProbeRemainsLaunchFreeAndCanReportReality()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
         var passiveStart = source.IndexOf("public Task<bool> TryEnsureConnectedAsync", StringComparison.Ordinal);
-        var launchStart = source.IndexOf("private async Task LaunchChromeForMonitorStartAsync", StringComparison.Ordinal);
+        var getTabsStart = source.IndexOf("public async Task<IReadOnlyList<ChromeTab>> GetConversationTabsAsync", StringComparison.Ordinal);
 
         Assert.True(passiveStart >= 0);
-        Assert.True(launchStart > passiveStart);
-        var passiveRegion = source[passiveStart..launchStart];
-        Assert.DoesNotContain("Process.Start", passiveRegion, StringComparison.Ordinal);
+        Assert.True(getTabsStart > passiveStart);
+        var passiveRegion = source[passiveStart..getTabsStart];
+        Assert.DoesNotContain("Process.Start(", passiveRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("LaunchChromeForMonitorStartAsync", passiveRegion, StringComparison.Ordinal);
         Assert.Contains("=> CanReadEndpointAsync(cancellationToken);", passiveRegion, StringComparison.Ordinal);
     }
 
@@ -54,6 +106,6 @@ public sealed class MonitorConnectedChromeReuseRegressionTests
         Assert.True(recoveryStart > freshStart);
         var freshRegion = source[freshStart..recoveryStart];
         Assert.Contains("Chrome.CreateNewChatTabAsync", freshRegion, StringComparison.Ordinal);
-        Assert.DoesNotContain("Process.Start", freshRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("Process.Start(", freshRegion, StringComparison.Ordinal);
     }
 }

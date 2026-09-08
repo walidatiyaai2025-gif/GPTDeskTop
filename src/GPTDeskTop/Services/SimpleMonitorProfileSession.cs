@@ -115,8 +115,8 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 
     /// <summary>
     /// Creates a brand-new ChatGPT target in an already-connected selected profile. This method
-    /// never launches or relaunches Chrome. A later recovery may relaunch only when the same session
-    /// was previously authorized by the explicit Start Monitor path.
+    /// never launches or relaunches Chrome. Runtime recovery also remains passive once this selected
+    /// CDP endpoint has ever been observed.
     /// </summary>
     public async Task<ChromeTab> CreateFreshConversationTabAsync(CancellationToken cancellationToken = default)
     {
@@ -131,10 +131,9 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 
     /// <summary>
     /// Clean recovery for a monitor worker that was already started explicitly. It never touches
-    /// normal Chrome. Only other GPTDeskTop-managed automation sessions are closed, then all
-    /// ChatGPT tabs on this exact selected managed endpoint are removed while a blank keeper tab
-    /// preserves the browser process. If this selected automation process disappeared, the same
-    /// managed profile may be relaunched because Start Monitor already authorized this session.
+    /// normal Chrome and it never starts/restarts a Chrome process. Only other GPTDeskTop-managed
+    /// automation sessions are closed, then ChatGPT tabs on this exact selected managed endpoint
+    /// are cleaned if and only if the same endpoint is reachable again.
     /// </summary>
     public async Task RecoverAfterAuthorizedStartAsync(
         Action<string>? status = null,
@@ -143,16 +142,16 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         if (!_startLaunchAuthorized)
             throw new InvalidOperationException("Chrome recovery is not authorized until Start Monitor is explicitly pressed for this selected profile.");
 
-        status?.Invoke($"CLEAN RECOVERY — keeping selected profile '{Profile.DisplayLabel}' on CDP {DebuggingPort} and closing stale GPTDeskTop profile sessions.");
-        await EnsureStartAuthorizedBrowserAvailableAsync(cancellationToken, status).ConfigureAwait(false);
+        status?.Invoke($"CLEAN RECOVERY — keeping selected profile '{Profile.DisplayLabel}' on CDP {DebuggingPort} and waiting only for that existing session.");
+        await EnsureRuntimeSelectedBrowserAvailableAsync(cancellationToken, status).ConfigureAwait(false);
 
         status?.Invoke("CLEAN RECOVERY — closing all ChatGPT tabs owned by the selected GPTDeskTop automation session only.");
         await CloseAutomationOwnedChatTabsAsync(cancellationToken).ConfigureAwait(false);
 
         if (!await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false))
         {
-            status?.Invoke("CLEAN RECOVERY — selected automation endpoint is temporarily unavailable; reusing the same authorized browser identity before any relaunch.");
-            await EnsureStartAuthorizedBrowserAvailableAsync(cancellationToken, status).ConfigureAwait(false);
+            status?.Invoke("CLEAN RECOVERY — selected automation endpoint is temporarily unavailable; waiting for the same session. Runtime Chrome auto-launch is disabled.");
+            await EnsureRuntimeSelectedBrowserAvailableAsync(cancellationToken, status).ConfigureAwait(false);
         }
     }
 
@@ -280,7 +279,24 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
 
         throw new InvalidOperationException(
-            "The Monitor Only Chrome automation session is no longer available. The running monitor will preserve its pending message and use start-authorized clean recovery instead of sending through another profile.");
+            "The Monitor Only Chrome automation session is no longer available. The running monitor will preserve its pending message and use passive same-session recovery instead of opening another Chrome.");
+    }
+
+    private async Task EnsureRuntimeSelectedBrowserAvailableAsync(
+        CancellationToken cancellationToken,
+        Action<string>? status = null)
+    {
+        if (!_startLaunchAuthorized)
+            throw new InvalidOperationException("Runtime recovery is not authorized until Start Monitor is explicitly pressed for this selected profile.");
+
+        await SimpleMonitorChromeOwnershipGate.CloseOtherManagedSessionsAsync(Chrome, status, cancellationToken).ConfigureAwait(false);
+        if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
+
+        status?.Invoke($"Selected Chrome session on CDP {DebuggingPort} is unavailable. Runtime recovery is passive: waiting for the exact same endpoint and never opening Chrome.");
+        if (await WaitForExistingEndpointAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false)) return;
+
+        throw new TimeoutException(
+            $"The selected GPTDeskTop Chrome session on CDP {DebuggingPort} is still unavailable. Runtime recovery did not open Chrome. Start Monitor remains alive and will retry the same session with the pending message preserved.");
     }
 
     private async Task EnsureStartAuthorizedBrowserAvailableAsync(
@@ -293,21 +309,28 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         await SimpleMonitorChromeOwnershipGate.CloseOtherManagedSessionsAsync(Chrome, status, cancellationToken).ConfigureAwait(false);
         if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
 
-        // A browser that was connected moments ago must be given time to recover its CDP endpoint.
-        // A transient probe miss is not authority to open a second Chrome window.
+        // Once this exact selected CDP endpoint has ever been observed, Start Monitor is considered
+        // bound to that browser identity. A later transient or permanent endpoint loss is NEVER
+        // authority to Process.Start another Chrome. The runner stays alive with the message pending
+        // and retries this same endpoint in its bounded/15-minute recovery loop.
         if (_lastEndpointSeenUtc is not null)
         {
-            status?.Invoke($"Reusing selected Chrome session on CDP {DebuggingPort}; waiting for its endpoint instead of opening another Chrome.");
+            status?.Invoke($"Selected Chrome session on CDP {DebuggingPort} is unavailable. Waiting for the same endpoint; runtime Chrome auto-launch is disabled.");
             if (await WaitForExistingEndpointAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false)) return;
+
+            throw new TimeoutException(
+                $"The selected GPTDeskTop Chrome session on CDP {DebuggingPort} is still unavailable. No new Chrome was opened. Start Monitor remains responsible for preserving the pending message and retrying the same session.");
         }
 
+        // The only legal Process.Start opportunity: the operator explicitly pressed Start Monitor
+        // and this session has never observed a compatible managed CDP endpoint at all.
         await LaunchChromeForMonitorStartAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// The single Chrome process-launch boundary for Monitor Only. It is reachable only after
-    /// ResolveConversationAsync(openIfMissing:true) latches explicit Start Monitor authorization
-    /// onto this exact selected session. Recovery reuses that authorization; passive paths cannot.
+    /// The single Chrome process-launch boundary for Monitor Only. It is reachable only during the
+    /// initial explicit Start Monitor transition before this session has ever observed its selected
+    /// CDP endpoint. Runtime recovery can never reach Process.Start after a successful attachment.
     /// </summary>
     private async Task LaunchChromeForMonitorStartAsync(CancellationToken cancellationToken)
     {
@@ -320,9 +343,8 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
             if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
 
             // Once this Monitor Only session has launched a managed Chrome process, an endpoint
-            // hiccup must never kill/relaunch that live process. Doing so created the user-visible
-            // second Chrome window in v2.0.38. Keep the pending message and let recovery retry the
-            // same process identity instead.
+            // hiccup must never kill/relaunch that live process. Keep the pending message and let
+            // recovery retry the same process identity instead.
             if (IsLaunchedProcessAlive())
             {
                 if (await WaitForExistingEndpointAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false)) return;
