@@ -9,8 +9,10 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
     private readonly HttpClient _httpClient;
     private readonly object _freshTargetSync = new();
     private readonly Dictionary<string, HashSet<string>> _freshTargetBaselines = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim _launchGate = new(1, 1);
     private Process? _launchedProcess;
     private bool _startLaunchAuthorized;
+    private DateTimeOffset? _lastEndpointSeenUtc;
 
     public ChromeProfileInfo Profile { get; }
     public ChromeDevToolsService Chrome { get; }
@@ -40,8 +42,16 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
     /// </summary>
     public async Task EnsureConnectedAsync(CancellationToken cancellationToken = default)
     {
-        _ = await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false);
+        _ = await TryEnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Passive attachment probe that reports whether the selected managed CDP browser is really
+    /// reachable. It never starts Chrome. UI code can use this to avoid showing a false Connected
+    /// state when only a source profile has been selected.
+    /// </summary>
+    public Task<bool> TryEnsureConnectedAsync(CancellationToken cancellationToken = default)
+        => CanReadEndpointAsync(cancellationToken);
 
     public Task<bool> IsAutomationSessionAvailableAsync(CancellationToken cancellationToken = default)
         => CanReadEndpointAsync(cancellationToken);
@@ -141,7 +151,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 
         if (!await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false))
         {
-            status?.Invoke("CLEAN RECOVERY — selected automation browser closed with its final chat tab; reopening the same authorized profile.");
+            status?.Invoke("CLEAN RECOVERY — selected automation endpoint is temporarily unavailable; reusing the same authorized browser identity before any relaunch.");
             await EnsureStartAuthorizedBrowserAvailableAsync(cancellationToken, status).ConfigureAwait(false);
         }
     }
@@ -282,6 +292,15 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 
         await SimpleMonitorChromeOwnershipGate.CloseOtherManagedSessionsAsync(Chrome, status, cancellationToken).ConfigureAwait(false);
         if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
+
+        // A browser that was connected moments ago must be given time to recover its CDP endpoint.
+        // A transient probe miss is not authority to open a second Chrome window.
+        if (_lastEndpointSeenUtc is not null)
+        {
+            status?.Invoke($"Reusing selected Chrome session on CDP {DebuggingPort}; waiting for its endpoint instead of opening another Chrome.");
+            if (await WaitForExistingEndpointAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false)) return;
+        }
+
         await LaunchChromeForMonitorStartAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -294,60 +313,93 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
     {
         if (!_startLaunchAuthorized)
             throw new InvalidOperationException("Start Monitor authorization is required before Chrome can be launched.");
-        if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
 
-        if (_launchedProcess is not null)
+        await _launchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            try
+            if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
+
+            // Once this Monitor Only session has launched a managed Chrome process, an endpoint
+            // hiccup must never kill/relaunch that live process. Doing so created the user-visible
+            // second Chrome window in v2.0.38. Keep the pending message and let recovery retry the
+            // same process identity instead.
+            if (IsLaunchedProcessAlive())
             {
-                if (!_launchedProcess.HasExited)
-                {
-                    _launchedProcess.Kill(entireProcessTree: true);
-                    await _launchedProcess.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-                }
+                if (await WaitForExistingEndpointAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false)) return;
+                throw new TimeoutException(
+                    $"The selected GPTDeskTop Chrome process is still running, but CDP {DebuggingPort} is temporarily unavailable. No second Chrome was opened; the monitor will preserve its pending message and retry the same session.");
             }
-            catch (InvalidOperationException) { }
-            finally
+
+            DisposeExitedLaunchedProcess();
+
+            Directory.CreateDirectory(Profile.ManagedUserDataDirectory);
+            File.WriteAllText(
+                Path.Combine(Profile.ManagedUserDataDirectory, "gptdesktop-profile-source.txt"),
+                $"ChromeProfile={Profile.Key}{Environment.NewLine}DisplayName={Profile.DisplayName}{Environment.NewLine}SourceDirectory={Profile.SourceDirectory}{Environment.NewLine}");
+
+            var chromePath = FindChromePath();
+            var arguments = string.Join(' ', new[]
             {
-                try { _launchedProcess.Dispose(); } catch { }
-                _launchedProcess = null;
-            }
+                $"--remote-debugging-port={DebuggingPort}",
+                $"--user-data-dir=\"{Profile.ManagedUserDataDirectory}\"",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-features=CalculateNativeWinOcclusion",
+                "\"https://chatgpt.com/\""
+            });
+
+            // Deliberately omit --new-window. If Chrome already owns this managed user-data
+            // directory, the command is handed to that existing instance rather than forcing a
+            // second top-level window. A cold start still opens the one authorized monitor window.
+            _launchedProcess = Process.Start(new ProcessStartInfo
+            {
+                FileName = chromePath,
+                Arguments = arguments,
+                UseShellExecute = true
+            }) ?? throw new InvalidOperationException("Chrome could not be started for the selected profile.");
+
+            if (await WaitForExistingEndpointAsync(TimeSpan.FromSeconds(20), cancellationToken).ConfigureAwait(false)) return;
+
+            throw new TimeoutException(
+                $"Chrome profile '{Profile.DisplayLabel}' opened after Start Monitor, but its automation endpoint did not become ready. No duplicate Chrome will be launched while this process remains alive.");
         }
-
-        Directory.CreateDirectory(Profile.ManagedUserDataDirectory);
-        File.WriteAllText(
-            Path.Combine(Profile.ManagedUserDataDirectory, "gptdesktop-profile-source.txt"),
-            $"ChromeProfile={Profile.Key}{Environment.NewLine}DisplayName={Profile.DisplayName}{Environment.NewLine}SourceDirectory={Profile.SourceDirectory}{Environment.NewLine}");
-
-        var chromePath = FindChromePath();
-        var arguments = string.Join(' ', new[]
+        finally
         {
-            $"--remote-debugging-port={DebuggingPort}",
-            $"--user-data-dir=\"{Profile.ManagedUserDataDirectory}\"",
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-renderer-backgrounding",
-            "--disable-features=CalculateNativeWinOcclusion",
-            "--new-window",
-            "\"https://chatgpt.com/\""
-        });
+            _launchGate.Release();
+        }
+    }
 
-        _launchedProcess = Process.Start(new ProcessStartInfo
-        {
-            FileName = chromePath,
-            Arguments = arguments,
-            UseShellExecute = true
-        }) ?? throw new InvalidOperationException("Chrome could not be started for the selected profile.");
-
-        for (var attempt = 0; attempt < 80; attempt++)
+    private async Task<bool> WaitForExistingEndpointAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
+            if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return true;
             await Task.Delay(250, cancellationToken).ConfigureAwait(false);
         }
+        return false;
+    }
 
-        throw new TimeoutException(
-            $"Chrome profile '{Profile.DisplayLabel}' opened after Start Monitor, but its automation endpoint did not become ready. The running monitor will keep this selected profile and retry through clean recovery.");
+    private bool IsLaunchedProcessAlive()
+    {
+        if (_launchedProcess is null) return false;
+        try { return !_launchedProcess.HasExited; }
+        catch (InvalidOperationException) { return false; }
+    }
+
+    private void DisposeExitedLaunchedProcess()
+    {
+        if (_launchedProcess is null) return;
+        try
+        {
+            if (!_launchedProcess.HasExited) return;
+        }
+        catch (InvalidOperationException) { }
+
+        try { _launchedProcess.Dispose(); } catch { }
+        _launchedProcess = null;
     }
 
     private static bool IsChatGptPage(string? url)
@@ -371,6 +423,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         try
         {
             _ = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
+            _lastEndpointSeenUtc = DateTimeOffset.UtcNow;
             return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -416,6 +469,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         try { _launchedProcess?.Dispose(); } catch { }
         _launchedProcess = null;
         lock (_freshTargetSync) _freshTargetBaselines.Clear();
+        _launchGate.Dispose();
         _httpClient.Dispose();
         return ValueTask.CompletedTask;
     }
