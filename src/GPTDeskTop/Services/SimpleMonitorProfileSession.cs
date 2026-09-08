@@ -142,8 +142,8 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         if (!_startLaunchAuthorized)
             throw new InvalidOperationException("Chrome recovery is not authorized until Start Monitor is explicitly pressed for this selected profile.");
 
-        status?.Invoke($"CLEAN RECOVERY — keeping selected profile '{Profile.DisplayLabel}' on CDP {DebuggingPort} and closing stale GPTDeskTop profile sessions.");
-        await EnsureStartAuthorizedBrowserAvailableAsync(cancellationToken, status).ConfigureAwait(false);
+        status?.Invoke($"CLEAN RECOVERY — keeping selected profile '{Profile.DisplayLabel}' on CDP {DebuggingPort} and waiting only for that existing session.");
+        await EnsureRuntimeSelectedBrowserAvailableAsync(cancellationToken, status).ConfigureAwait(false);
 
         status?.Invoke("CLEAN RECOVERY — closing all ChatGPT tabs owned by the selected GPTDeskTop automation session only.");
         await CloseAutomationOwnedChatTabsAsync(cancellationToken).ConfigureAwait(false);
@@ -151,7 +151,7 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         if (!await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false))
         {
             status?.Invoke("CLEAN RECOVERY — selected automation endpoint is temporarily unavailable; waiting for the same session. Runtime Chrome auto-launch is disabled.");
-            await EnsureStartAuthorizedBrowserAvailableAsync(cancellationToken, status).ConfigureAwait(false);
+            await EnsureRuntimeSelectedBrowserAvailableAsync(cancellationToken, status).ConfigureAwait(false);
         }
     }
 
@@ -280,6 +280,23 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
 
         throw new InvalidOperationException(
             "The Monitor Only Chrome automation session is no longer available. The running monitor will preserve its pending message and use passive same-session recovery instead of opening another Chrome.");
+    }
+
+    private async Task EnsureRuntimeSelectedBrowserAvailableAsync(
+        CancellationToken cancellationToken,
+        Action<string>? status = null)
+    {
+        if (!_startLaunchAuthorized)
+            throw new InvalidOperationException("Runtime recovery is not authorized until Start Monitor is explicitly pressed for this selected profile.");
+
+        await SimpleMonitorChromeOwnershipGate.CloseOtherManagedSessionsAsync(Chrome, status, cancellationToken).ConfigureAwait(false);
+        if (await CanReadEndpointAsync(cancellationToken).ConfigureAwait(false)) return;
+
+        status?.Invoke($"Selected Chrome session on CDP {DebuggingPort} is unavailable. Runtime recovery is passive: waiting for the exact same endpoint and never opening Chrome.");
+        if (await WaitForExistingEndpointAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false)) return;
+
+        throw new TimeoutException(
+            $"The selected GPTDeskTop Chrome session on CDP {DebuggingPort} is still unavailable. Runtime recovery did not open Chrome. Start Monitor remains alive and will retry the same session with the pending message preserved.");
     }
 
     private async Task EnsureStartAuthorizedBrowserAvailableAsync(
