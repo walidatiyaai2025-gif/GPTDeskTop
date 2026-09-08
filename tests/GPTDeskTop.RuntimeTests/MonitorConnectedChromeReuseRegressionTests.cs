@@ -53,17 +53,31 @@ public sealed class MonitorConnectedChromeReuseRegressionTests
     }
 
     [Fact]
-    public void RuntimeRecoveryHasNoDirectProcessStartPrimitive()
+    public void RuntimeRecoveryCannotReachTheProcessLaunchBoundary()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
         var recoveryStart = source.IndexOf("public async Task RecoverAfterAuthorizedStartAsync", StringComparison.Ordinal);
         var closeStart = source.IndexOf("public async Task CloseAutomationOwnedChatTabsAsync", StringComparison.Ordinal);
+        var passiveRecoveryStart = source.IndexOf("private async Task EnsureRuntimeSelectedBrowserAvailableAsync", StringComparison.Ordinal);
+        var startAvailabilityStart = source.IndexOf("private async Task EnsureStartAuthorizedBrowserAvailableAsync", StringComparison.Ordinal);
 
         Assert.True(recoveryStart >= 0);
         Assert.True(closeStart > recoveryStart);
+        Assert.True(passiveRecoveryStart > closeStart);
+        Assert.True(startAvailabilityStart > passiveRecoveryStart);
+
         var recoveryRegion = source[recoveryStart..closeStart];
+        Assert.Contains("EnsureRuntimeSelectedBrowserAvailableAsync", recoveryRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnsureStartAuthorizedBrowserAvailableAsync", recoveryRegion, StringComparison.Ordinal);
         Assert.DoesNotContain("Process.Start", recoveryRegion, StringComparison.Ordinal);
         Assert.DoesNotContain("LaunchChromeForMonitorStartAsync", recoveryRegion, StringComparison.Ordinal);
+
+        var passiveRecoveryRegion = source[passiveRecoveryStart..startAvailabilityStart];
+        Assert.DoesNotContain("Process.Start", passiveRecoveryRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("LaunchChromeForMonitorStartAsync", passiveRecoveryRegion, StringComparison.Ordinal);
+        Assert.Contains("Runtime recovery is passive", passiveRecoveryRegion, StringComparison.Ordinal);
+        Assert.Contains("never opening Chrome", passiveRecoveryRegion, StringComparison.Ordinal);
+        Assert.Contains("Start Monitor remains alive", passiveRecoveryRegion, StringComparison.Ordinal);
     }
 
     [Fact]
