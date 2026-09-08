@@ -4,14 +4,13 @@ using GPTDeskTop.Services;
 namespace GPTDeskTop.UI;
 
 /// <summary>
-/// Runs Monitor Only as the true cold-start application mode. Returning true is the sole
-/// authorization for Program to construct any Current GPTDeskTop business/runtime services.
+/// Runs Monitor Only as the only interactive GPTDeskTop application experience.
 /// </summary>
 internal static class MonitorOnlyStartupGate
 {
     private const string DelaySetting = "SimpleMonitor.DelaySeconds";
 
-    internal static bool Run(LocalDatabase database)
+    internal static void Run(LocalDatabase database)
     {
         ArgumentNullException.ThrowIfNull(database);
 
@@ -19,9 +18,9 @@ internal static class MonitorOnlyStartupGate
 
         using var form = new SimpleMonitorForm(database);
         using var experience = MonitorOnlyExperienceController.Attach(form);
+        MonitorOnlyHardCutoverUi.Apply(form);
         MonitorOnlyRuntimeInspectorExport.Install(form);
         Application.Run(form);
-        return experience.SwitchToCurrentRequested;
     }
 
     private static void NormalizeLegacyDelaySetting(LocalDatabase database)
