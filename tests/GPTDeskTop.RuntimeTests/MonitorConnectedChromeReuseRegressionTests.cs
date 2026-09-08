@@ -20,6 +20,29 @@ public sealed class MonitorConnectedChromeReuseRegressionTests
     }
 
     [Fact]
+    public void OnceSelectedEndpointWasObservedRuntimeCannotAutoLaunchAnotherChrome()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
+        var ensureStart = source.IndexOf("private async Task EnsureStartAuthorizedBrowserAvailableAsync", StringComparison.Ordinal);
+        var launchStart = source.IndexOf("private async Task LaunchChromeForMonitorStartAsync", StringComparison.Ordinal);
+
+        Assert.True(ensureStart >= 0);
+        Assert.True(launchStart > ensureStart);
+        var ensureRegion = source[ensureStart..launchStart];
+
+        Assert.Contains("if (_lastEndpointSeenUtc is not null)", ensureRegion, StringComparison.Ordinal);
+        Assert.Contains("runtime Chrome auto-launch is disabled", ensureRegion, StringComparison.Ordinal);
+        Assert.Contains("No new Chrome was opened", ensureRegion, StringComparison.Ordinal);
+        Assert.Contains("throw new TimeoutException", ensureRegion, StringComparison.Ordinal);
+
+        var observedGuard = ensureRegion.IndexOf("if (_lastEndpointSeenUtc is not null)", StringComparison.Ordinal);
+        var processLaunchCall = ensureRegion.IndexOf("await LaunchChromeForMonitorStartAsync", StringComparison.Ordinal);
+        Assert.True(observedGuard >= 0 && processLaunchCall > observedGuard);
+        var observedEndpointRegion = ensureRegion[observedGuard..processLaunchCall];
+        Assert.Contains("throw new TimeoutException", observedEndpointRegion, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LiveMonitorProcessIsNeverKilledToRecoverATransientCdpMiss()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
@@ -27,6 +50,20 @@ public sealed class MonitorConnectedChromeReuseRegressionTests
         Assert.DoesNotContain("_launchedProcess.Kill", source, StringComparison.Ordinal);
         Assert.Contains("WaitForExistingEndpointAsync(TimeSpan.FromSeconds(30)", source, StringComparison.Ordinal);
         Assert.Contains("_launchGate.WaitAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RuntimeRecoveryHasNoDirectProcessStartPrimitive()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
+        var recoveryStart = source.IndexOf("public async Task RecoverAfterAuthorizedStartAsync", StringComparison.Ordinal);
+        var closeStart = source.IndexOf("public async Task CloseAutomationOwnedChatTabsAsync", StringComparison.Ordinal);
+
+        Assert.True(recoveryStart >= 0);
+        Assert.True(closeStart > recoveryStart);
+        var recoveryRegion = source[recoveryStart..closeStart];
+        Assert.DoesNotContain("Process.Start", recoveryRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("LaunchChromeForMonitorStartAsync", recoveryRegion, StringComparison.Ordinal);
     }
 
     [Fact]
