@@ -129,7 +129,8 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("Profile.ManagedUserDataDirectory", session, StringComparison.Ordinal);
         Assert.Contains("CloseOtherManagedSessionsAsync", ownership, StringComparison.Ordinal);
         Assert.Contains("selected profile remains on", ownership, StringComparison.Ordinal);
-        Assert.Contains("GPTDeskTop-managed automation sessions", session, StringComparison.Ordinal);
+        Assert.Contains("Only other GPTDeskTop-managed", session, StringComparison.Ordinal);
+        Assert.Contains("automation sessions are closed", session, StringComparison.Ordinal);
         Assert.Contains("never kill the user's ordinary Chrome process", session, StringComparison.OrdinalIgnoreCase);
     }
 
