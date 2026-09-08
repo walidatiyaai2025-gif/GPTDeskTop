@@ -9,7 +9,7 @@ on:
 
 jobs:
   start-monitor-launch-gate:
-    name: Chrome launch only from Start Monitor authorization
+    name: Chrome launch only from initial Start Monitor authorization
     runs-on: windows-latest
 
     steps:
@@ -27,7 +27,7 @@ jobs:
       - name: Build
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release --no-restore
 
-      - name: Enforce Start-Monitor-only Chrome launch contract
+      - name: Enforce initial-Start-only Chrome launch contract
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -45,19 +45,43 @@ jobs:
 
           $launchMentions = [regex]::Matches($session, 'LaunchChromeForMonitorStartAsync\s*\(').Count
           if ($launchMentions -ne 2) {
-            throw "LaunchChromeForMonitorStartAsync must have exactly one definition and one internal authorized call; found $launchMentions mentions."
+            throw "LaunchChromeForMonitorStartAsync must have exactly one definition and one initial authorized call; found $launchMentions mentions."
           }
 
           if ($session -notmatch 'if\s*\(openIfMissing\)[\s\S]*?_startLaunchAuthorized\s*=\s*true;[\s\S]*?EnsureStartAuthorizedBrowserAvailableAsync') {
-            throw 'ResolveConversationAsync(openIfMissing:true) no longer latches Start Monitor authorization before browser availability is ensured.'
+            throw 'ResolveConversationAsync(openIfMissing:true) no longer latches Start Monitor authorization before initial browser availability is ensured.'
           }
 
-          if ($session -notmatch 'EnsureStartAuthorizedBrowserAvailableAsync[\s\S]*?if\s*\(!_startLaunchAuthorized\)[\s\S]*?LaunchChromeForMonitorStartAsync') {
-            throw 'The single Chrome launch boundary is not guarded by the Start Monitor authorization latch.'
+          $runtimeRecoveryStart = $session.IndexOf('public async Task RecoverAfterAuthorizedStartAsync', [StringComparison]::Ordinal)
+          $closeTabsStart = $session.IndexOf('public async Task CloseAutomationOwnedChatTabsAsync', [StringComparison]::Ordinal)
+          if ($runtimeRecoveryStart -lt 0 -or $closeTabsStart -le $runtimeRecoveryStart) {
+            throw 'Could not isolate running-monitor recovery body.'
+          }
+          $runtimeRecoveryBody = $session.Substring($runtimeRecoveryStart, $closeTabsStart - $runtimeRecoveryStart)
+          if ($runtimeRecoveryBody -notmatch 'EnsureRuntimeSelectedBrowserAvailableAsync') {
+            throw 'Running-monitor recovery no longer uses the passive same-session availability probe.'
+          }
+          if ($runtimeRecoveryBody -match 'EnsureStartAuthorizedBrowserAvailableAsync|LaunchChromeForMonitorStartAsync|Process\.Start') {
+            throw 'Running-monitor recovery can reach an initial browser-launch path.'
           }
 
-          if ($session -notmatch 'RecoverAfterAuthorizedStartAsync[\s\S]*?if\s*\(!_startLaunchAuthorized\)[\s\S]*?EnsureStartAuthorizedBrowserAvailableAsync') {
-            throw 'Runtime recovery can no longer prove that explicit Start Monitor authorization existed.'
+          $passiveRecoveryStart = $session.IndexOf('private async Task EnsureRuntimeSelectedBrowserAvailableAsync', [StringComparison]::Ordinal)
+          $initialAvailabilityStart = $session.IndexOf('private async Task EnsureStartAuthorizedBrowserAvailableAsync', [StringComparison]::Ordinal)
+          if ($passiveRecoveryStart -lt 0 -or $initialAvailabilityStart -le $passiveRecoveryStart) {
+            throw 'Could not isolate passive runtime browser availability method.'
+          }
+          $passiveRecoveryBody = $session.Substring($passiveRecoveryStart, $initialAvailabilityStart - $passiveRecoveryStart)
+          if ($passiveRecoveryBody -match 'LaunchChromeForMonitorStartAsync|Process\.Start') {
+            throw 'Passive runtime browser availability is allowed to launch Chrome.'
+          }
+          if ($passiveRecoveryBody -notmatch 'Runtime recovery is passive' -or $passiveRecoveryBody -notmatch 'never opening Chrome') {
+            throw 'Passive runtime recovery no longer documents the no-autolaunch contract.'
+          }
+
+          $initialAvailabilityEnd = $session.IndexOf('private async Task LaunchChromeForMonitorStartAsync', [StringComparison]::Ordinal)
+          $initialAvailabilityBody = $session.Substring($initialAvailabilityStart, $initialAvailabilityEnd - $initialAvailabilityStart)
+          if ($initialAvailabilityBody -notmatch 'if\s*\(_lastEndpointSeenUtc is not null\)[\s\S]*?throw new TimeoutException[\s\S]*?LaunchChromeForMonitorStartAsync') {
+            throw 'An already-observed selected CDP endpoint can still fall through to a second Chrome launch.'
           }
 
           if ($session -notmatch 'public async Task EnsureConnectedAsync[\s\S]*?_ = await TryEnsureConnectedAsync') {
@@ -83,7 +107,7 @@ jobs:
 
           $uiLaunchAuthorizations = [regex]::Matches($form, 'ResolveConversationAsync\s*\(\s*url\s*,\s*openIfMissing:\s*true\s*\)').Count
           if ($uiLaunchAuthorizations -ne 1) {
-            throw "The Monitor Only UI must contain exactly one explicit launch authorization; found $uiLaunchAuthorizations."
+            throw "The Monitor Only UI must contain exactly one explicit initial launch authorization; found $uiLaunchAuthorizations."
           }
 
           $startMethod = $form.IndexOf('private async Task StartMonitorAsync()', [StringComparison]::Ordinal)
@@ -98,10 +122,10 @@ jobs:
           }
 
           if ($runner -notmatch 'RecoverAfterAuthorizedStartAsync') {
-            throw 'The running monitor no longer uses its previously latched Start authorization for bounded clean recovery.'
+            throw 'The running monitor no longer keeps its passive same-session recovery loop.'
           }
           if ($runner -match 'Process\.Start|LaunchChromeForMonitorStartAsync') {
-            throw 'SimpleMonitorRunner may request authorized session recovery but may not own the Chrome process-launch primitive.'
+            throw 'SimpleMonitorRunner may request passive same-session recovery but may not own the Chrome process-launch primitive.'
           }
 
-          Write-Host 'PASS: Chrome launch remains gated by explicit Start Monitor authorization; passive probes stay launch-free; runtime recovery reuses only the same authorized selected profile.'
+          Write-Host 'PASS: Chrome can launch only during the initial explicit Start Monitor transition. Once monitoring has attached, runtime recovery is passive and can never open another Chrome.'
