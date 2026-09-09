@@ -1,22 +1,13 @@
 using System.Diagnostics;
 using System.Management;
+using GPTDeskTop.Models;
 
 namespace GPTDeskTop.Services;
 
 /// <summary>
-/// Process-level hard gate for the Monitor Only product.
-///
-/// The v2.0.42 cold-start reconciliation was intentionally one-shot. That left a race where a
-/// delayed legacy/background component could start a GPTDeskTop-owned Chrome after the idle UI had
-/// already appeared. This guard starts before the Monitor Only UI, watches Chrome process creation
-/// and also polls as a fallback. While no explicit Start Monitor launch has been observed, every
-/// Chrome whose command line points at a GPTDeskTop-owned user-data directory is terminated.
+/// Process-level hard gate for Monitor Only. The guard blocks delayed or competing GPTDeskTop-owned
+/// Chrome starts while preserving one verified healthy managed browser for the saved selected profile.
 /// Ordinary user Chrome is never a candidate.
-///
-/// The one legal launch path (SimpleMonitorProfileSession) writes gptdesktop-profile-source.txt
-/// immediately before Process.Start. A fresh marker created by this app instance is therefore the
-/// authorization handshake. The guard latches that exact managed directory and never authorizes a
-/// different GPTDeskTop directory during the process lifetime.
 /// </summary>
 internal static class MonitorOnlyManagedChromeGuard
 {
@@ -24,6 +15,7 @@ internal static class MonitorOnlyManagedChromeGuard
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(750);
     private static readonly TimeSpan ProcessStartSettleDelay = TimeSpan.FromMilliseconds(35);
     private static readonly TimeSpan ExplicitStartFreshness = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromMilliseconds(900);
     private static readonly object Sync = new();
 
     private static CancellationTokenSource? _cancellation;
@@ -33,7 +25,7 @@ internal static class MonitorOnlyManagedChromeGuard
     private static DateTime _appStartUtc;
     private static int _enforcing;
 
-    internal static void Start()
+    internal static void Start(ChromeProfileInfo? savedSelectedProfile)
     {
         if (!OperatingSystem.IsWindows()) return;
 
@@ -42,14 +34,12 @@ internal static class MonitorOnlyManagedChromeGuard
             if (_cancellation is not null) return;
 
             _appStartUtc = SafeCurrentProcessStartUtc();
-            _authorizedDirectory = null;
+            _authorizedDirectory = TryResolveHealthySavedSelection(savedSelectedProfile);
             _cancellation = new CancellationTokenSource();
             TryStartProcessWatcher();
             _poller = Task.Run(() => PollLoopAsync(_cancellation.Token));
         }
 
-        // Do not wait for the UI. A managed Chrome left behind by an earlier run must be removed
-        // before Monitor Only can become idle and visible.
         EnforceNow("startup");
     }
 
@@ -70,6 +60,36 @@ internal static class MonitorOnlyManagedChromeGuard
     internal static void EnforceIdleNowForTests()
         => EnforceNow("test");
 
+    private static string? TryResolveHealthySavedSelection(ChromeProfileInfo? profile)
+    {
+        if (profile is null) return null;
+
+        var selectedDirectory = NormalizeDirectory(profile.ManagedUserDataDirectory);
+        IReadOnlyList<ManagedChromeProcess> processes;
+        try
+        {
+            processes = DiscoverManagedChromeProcesses();
+        }
+        catch (Exception ex) when (ex is ManagementException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            TryLogException(ex, "MonitorOnlyManagedChromeGuard.AdoptSavedSelection");
+            return null;
+        }
+
+        if (!processes.Any(process => PathsEqual(process.UserDataDirectory, selectedDirectory)))
+            return null;
+
+        var port = SimpleMonitorChromeOwnershipGate.ResolveStablePort(profile.Key);
+        if (!IsEndpointAlive(port)) return null;
+
+        TryRecord(
+            "IdleChromeGuard",
+            "HealthySavedSessionAdopted",
+            $"cdp={port}",
+            selectedDirectory);
+        return selectedDirectory;
+    }
+
     private static void TryStartProcessWatcher()
     {
         try
@@ -81,9 +101,6 @@ internal static class MonitorOnlyManagedChromeGuard
         }
         catch (Exception ex) when (ex is ManagementException or UnauthorizedAccessException or InvalidOperationException)
         {
-            // Polling remains the independent fallback. Do not make startup depend on WMI event
-            // subscriptions; the existing cold-start reconciler still performs the synchronous
-            // fail-closed inventory before the UI is created.
             TryLogException(ex, "MonitorOnlyManagedChromeGuard.StartWatcher");
             try { _watcher?.Dispose(); } catch { }
             _watcher = null;
@@ -96,8 +113,6 @@ internal static class MonitorOnlyManagedChromeGuard
         {
             try
             {
-                // Win32_ProcessStartTrace can arrive before CommandLine is queryable. Give Windows
-                // a few milliseconds, then inspect ownership and terminate only GPTDeskTop roots.
                 await Task.Delay(ProcessStartSettleDelay).ConfigureAwait(false);
                 EnforceNow("process-start");
             }
@@ -156,12 +171,7 @@ internal static class MonitorOnlyManagedChromeGuard
 
     private static bool TryLatchExplicitStartAuthorization(ManagedChromeProcess managed)
     {
-        // A previously latched exact directory remains the only authorized Monitor Chrome root.
         if (IsAuthorizedDirectory(managed.UserDataDirectory)) return true;
-        lock (Sync)
-        {
-            if (_authorizedDirectory is not null) return false;
-        }
 
         var marker = Path.Combine(managed.UserDataDirectory, ProfileSourceMarker);
         if (!File.Exists(marker)) return false;
@@ -179,12 +189,11 @@ internal static class MonitorOnlyManagedChromeGuard
         if (processStartUtc + TimeSpan.FromSeconds(1) < markerUtc) return false;
         if (processStartUtc - markerUtc > ExplicitStartFreshness) return false;
 
+        // A fresh marker is written only by the explicit Start Monitor launch path immediately
+        // before Process.Start. It is therefore safe to transfer authorization from an adopted
+        // saved profile to a newly selected profile when the operator explicitly changes profiles.
         lock (Sync)
-        {
-            if (_authorizedDirectory is not null)
-                return PathsEqual(_authorizedDirectory, managed.UserDataDirectory);
             _authorizedDirectory = NormalizeDirectory(managed.UserDataDirectory);
-        }
 
         TryRecord(
             "IdleChromeGuard",
@@ -240,6 +249,20 @@ internal static class MonitorOnlyManagedChromeGuard
             || commandLine.Contains(unquoted, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsEndpointAlive(int port)
+    {
+        using var client = new HttpClient { Timeout = ProbeTimeout };
+        try
+        {
+            using var response = client.GetAsync($"http://127.0.0.1:{port}/json/version").GetAwaiter().GetResult();
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+        {
+            return false;
+        }
+    }
+
     private static void KillManagedProcessTree(int processId)
     {
         try
@@ -251,11 +274,9 @@ internal static class MonitorOnlyManagedChromeGuard
         }
         catch (ArgumentException)
         {
-            // Process already exited between WMI inventory and ownership enforcement.
         }
         catch (InvalidOperationException)
         {
-            // Process already exited or no longer has a valid handle.
         }
     }
 

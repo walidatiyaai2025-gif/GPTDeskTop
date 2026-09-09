@@ -50,27 +50,29 @@ public sealed class MonitorOnlyVisualHotfixRegressionTests
     }
 
     [Fact]
-    public void IdleColdStartReconcilesManagedChromeBeforeUiExists()
+    public void IdleColdStartPreservesHealthySelectedChromeAndReconcilesBeforeUiExists()
     {
         var startup = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyStartupGate.cs");
         var reconciler = ReadSource("src", "GPTDeskTop", "Services", "MonitorOnlyColdStartChromeReconciler.cs");
 
-        var cleanup = startup.IndexOf("MonitorOnlyColdStartChromeReconciler.ReconcileBeforeIdleUi()", StringComparison.Ordinal);
+        var cleanup = startup.IndexOf("MonitorOnlyColdStartChromeReconciler.ReconcileBeforeIdleUi(savedSelectedProfile)", StringComparison.Ordinal);
         var form = startup.IndexOf("new SimpleMonitorForm(database)", StringComparison.Ordinal);
-        Assert.True(cleanup >= 0 && form > cleanup, "Cold-start managed Chrome cleanup must run before Monitor Only UI creation.");
+        Assert.True(cleanup >= 0 && form > cleanup, "Cold-start managed Chrome reconciliation must run before Monitor Only UI creation.");
 
         Assert.Contains("ChromeProfileCatalog.Discover()", reconciler, StringComparison.Ordinal);
+        Assert.Contains("selectedEndpointAlive", reconciler, StringComparison.Ordinal);
+        Assert.Contains("preserveSelected", reconciler, StringComparison.Ordinal);
+        Assert.Contains("PathsEqual(managed.UserDataDirectory, selectedDirectory)", reconciler, StringComparison.Ordinal);
+        Assert.Contains("KillManagedProcessTree(managed)", reconciler, StringComparison.Ordinal);
         Assert.Contains("--user-data-dir=", reconciler, StringComparison.Ordinal);
         Assert.Contains("WHERE Name='chrome.exe'", reconciler, StringComparison.Ordinal);
-        Assert.Contains("process.Kill(entireProcessTree: true)", reconciler, StringComparison.Ordinal);
-        Assert.Contains("survivors.Count > 0", reconciler, StringComparison.Ordinal);
         Assert.DoesNotContain("GetProcessesByName", reconciler, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointFortyThree()
+    public void ProductVersionIsBumpedToTwoPointZeroPointFortyFour()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.43</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.44</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }

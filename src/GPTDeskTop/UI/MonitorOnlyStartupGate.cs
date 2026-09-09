@@ -1,4 +1,5 @@
 using GPTDeskTop.Data;
+using GPTDeskTop.Models;
 using GPTDeskTop.Services;
 
 namespace GPTDeskTop.UI;
@@ -9,19 +10,24 @@ namespace GPTDeskTop.UI;
 internal static class MonitorOnlyStartupGate
 {
     private const string DelaySetting = "SimpleMonitor.DelaySeconds";
+    private const string ProfileSetting = "SimpleMonitor.ProfileKey";
 
     internal static void Run(LocalDatabase database)
     {
         ArgumentNullException.ThrowIfNull(database);
 
-        // Start the process-level idle guard before any UI is constructed. It watches for delayed
-        // GPTDeskTop-managed Chrome starts throughout the app lifetime; ordinary user Chrome is
-        // outside the ownership filter.
-        MonitorOnlyManagedChromeGuard.Start();
+        // T0015 field-regression reconciliation: resolve the saved selected profile before the
+        // process-lifetime guard performs its first destructive inventory. A pre-existing managed
+        // Chrome is preserved only when this exact profile has a live stable CDP endpoint.
+        var savedSelectedProfile = ResolveSavedSelectedProfile(database);
 
-        // Keep the synchronous cold-start reconciliation as an independent fail-closed gate for
-        // residue that already existed before this process started.
-        MonitorOnlyColdStartChromeReconciler.ReconcileBeforeIdleUi();
+        // Start the lifetime guard before any UI is constructed. It blocks delayed unauthorized
+        // GPTDeskTop-managed Chrome while preserving only the verified healthy saved selection.
+        MonitorOnlyManagedChromeGuard.Start(savedSelectedProfile);
+
+        // Independently reconcile cold-start residue. Healthy selected Chrome is adopted; stale or
+        // competing GPTDeskTop-owned process trees are removed. Ordinary Chrome is never targeted.
+        MonitorOnlyColdStartChromeReconciler.ReconcileBeforeIdleUi(savedSelectedProfile);
 
         NormalizeLegacyDelaySetting(database);
 
@@ -30,6 +36,15 @@ internal static class MonitorOnlyStartupGate
         MonitorOnlyHardCutoverUi.Apply(form);
         MonitorOnlyRuntimeInspectorExport.Install(form);
         Application.Run(form);
+    }
+
+    private static ChromeProfileInfo? ResolveSavedSelectedProfile(LocalDatabase database)
+    {
+        var key = database.GetSettingAsync(ProfileSetting).GetAwaiter().GetResult();
+        if (string.IsNullOrWhiteSpace(key)) return null;
+
+        return ChromeProfileCatalog.Discover().FirstOrDefault(profile =>
+            string.Equals(profile.Key, key, StringComparison.OrdinalIgnoreCase));
     }
 
     private static void NormalizeLegacyDelaySetting(LocalDatabase database)

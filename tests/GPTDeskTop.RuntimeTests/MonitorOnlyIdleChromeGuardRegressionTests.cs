@@ -12,22 +12,56 @@ public sealed class MonitorOnlyIdleChromeGuardRegressionTests
     }
 
     [Fact]
-    public void IdleGuardStartsBeforeUiAndWatchesDelayedChromeStarts()
+    public void IdleGuardStartsBeforeUiWithSavedProfileAndWatchesDelayedChromeStarts()
     {
         var startup = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyStartupGate.cs");
         var guard = ReadSource("src", "GPTDeskTop", "Services", "MonitorOnlyManagedChromeGuard.cs");
 
-        var guardStart = startup.IndexOf("MonitorOnlyManagedChromeGuard.Start()", StringComparison.Ordinal);
-        var coldCleanup = startup.IndexOf("MonitorOnlyColdStartChromeReconciler.ReconcileBeforeIdleUi()", StringComparison.Ordinal);
+        var savedProfile = startup.IndexOf("ResolveSavedSelectedProfile(database)", StringComparison.Ordinal);
+        var guardStart = startup.IndexOf("MonitorOnlyManagedChromeGuard.Start(savedSelectedProfile)", StringComparison.Ordinal);
+        var coldCleanup = startup.IndexOf("MonitorOnlyColdStartChromeReconciler.ReconcileBeforeIdleUi(savedSelectedProfile)", StringComparison.Ordinal);
         var form = startup.IndexOf("new SimpleMonitorForm(database)", StringComparison.Ordinal);
-        Assert.True(guardStart >= 0 && coldCleanup > guardStart && form > coldCleanup,
-            "The lifetime guard must start before cold-start cleanup and before the Monitor Only UI exists.");
+        Assert.True(savedProfile >= 0 && guardStart > savedProfile && coldCleanup > guardStart && form > coldCleanup,
+            "The saved profile must seed the lifetime guard before cold-start reconciliation and before the Monitor Only UI exists.");
 
         Assert.Contains("Win32_ProcessStartTrace", guard, StringComparison.Ordinal);
         Assert.Contains("ProcessName='chrome.exe'", guard, StringComparison.Ordinal);
         Assert.Contains("PollLoopAsync", guard, StringComparison.Ordinal);
         Assert.Contains("EnforceNow(\"startup\")", guard, StringComparison.Ordinal);
         Assert.Contains("EnforceNow(\"process-start\")", guard, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HealthySavedManagedChromeIsAdoptedBeforeIdleEnforcement()
+    {
+        var startup = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyStartupGate.cs");
+        var guard = ReadSource("src", "GPTDeskTop", "Services", "MonitorOnlyManagedChromeGuard.cs");
+        var cleanup = ReadSource("src", "GPTDeskTop", "Services", "MonitorOnlyColdStartChromeReconciler.cs");
+
+        Assert.Contains("SimpleMonitor.ProfileKey", startup, StringComparison.Ordinal);
+        Assert.Contains("TryResolveHealthySavedSelection", guard, StringComparison.Ordinal);
+        Assert.Contains("SimpleMonitorChromeOwnershipGate.ResolveStablePort(profile.Key)", guard, StringComparison.Ordinal);
+        Assert.Contains("IsEndpointAlive(port)", guard, StringComparison.Ordinal);
+        Assert.Contains("HealthySavedSessionAdopted", guard, StringComparison.Ordinal);
+
+        Assert.Contains("selectedEndpointAlive", cleanup, StringComparison.Ordinal);
+        Assert.Contains("selectedProcessExists", cleanup, StringComparison.Ordinal);
+        Assert.Contains("preserveSelected", cleanup, StringComparison.Ordinal);
+        Assert.Contains("PathsEqual(managed.UserDataDirectory, selectedDirectory)", cleanup, StringComparison.Ordinal);
+        Assert.Contains("continue;", cleanup, StringComparison.Ordinal);
+        Assert.Contains("disappeared during cold-start adoption", cleanup, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ColdStartStillRemovesStaleOrCompetingManagedChrome()
+    {
+        var cleanup = ReadSource("src", "GPTDeskTop", "Services", "MonitorOnlyColdStartChromeReconciler.cs");
+
+        Assert.Contains("KillManagedProcessTree(managed)", cleanup, StringComparison.Ordinal);
+        Assert.Contains("invalidSurvivors", cleanup, StringComparison.Ordinal);
+        Assert.Contains("Competing GPTDeskTop-managed Chrome", cleanup, StringComparison.Ordinal);
+        Assert.Contains("--user-data-dir=", cleanup, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetProcessesByName", cleanup, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -45,7 +79,7 @@ public sealed class MonitorOnlyIdleChromeGuardRegressionTests
     }
 
     [Fact]
-    public void OnlyFreshExplicitStartMarkerCanAuthorizeManagedChrome()
+    public void FreshExplicitStartCanTransferAuthorizationToNewlySelectedProfile()
     {
         var guard = ReadSource("src", "GPTDeskTop", "Services", "MonitorOnlyManagedChromeGuard.cs");
         var session = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
@@ -53,7 +87,8 @@ public sealed class MonitorOnlyIdleChromeGuardRegressionTests
         Assert.Contains("gptdesktop-profile-source.txt", guard, StringComparison.Ordinal);
         Assert.Contains("ExplicitStartFreshness", guard, StringComparison.Ordinal);
         Assert.Contains("markerUtc < _appStartUtc", guard, StringComparison.Ordinal);
-        Assert.Contains("_authorizedDirectory", guard, StringComparison.Ordinal);
+        Assert.Contains("_authorizedDirectory = NormalizeDirectory(managed.UserDataDirectory)", guard, StringComparison.Ordinal);
+        Assert.Contains("transfer authorization", guard, StringComparison.OrdinalIgnoreCase);
 
         var markerWrite = session.IndexOf("File.WriteAllText(", StringComparison.Ordinal);
         var processStart = session.IndexOf("Process.Start(new ProcessStartInfo", StringComparison.Ordinal);
