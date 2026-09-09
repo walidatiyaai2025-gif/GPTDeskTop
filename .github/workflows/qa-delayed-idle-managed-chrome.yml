@@ -1,0 +1,129 @@
+name: QA Delayed Idle Managed Chrome
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  delayed-idle-managed-chrome:
+    name: Idle app kills delayed managed Chrome only
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore application and runtime tests
+        shell: pwsh
+        run: |
+          dotnet restore src/GPTDeskTop/GPTDeskTop.csproj
+          dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj
+
+      - name: Run hard idle guard regression tests
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --filter "FullyQualifiedName~MonitorOnlyIdleChromeGuardRegressionTests"
+
+      - name: Build Monitor Only application
+        run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj -c Release --no-restore
+
+      - name: Prove delayed managed Chrome is blocked while ordinary Chrome survives
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Get-ChromeForUserData([string] $userData) {
+            return @(
+              Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" |
+                Where-Object {
+                  $_.CommandLine -and (
+                    $_.CommandLine.IndexOf("--user-data-dir=`"$userData`"", [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                    $_.CommandLine.IndexOf("--user-data-dir=$userData", [StringComparison]::OrdinalIgnoreCase) -ge 0
+                  )
+                }
+            )
+          }
+
+          function Stop-ChromeForUserData([string] $userData) {
+            foreach ($process in (Get-ChromeForUserData $userData)) {
+              Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          $chromeCandidates = @(
+            (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe')
+          ) | Where-Object { $_ -and (Test-Path $_) }
+          if ($chromeCandidates.Count -eq 0) {
+            throw 'Google Chrome is required for the physical delayed-idle ownership gate.'
+          }
+          $chrome = $chromeCandidates[0]
+
+          $appExe = Resolve-Path 'src/GPTDeskTop/bin/Release/net8.0-windows/GPTDeskTop.exe'
+          $managedRoot = Join-Path $env:LOCALAPPDATA 'GPTDeskTop\ChromeProfile'
+          $ordinaryRoot = Join-Path $env:TEMP ("gptdesktop-qa-ordinary-" + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Force -Path $managedRoot | Out-Null
+          New-Item -ItemType Directory -Force -Path $ordinaryRoot | Out-Null
+
+          $app = $null
+          try {
+            $app = Start-Process -FilePath $appExe -PassThru
+            Start-Sleep -Seconds 3
+            if ($app.HasExited) {
+              throw "GPTDeskTop exited before the idle ownership test could run. ExitCode=$($app.ExitCode)"
+            }
+
+            # Reproduce the field failure literally: after the UI has already been idle for several
+            # seconds, start a Chrome using a GPTDeskTop-owned user-data directory without pressing
+            # Start Monitor. The lifetime guard must remove every process for that directory.
+            $managedArgs = "--remote-debugging-port=19331 --user-data-dir=`"$managedRoot`" --new-window about:blank"
+            Start-Process -FilePath $chrome -ArgumentList $managedArgs | Out-Null
+
+            $deadline = (Get-Date).AddSeconds(8)
+            do {
+              Start-Sleep -Milliseconds 250
+              $managedRemaining = Get-ChromeForUserData $managedRoot
+              if ($managedRemaining.Count -eq 0) { break }
+            } while ((Get-Date) -lt $deadline)
+
+            $managedRemaining = Get-ChromeForUserData $managedRoot
+            if ($managedRemaining.Count -ne 0) {
+              $pids = ($managedRemaining | ForEach-Object ProcessId) -join ','
+              throw "Delayed GPTDeskTop-managed Chrome survived while Monitor Only was idle. PIDs=$pids"
+            }
+
+            # Negative ownership check: the same guard must never kill a Chrome whose user-data
+            # directory is outside GPTDeskTop's managed roots.
+            $ordinaryArgs = "--remote-debugging-port=19332 --user-data-dir=`"$ordinaryRoot`" --new-window about:blank"
+            Start-Process -FilePath $chrome -ArgumentList $ordinaryArgs | Out-Null
+
+            $ordinaryDeadline = (Get-Date).AddSeconds(8)
+            do {
+              Start-Sleep -Milliseconds 250
+              $ordinary = Get-ChromeForUserData $ordinaryRoot
+              if ($ordinary.Count -gt 0) { break }
+            } while ((Get-Date) -lt $ordinaryDeadline)
+
+            Start-Sleep -Seconds 2
+            $ordinary = Get-ChromeForUserData $ordinaryRoot
+            if ($ordinary.Count -eq 0) {
+              throw 'Ordinary Chrome was not alive after the idle guard check; ownership isolation is not proven.'
+            }
+
+            Write-Host 'PASS: delayed GPTDeskTop-managed Chrome is removed while Monitor Only is idle; ordinary Chrome remains untouched.'
+          }
+          finally {
+            Stop-ChromeForUserData $managedRoot
+            Stop-ChromeForUserData $ordinaryRoot
+            if ($app -and -not $app.HasExited) {
+              Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+            }
+            Remove-Item -LiteralPath $ordinaryRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
