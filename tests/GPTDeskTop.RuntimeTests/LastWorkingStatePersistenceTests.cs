@@ -52,16 +52,15 @@ public sealed class LastWorkingStatePersistenceTests
     }
 
     [Fact]
-    public void ProgramPreservesPersistedIntentButDefersMonitorAndDevelopmentResume()
+    public void MonitorOnlyStartupDoesNotAutoResumePersistedLegacyIntent()
     {
         var source = File.ReadAllText(RepositoryPath("src", "GPTDeskTop", "Program.cs"));
 
-        Assert.Contains("LastWorkingStateService.ReplaceDesiredMonitorIdsAsync", source, StringComparison.Ordinal);
-        Assert.Contains("Runtime.StartupAutoResumeDeferred", source, StringComparison.Ordinal);
-        Assert.Contains("Runtime.DevelopmentTaskAutoResumed", source, StringComparison.Ordinal);
-        Assert.Contains("OperatorOnly", source, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("LastWorkingStateService.ReplaceDesiredMonitorIdsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("LastWorkingStateService.ResumeDesiredMonitorsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("developmentRuntime.ResumeIfActiveAsync()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("DevelopmentTaskRuntimeBinding", source, StringComparison.Ordinal);
     }
 
     private static string RepositoryPath(params string[] segments)
