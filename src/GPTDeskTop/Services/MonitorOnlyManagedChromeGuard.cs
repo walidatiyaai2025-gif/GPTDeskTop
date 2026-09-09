@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Management;
-using System.Runtime.CompilerServices;
 
 namespace GPTDeskTop.Services;
 
@@ -9,10 +8,10 @@ namespace GPTDeskTop.Services;
 ///
 /// The v2.0.42 cold-start reconciliation was intentionally one-shot. That left a race where a
 /// delayed legacy/background component could start a GPTDeskTop-owned Chrome after the idle UI had
-/// already appeared. This guard starts at module load, watches Chrome process creation and also
-/// polls as a fallback. While no explicit Start Monitor launch has been observed, every Chrome whose
-/// command line points at a GPTDeskTop-owned user-data directory is terminated. Ordinary user Chrome
-/// is never a candidate.
+/// already appeared. This guard starts before the Monitor Only UI, watches Chrome process creation
+/// and also polls as a fallback. While no explicit Start Monitor launch has been observed, every
+/// Chrome whose command line points at a GPTDeskTop-owned user-data directory is terminated.
+/// Ordinary user Chrome is never a candidate.
 ///
 /// The one legal launch path (SimpleMonitorProfileSession) writes gptdesktop-profile-source.txt
 /// immediately before Process.Start. A fresh marker created by this app instance is therefore the
@@ -34,8 +33,7 @@ internal static class MonitorOnlyManagedChromeGuard
     private static DateTime _appStartUtc;
     private static int _enforcing;
 
-    [ModuleInitializer]
-    internal static void Initialize()
+    internal static void Start()
     {
         if (!OperatingSystem.IsWindows()) return;
 
@@ -50,9 +48,9 @@ internal static class MonitorOnlyManagedChromeGuard
             _poller = Task.Run(() => PollLoopAsync(_cancellation.Token));
         }
 
-        // Do not wait for Program/Main. A managed Chrome left behind by an earlier run must be
-        // removed before any Monitor Only UI code can become idle and visible.
-        EnforceNow("module-init");
+        // Do not wait for the UI. A managed Chrome left behind by an earlier run must be removed
+        // before Monitor Only can become idle and visible.
+        EnforceNow("startup");
     }
 
     internal static bool HasExplicitStartAuthorization(string managedUserDataDirectory)
