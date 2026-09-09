@@ -56,15 +56,15 @@ jobs:
             }
           }
 
-          $chromeCandidates = @(
+          $chromeCandidates = @(@(
             (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
             (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'),
             (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe')
-          ) | Where-Object { $_ -and (Test-Path $_) }
+          ) | Where-Object { $_ -and (Test-Path $_) })
           if ($chromeCandidates.Count -eq 0) {
             throw 'Google Chrome is required for the physical delayed-idle ownership gate.'
           }
-          $chrome = $chromeCandidates[0]
+          [string] $chrome = $chromeCandidates[0]
 
           $appExe = Resolve-Path 'src/GPTDeskTop/bin/Release/net8.0-windows/GPTDeskTop.exe'
           $managedRoot = Join-Path $env:LOCALAPPDATA 'GPTDeskTop\ChromeProfile'
