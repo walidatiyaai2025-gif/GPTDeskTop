@@ -9,7 +9,7 @@ on:
 
 jobs:
   delayed-idle-managed-chrome:
-    name: Idle app kills delayed managed Chrome only
+    name: Idle guard blocks unauthorized Chrome and preserves healthy selected Chrome
     runs-on: windows-latest
 
     steps:
@@ -80,8 +80,8 @@ jobs:
               throw "GPTDeskTop exited before the idle ownership test could run. ExitCode=$($app.ExitCode)"
             }
 
-            # Reproduce the field failure literally: after the UI has already been idle for several
-            # seconds, start a Chrome using a GPTDeskTop-owned user-data directory without pressing
+            # Reproduce the original idle race: after the UI has already been idle for several
+            # seconds, start Chrome using a GPTDeskTop-owned user-data directory without pressing
             # Start Monitor. The lifetime guard must remove every process for that directory.
             $managedArgs = "--remote-debugging-port=19331 --user-data-dir=`"$managedRoot`" --new-window about:blank"
             Start-Process -FilePath $chrome -ArgumentList $managedArgs | Out-Null
@@ -99,7 +99,7 @@ jobs:
               throw "Delayed GPTDeskTop-managed Chrome survived while Monitor Only was idle. PIDs=$pids"
             }
 
-            # Negative ownership check: the same guard must never kill a Chrome whose user-data
+            # Negative ownership check: the same guard must never kill Chrome whose user-data
             # directory is outside GPTDeskTop's managed roots.
             $ordinaryArgs = "--remote-debugging-port=19332 --user-data-dir=`"$ordinaryRoot`" --new-window about:blank"
             Start-Process -FilePath $chrome -ArgumentList $ordinaryArgs | Out-Null
@@ -127,3 +127,12 @@ jobs:
             }
             Remove-Item -LiteralPath $ordinaryRoot -Recurse -Force -ErrorAction SilentlyContinue
           }
+
+      - name: Prove healthy pre-existing selected managed Chrome survives startup
+        shell: pwsh
+        env:
+          GPTDESKTOP_RUN_PHYSICAL_LIVE_CHROME: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --filter "FullyQualifiedName~MonitorOnlyLiveManagedChromeFieldRegressionTests.HealthySavedManagedChromeSurvivesAppStartupAndIdleGuardPolling"
+          Write-Host 'PASS: a healthy pre-existing selected GPTDeskTop-managed Chrome remains reachable through startup and lifetime idle-guard polling.'
