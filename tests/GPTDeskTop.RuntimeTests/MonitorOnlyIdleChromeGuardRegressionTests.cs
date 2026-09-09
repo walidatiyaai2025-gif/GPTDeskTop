@@ -33,7 +33,8 @@ public sealed class MonitorOnlyIdleChromeGuardRegressionTests
     [Fact]
     public void IdleGuardTargetsOnlyGptDesktopManagedUserDataDirectories()
     {
-        var guard = ReadSource("src", "GPTDeskTop", "Services", "MonitorOnlyManagedChromeGuard.cs");
+        var guard = ReadSource("src", "GPTDeskTop", "Services", "MonitorOnlyManagedChromeGuard.cs")
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
 
         Assert.Contains("ChromeProfileCatalog.Discover()", guard, StringComparison.Ordinal);
         Assert.Contains("\"GPTDeskTop\",\n                \"ChromeProfile\"", guard, StringComparison.Ordinal);
