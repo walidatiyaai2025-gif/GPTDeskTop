@@ -50,9 +50,27 @@ public sealed class MonitorOnlyVisualHotfixRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointFortyOne()
+    public void IdleColdStartReconcilesManagedChromeBeforeUiExists()
+    {
+        var startup = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyStartupGate.cs");
+        var reconciler = ReadSource("src", "GPTDeskTop", "Services", "MonitorOnlyColdStartChromeReconciler.cs");
+
+        var cleanup = startup.IndexOf("MonitorOnlyColdStartChromeReconciler.ReconcileBeforeIdleUi()", StringComparison.Ordinal);
+        var form = startup.IndexOf("new SimpleMonitorForm(database)", StringComparison.Ordinal);
+        Assert.True(cleanup >= 0 && form > cleanup, "Cold-start managed Chrome cleanup must run before Monitor Only UI creation.");
+
+        Assert.Contains("ChromeProfileCatalog.Discover()", reconciler, StringComparison.Ordinal);
+        Assert.Contains("--user-data-dir=", reconciler, StringComparison.Ordinal);
+        Assert.Contains("WHERE Name='chrome.exe'", reconciler, StringComparison.Ordinal);
+        Assert.Contains("process.Kill(entireProcessTree: true)", reconciler, StringComparison.Ordinal);
+        Assert.Contains("survivors.Count > 0", reconciler, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetProcessesByName", reconciler, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProductVersionIsBumpedToTwoPointZeroPointFortyTwo()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.41</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.42</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
