@@ -48,6 +48,27 @@ jobs:
           if ($dashboard -notmatch 'Engine.CoolingWindow') { throw 'Dashboard is not using configured cooling duration.' }
       - name: Runtime automation tests
         run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj --configuration Release --no-restore --verbosity normal -p:EnableWindowsTargeting=true
+      - name: Validate Monitor Only hard cutover invariants
+        shell: pwsh
+        run: |
+          $program = Get-Content src/GPTDeskTop/Program.cs -Raw
+          $gate = Get-Content src/GPTDeskTop/UI/MonitorOnlyStartupGate.cs -Raw
+          $ownership = Get-Content src/GPTDeskTop/Services/SimpleMonitorChromeOwnershipGate.cs -Raw
+          $session = Get-Content src/GPTDeskTop/Services/SimpleMonitorProfileSession.cs -Raw
+          if ($program -notmatch 'GPTDeskTop-MonitorOnly-SingleInstance') { throw 'Monitor Only application singleton is missing.' }
+          if ($program -notmatch 'MonitorOnlyStartupGate\.Run\(database\)') { throw 'Program does not hard-cut over to Monitor Only.' }
+          if ($program -match 'new MainForm\(') { throw 'Legacy Current GPTDeskTop MainForm is still constructed by Program.' }
+          if ($program -match 'new ChatGptMonitorService\(') { throw 'Legacy saved-monitor runtime is still constructed by Program.' }
+          if ($program -match 'new DevelopmentTaskRuntimeBinding\(') { throw 'Legacy development runtime is still constructed by Program.' }
+          if ($program -match 'new TrayNotificationService\(') { throw 'Legacy tray runtime is still constructed by Program.' }
+          if ($gate -notmatch 'new SimpleMonitorForm\(database\)') { throw 'Monitor Only form is not the interactive startup surface.' }
+          if ($gate -notmatch 'Application\.Run\(form\)') { throw 'Monitor Only form does not own the application message loop.' }
+          if ($ownership -notmatch 'Kill\(entireProcessTree: true\)') { throw 'Stale GPTDeskTop-owned Chrome process-tree reconciliation is missing.' }
+          if ($ownership -notmatch 'Ordinary Chrome is untouched') { throw 'Ordinary Chrome protection contract is missing.' }
+          if ($ownership -notmatch '--user-data-dir=') { throw 'Managed Chrome ownership is not scoped by user-data-dir.' }
+          if ($session -notmatch 'allowBrowserMutationRecovery: false') { throw 'Monitor Only CDP runtime is not configured fail-passive.' }
+          if ($session -notmatch 'Runtime recovery is passive') { throw 'Passive same-session recovery contract is missing.' }
+          if ($session -notmatch 'The only legal Process.Start opportunity') { throw 'Single explicit Start Monitor launch boundary is missing.' }
       - name: Validate one-message-per-work-window lifecycle
         shell: pwsh
         run: |
@@ -59,7 +80,7 @@ jobs:
           if ($tests -notmatch 'PersistedDeliveredPreviousMessagePreventsDuplicateAfterResume') { throw 'Restart duplicate-prevention test is missing.' }
           if ($cycle -notmatch 'CoolingCompletesAndNextWorkWindowEmitsExactlyOneNextMessage') { throw 'Work/cooling integration test is missing.' }
           if ($cycle -notmatch 'CoolingStateCannotAuthorizeDelivery') { throw 'Cooling delivery guard regression test is missing.' }
-      - name: Validate development lifecycle controls and runtime binding
+      - name: Validate development lifecycle components remain intact and decommissioned from startup
         shell: pwsh
         run: |
           $engine = Get-Content src/GPTDeskTop/Services/DevelopmentTaskEngine/DevelopmentTaskEngine.cs -Raw
@@ -70,7 +91,7 @@ jobs:
           $bindingTests = Get-Content tests/GPTDeskTop.RuntimeTests/DevelopmentTaskRuntimeBindingTests.cs -Raw
           if ($engine -notmatch 'Task PauseAsync') { throw 'Development plan pause lifecycle is missing.' }
           if ($engine -notmatch 'DevelopmentTaskEngineStatus.Paused') { throw 'Paused state is missing.' }
-          if ($control -notmatch 'DevelopmentTaskRuntimeBinding') { throw 'Dashboard is not bound to production runtime.' }
+          if ($control -notmatch 'DevelopmentTaskRuntimeBinding') { throw 'Dashboard component lost its runtime binding contract.' }
           if ($control -notmatch 'Start') { throw 'Development dashboard Start control is missing.' }
           if ($control -notmatch 'Pause') { throw 'Development dashboard Pause control is missing.' }
           if ($control -notmatch 'Resume') { throw 'Development dashboard Resume control is missing.' }
@@ -79,11 +100,12 @@ jobs:
           if ($binding -notmatch 'PauseAsync') { throw 'Runtime binding pause control is missing.' }
           if ($binding -notmatch 'ResumeAsync') { throw 'Runtime binding resume control is missing.' }
           if ($binding -notmatch 'DevelopmentTaskDynamicDeliveryCoordinator') { throw 'Runtime binding is not connected to dynamic delivery.' }
-          if ($program -notmatch 'DevelopmentTaskRuntimeBinding') { throw 'Production runtime binding is not created by Program.' }
-          if ($program -notmatch 'DevelopmentTaskMonitorTargetFactory') { throw 'Production saved-monitor target factory is not wired.' }
-          if ($program -notmatch 'DevelopmentTaskDashboardControl\(developmentRuntime\)') { throw 'Dashboard is not constructed from the production binding.' }
-          if ($tests -notmatch 'PauseStopsDeliveryWorkerAndResumeRestartsIt') { throw 'Pause/resume regression test is missing.' }
-          if ($bindingTests -notmatch 'BindingExposesEngineAndFullLifecycleControls') { throw 'Runtime binding lifecycle contract test is missing.' }
+          if ($program -notmatch 'MonitorOnlyStartupGate\.Run\(database\)') { throw 'Monitor Only startup gate is missing.' }
+          if ($program -match 'DevelopmentTaskRuntimeBinding') { throw 'Development runtime must remain decommissioned from Program startup.' }
+          if ($program -match 'DevelopmentTaskMonitorTargetFactory') { throw 'Saved-monitor target factory must remain decommissioned from Program startup.' }
+          if ($program -match 'DevelopmentTaskDashboardControl') { throw 'Development dashboard must remain decommissioned from Program startup.' }
+          if ($tests -notmatch 'PauseStopsDeliveryWorkerAndResumeRestartsIt') { throw 'Pause/resume component regression test is missing.' }
+          if ($bindingTests -notmatch 'BindingExposesEngineAndFullLifecycleControls') { throw 'Runtime binding lifecycle component test is missing.' }
       - name: Validate development lifecycle integration
         shell: pwsh
         run: |
@@ -153,25 +175,27 @@ jobs:
           if ($chrome -notmatch 'GetUserMessageSnapshotAsync') { throw 'Verified-send snapshot guard is missing.' }
           if ($chrome -notmatch 'current\.Count > before\.Count') { throw 'Verified-send pre-send duplicate guard is missing.' }
           if ($chrome -notmatch 'after\.Count > before\.Count') { throw 'Verified-send post-send receipt check is missing.' }
-          if ($monitor -notmatch 'SendChatMessageVerifiedAsync') { throw 'Monitor worker is not using verified delivery.' }
-      - name: Validate crash recovery invariants
+          if ($monitor -notmatch 'SendChatMessageVerifiedAsync') { throw 'Monitor worker component is not using verified delivery.' }
+      - name: Validate legacy crash recovery remains isolated from Monitor Only
         shell: pwsh
         run: |
           $recovery = Get-Content src/GPTDeskTop/Services/CrashRecoveryService.cs -Raw
           $state = Get-Content src/GPTDeskTop/Services/CrashRecoveryStateService.cs -Raw
           $policy = Get-Content src/GPTDeskTop/Services/CrashRecoveryOutcomePolicy.cs -Raw
-          if ($recovery -notmatch 'CrashRecoveryPending') { throw 'Crash recovery pending marker is missing.' }
-          if ($recovery -notmatch 'CloseAllMonitorTabsAsync') { throw 'Recovery does not close stale monitor tabs.' }
-          if ($recovery -notmatch 'LaunchMonitorChrome') { throw 'Recovery does not relaunch monitor Chrome.' }
-          if ($recovery -notmatch 'SendChatMessageVerifiedAsync') { throw 'Recovery message is not verified before success.' }
-          if ($recovery -notmatch 'CrashRecoverySendFailed') { throw 'Recovery send failure is not logged.' }
-          if ($recovery -notmatch 'SetSettingAsync\("CrashRecoveryPending",\s*"0"') { throw 'Recovery success does not clear the pending marker.' }
-          if ($state -notmatch 'SetSettingAsync\("CrashRecoveryPending",\s*"1"') { throw 'Startup does not persist the recovery pending marker.' }
-          if ($state -notmatch 'CrashRecovery\.RecoveryId') { throw 'Startup recovery incident identity is missing.' }
-          if ($recovery -notmatch 'CrashRecovery\.\{recoveryId\}\.Monitor\.\{saved\.Id\}\.Success') { throw 'Per-monitor recovery idempotency marker is missing.' }
-          if ($recovery -notmatch 'CrashRecoveryAlreadyVerified') { throw 'Already-recovered monitor path is missing.' }
-          if ($recovery -notmatch 'StartMonitorAsync') { throw 'Recovered monitors are not restarted.' }
-          if ($policy -notmatch 'outcomes\.All\(x => x == CrashRecoveryOutcome\.Success\)') { throw 'Pending-clear policy is missing all-success requirement.' }
+          $program = Get-Content src/GPTDeskTop/Program.cs -Raw
+          $session = Get-Content src/GPTDeskTop/Services/SimpleMonitorProfileSession.cs -Raw
+          if ($recovery -notmatch 'CrashRecoveryPending') { throw 'Legacy crash recovery pending marker is missing.' }
+          if ($recovery -notmatch 'CloseAllMonitorTabsAsync') { throw 'Legacy recovery stale-browser cleanup is missing.' }
+          if ($recovery -notmatch 'SendChatMessageVerifiedAsync') { throw 'Legacy recovery message is not verified before success.' }
+          if ($recovery -notmatch 'CrashRecoverySendFailed') { throw 'Legacy recovery send failure is not logged.' }
+          if ($recovery -notmatch 'SetSettingAsync\("CrashRecoveryPending",\s*"0"') { throw 'Legacy recovery success does not clear its pending marker.' }
+          if ($state -notmatch 'SetSettingAsync\("CrashRecoveryPending",\s*"1"') { throw 'Legacy recovery state cannot persist its pending marker.' }
+          if ($state -notmatch 'CrashRecovery\.RecoveryId') { throw 'Legacy recovery incident identity is missing.' }
+          if ($recovery -notmatch 'CrashRecoveryAlreadyVerified') { throw 'Legacy already-recovered monitor path is missing.' }
+          if ($policy -notmatch 'outcomes\.All\(x => x == CrashRecoveryOutcome\.Success\)') { throw 'Legacy pending-clear all-success policy is missing.' }
+          if ($program -match 'CrashRecoveryService\.RecoverIfPendingAsync') { throw 'Legacy crash recovery must not run from Monitor Only startup.' }
+          if ($session -notmatch 'allowBrowserMutationRecovery: false') { throw 'Monitor Only browser mutation recovery must remain disabled.' }
+          if ($session -notmatch 'Runtime recovery is passive') { throw 'Monitor Only passive runtime recovery contract is missing.' }
       - name: Build application
         run: dotnet build src/GPTDeskTop/GPTDeskTop.csproj --configuration Release --no-restore
       - name: Build setup
