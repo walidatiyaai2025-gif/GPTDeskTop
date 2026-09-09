@@ -1,0 +1,56 @@
+name: QA Idle No Managed Chrome
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  idle-no-managed-chrome:
+    name: Idle cold start owns no Chrome
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore runtime tests
+        run: dotnet restore tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj
+
+      - name: Run idle cold-start regression tests
+        run: dotnet test tests/GPTDeskTop.RuntimeTests/GPTDeskTop.RuntimeTests.csproj -c Release --no-restore --filter "FullyQualifiedName~MonitorOnlyVisualHotfixRegressionTests"
+
+      - name: Enforce idle cold-start ordering and ownership filter
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $startup = Get-Content 'src/GPTDeskTop/UI/MonitorOnlyStartupGate.cs' -Raw
+          $reconciler = Get-Content 'src/GPTDeskTop/Services/MonitorOnlyColdStartChromeReconciler.cs' -Raw
+
+          $cleanup = $startup.IndexOf('MonitorOnlyColdStartChromeReconciler.ReconcileBeforeIdleUi()', [StringComparison]::Ordinal)
+          $form = $startup.IndexOf('new SimpleMonitorForm(database)', [StringComparison]::Ordinal)
+          if ($cleanup -lt 0 -or $form -le $cleanup) {
+            throw 'Monitor Only UI can be created before cold-start managed Chrome cleanup.'
+          }
+
+          if ($reconciler -notmatch 'ChromeProfileCatalog\.Discover\(\)' -or $reconciler -notmatch '--user-data-dir=') {
+            throw 'Cold-start cleanup is not scoped to GPTDeskTop managed Chrome profile roots.'
+          }
+          if ($reconciler -notmatch "WHERE Name='chrome\.exe'" -or $reconciler -notmatch 'CommandLineReferencesUserDataDirectory') {
+            throw 'Cold-start cleanup no longer verifies Chrome command-line ownership.'
+          }
+          if ($reconciler -match 'GetProcessesByName') {
+            throw 'Broad Chrome process enumeration is forbidden; ordinary user Chrome must remain untouched.'
+          }
+          if ($reconciler -notmatch 'survivors\.Count > 0') {
+            throw 'Cold-start cleanup must fail closed if any GPTDeskTop-managed Chrome survives.'
+          }
+
+          Write-Host 'PASS: cold start removes only GPTDeskTop-managed Chrome before idle UI; ordinary Chrome remains outside the ownership filter.'
