@@ -41,15 +41,16 @@ public sealed class LayoutPersistenceUiRegressionTests
     }
 
     [Fact]
-    public void DevelopmentDashboardExpansionStateIsPersistedWithoutChangingConstructorContract()
+    public void LegacyDashboardExpansionContractRemainsReusableButIsAbsentFromMonitorOnlyStartup()
     {
         var dashboard = ReadSource("src", "GPTDeskTop", "UI", "DevelopmentTaskDashboardControl.cs");
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
         Assert.Contains("public bool IsExpanded", dashboard, StringComparison.Ordinal);
         Assert.Contains("public event EventHandler? ExpandedChanged", dashboard, StringComparison.Ordinal);
         Assert.Contains("private void ToggleExpanded() => IsExpanded = !IsExpanded;", dashboard, StringComparison.Ordinal);
-        Assert.Contains("new DevelopmentTaskDashboardControl(developmentRuntime)", program, StringComparison.Ordinal);
-        Assert.Contains("Ui.DevelopmentDashboard.Expanded", program, StringComparison.Ordinal);
-        Assert.Contains("developmentDashboard.ExpandedChanged +=", program, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new DevelopmentTaskDashboardControl(", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("Ui.DevelopmentDashboard.Expanded", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("developmentDashboard.ExpandedChanged +=", program, StringComparison.Ordinal);
     }
 }
