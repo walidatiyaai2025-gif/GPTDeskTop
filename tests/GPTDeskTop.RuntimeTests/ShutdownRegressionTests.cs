@@ -35,17 +35,16 @@ public sealed class ShutdownRegressionTests
     }
 
     [Fact]
-    public void FinalCleanupRunsAfterWinFormsMessageLoopAndOffTheUiContext()
+    public void MonitorOnlyOwnsTheOnlyInteractiveMessageLoopWithoutLegacyFinalizer()
     {
-        var source = ReadSource("src", "GPTDeskTop", "Program.cs");
-        var runIndex = source.IndexOf("Application.Run(mainForm);", StringComparison.Ordinal);
-        var finalizeIndex = source.IndexOf("Task.Run(() => FinalizeGracefulShutdownAsync(database, developmentRuntime)).GetAwaiter().GetResult();", StringComparison.Ordinal);
+        var program = ReadSource("src", "GPTDeskTop", "Program.cs");
+        var gate = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyStartupGate.cs");
 
-        Assert.True(runIndex >= 0);
-        Assert.True(finalizeIndex > runIndex);
-        Assert.Contains(".ConfigureAwait(false);", source, StringComparison.Ordinal);
-        Assert.Contains("WaitAsync(TimeSpan.FromSeconds(5))", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("mainForm.FormClosed +=", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("CrashRecoveryStateService.MarkCleanShutdownAsync(database).GetAwaiter().GetResult()", source, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", program, StringComparison.Ordinal);
+        Assert.Contains("Application.Run(form);", gate, StringComparison.Ordinal);
+        Assert.DoesNotContain("Application.Run(mainForm);", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("FinalizeGracefulShutdownAsync", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("mainForm.FormClosed +=", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("CrashRecoveryStateService.MarkCleanShutdownAsync(database).GetAwaiter().GetResult()", program, StringComparison.Ordinal);
     }
 }
