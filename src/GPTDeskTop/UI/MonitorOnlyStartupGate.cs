@@ -14,6 +14,10 @@ internal static class MonitorOnlyStartupGate
     {
         ArgumentNullException.ThrowIfNull(database);
 
+        // Cold start must be genuinely idle. A managed Chrome left by an earlier GPTDeskTop
+        // process is removed before the UI exists; ordinary user Chrome is never targeted.
+        MonitorOnlyColdStartChromeReconciler.ReconcileBeforeIdleUi();
+
         NormalizeLegacyDelaySetting(database);
 
         using var form = new SimpleMonitorForm(database);
