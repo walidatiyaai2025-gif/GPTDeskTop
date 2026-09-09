@@ -99,13 +99,13 @@ public sealed class RuntimeHealthUiRegressionTests
     }
 
     [Fact]
-    public void ProgramPersistsRuntimeHealthExpansionState()
+    public void MonitorOnlyStartupDoesNotConstructLegacyRuntimeHealthSurface()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
 
-        Assert.Contains("new RuntimeHealthControl(chrome, monitor, database)", source, StringComparison.Ordinal);
-        Assert.Contains("Ui.RuntimeHealth.Expanded", source, StringComparison.Ordinal);
-        Assert.Contains("Program.PersistRuntimeHealthState", source, StringComparison.Ordinal);
-        Assert.Contains("runtimeHealth.ExpandedChanged", source, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new RuntimeHealthControl(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Ui.RuntimeHealth.Expanded", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("runtimeHealth.ExpandedChanged", source, StringComparison.Ordinal);
     }
 }
