@@ -12,15 +12,21 @@ public sealed class MonitorOnlyIdleChromeGuardRegressionTests
     }
 
     [Fact]
-    public void IdleGuardStartsBeforeProgramAndWatchesDelayedChromeStarts()
+    public void IdleGuardStartsBeforeUiAndWatchesDelayedChromeStarts()
     {
+        var startup = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyStartupGate.cs");
         var guard = ReadSource("src", "GPTDeskTop", "Services", "MonitorOnlyManagedChromeGuard.cs");
 
-        Assert.Contains("[ModuleInitializer]", guard, StringComparison.Ordinal);
+        var guardStart = startup.IndexOf("MonitorOnlyManagedChromeGuard.Start()", StringComparison.Ordinal);
+        var coldCleanup = startup.IndexOf("MonitorOnlyColdStartChromeReconciler.ReconcileBeforeIdleUi()", StringComparison.Ordinal);
+        var form = startup.IndexOf("new SimpleMonitorForm(database)", StringComparison.Ordinal);
+        Assert.True(guardStart >= 0 && coldCleanup > guardStart && form > coldCleanup,
+            "The lifetime guard must start before cold-start cleanup and before the Monitor Only UI exists.");
+
         Assert.Contains("Win32_ProcessStartTrace", guard, StringComparison.Ordinal);
         Assert.Contains("ProcessName='chrome.exe'", guard, StringComparison.Ordinal);
         Assert.Contains("PollLoopAsync", guard, StringComparison.Ordinal);
-        Assert.Contains("EnforceNow(\"module-init\")", guard, StringComparison.Ordinal);
+        Assert.Contains("EnforceNow(\"startup\")", guard, StringComparison.Ordinal);
         Assert.Contains("EnforceNow(\"process-start\")", guard, StringComparison.Ordinal);
     }
 
