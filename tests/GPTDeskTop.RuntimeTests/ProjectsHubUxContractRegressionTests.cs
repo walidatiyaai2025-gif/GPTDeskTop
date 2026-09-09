@@ -3,7 +3,7 @@ namespace GPTDeskTop.RuntimeTests;
 public sealed class ProjectsHubUxContractRegressionTests
 {
     [Fact]
-    public void OneProjectsHubReplacesUserFacingLegacyMonitorCrudNavigation()
+    public void ProjectsHubRemainsReusableButIsNotInstalledByMonitorOnlyStartup()
     {
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
         var hub = ReadSource("src", "GPTDeskTop", "UI", "ProjectMonitorUiBootstrap.cs");
@@ -14,7 +14,9 @@ public sealed class ProjectsHubUxContractRegressionTests
 
         Assert.False(File.Exists(obsoleteConsolidation));
         Assert.False(File.Exists(obsoleteForm));
-        Assert.Contains("ProjectMonitorUiBootstrap.Install(mainForm);", program, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("ProjectMonitorUiBootstrap.Install(", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new MainForm(", program, StringComparison.Ordinal);
         Assert.Contains("internal static void Install(MainForm main)", hub, StringComparison.Ordinal);
         Assert.Contains("Text = \"Projects\"", hub, StringComparison.Ordinal);
         Assert.Contains("CreateEmbeddedProjectsSurface", hub, StringComparison.Ordinal);
