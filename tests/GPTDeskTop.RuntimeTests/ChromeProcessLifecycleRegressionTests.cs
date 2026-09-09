@@ -75,20 +75,16 @@ public sealed class ChromeProcessLifecycleRegressionTests
     }
 
     [Fact]
-    public void CommittedInstanceHandoffStillPreservesTheMonitorBrowserForReplacementRuntime()
+    public void MonitorOnlyStartupHasNoLegacyInstanceHandoffThatCanOwnAnotherBrowser()
     {
-        var source = ReadSource("src", "GPTDeskTop", "Program.cs");
-        var start = source.IndexOf("private static async Task CompleteCommittedInstanceHandoffAsync", StringComparison.Ordinal);
-        var end = source.IndexOf("private static async Task FinalizeGracefulShutdownAsync", start, StringComparison.Ordinal);
+        var program = ReadSource("src", "GPTDeskTop", "Program.cs");
+        var ownership = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorChromeOwnershipGate.cs");
 
-        Assert.True(start >= 0);
-        Assert.True(end > start);
-        var handoff = source[start..end];
-
-        Assert.Contains("monitor.StopAllAsync()", handoff, StringComparison.Ordinal);
-        Assert.Contains("CrashRecoveryStateService.MarkCleanShutdownAsync", handoff, StringComparison.Ordinal);
-        Assert.DoesNotContain("CloseAllMonitorTabsAsync", handoff, StringComparison.Ordinal);
-        Assert.DoesNotContain("Process.Kill", handoff, StringComparison.Ordinal);
-        Assert.Contains("Environment.Exit(0)", handoff, StringComparison.Ordinal);
+        Assert.Contains("GPTDeskTop-MonitorOnly-SingleInstance", program, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("CompleteCommittedInstanceHandoffAsync", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("InstanceHandoffCoordinator", program, StringComparison.Ordinal);
+        Assert.Contains("Kill(entireProcessTree: true)", ownership, StringComparison.Ordinal);
+        Assert.Contains("Ordinary Chrome is untouched", ownership, StringComparison.Ordinal);
     }
 }
