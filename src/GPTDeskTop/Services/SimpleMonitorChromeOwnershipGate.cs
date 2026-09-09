@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Management;
 using System.Runtime.CompilerServices;
 using GPTDeskTop.Configuration;
 using GPTDeskTop.Models;
@@ -9,6 +11,7 @@ internal static class SimpleMonitorChromeOwnershipGate
     private const int LegacyDebuggingPort = 9222;
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromMilliseconds(900);
     private static readonly TimeSpan CloseTimeout = TimeSpan.FromSeconds(4);
+    private static readonly DateTime CurrentAppStartUtc = SafeCurrentProcessStartUtc();
     private static readonly ConditionalWeakTable<ChromeDevToolsService, Registration> Registrations = new();
     private static readonly object RegistrationSync = new();
 
@@ -64,6 +67,17 @@ internal static class SimpleMonitorChromeOwnershipGate
         CancellationToken cancellationToken)
     {
         var registration = GetRegistration(selectedChrome);
+
+        // v2.0.41 closes the gap left by endpoint-only discovery. A Chrome left behind by an older
+        // GPTDeskTop process can have a dead CDP endpoint while its visible browser process remains.
+        // If Start Monitor then only checked ports it could legitimately create another managed
+        // browser. Inspect Windows process command lines first and act only on user-data directories
+        // under GPTDeskTop's own managed roots. Ordinary user Chrome is never a candidate.
+        await ReconcileManagedChromeProcessesAsync(registration, status, cancellationToken).ConfigureAwait(false);
+
+        if (await IsEndpointAliveAsync(registration.DebuggingPort, cancellationToken).ConfigureAwait(false))
+            registration.EndpointEverSeen = true;
+
         foreach (var port in DiscoverManagedPorts(registration))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -136,6 +150,126 @@ internal static class SimpleMonitorChromeOwnershipGate
         throw new InvalidOperationException("Monitor Only Chrome ownership is not registered. Browser mutation is blocked.");
     }
 
+    private static async Task ReconcileManagedChromeProcessesAsync(
+        Registration registration,
+        Action<string>? status,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<ManagedChromeProcess> processes;
+        try
+        {
+            processes = DiscoverManagedChromeProcesses();
+        }
+        catch (Exception ex) when (ex is ManagementException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            throw new InvalidOperationException(
+                "GPTDeskTop could not verify the managed Chrome process inventory. Start/recovery is blocked rather than risk opening a second Chrome.",
+                ex);
+        }
+
+        if (processes.Count == 0) return;
+
+        var selectedDirectory = NormalizeDirectory(registration.Profile.ManagedUserDataDirectory);
+        var selectedEndpointAlive = await IsEndpointAliveAsync(registration.DebuggingPort, cancellationToken).ConfigureAwait(false);
+        if (selectedEndpointAlive) registration.EndpointEverSeen = true;
+
+        foreach (var managed in processes.OrderBy(process => process.ProcessId))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var selectedProcess = PathsEqual(managed.UserDataDirectory, selectedDirectory);
+            if (selectedProcess)
+            {
+                if (selectedEndpointAlive || registration.EndpointEverSeen)
+                {
+                    // This is the selected browser identity for the current monitor run. Even if CDP
+                    // disappears later, runtime recovery is passive and this process is never killed
+                    // merely to obtain a new browser.
+                    continue;
+                }
+
+                if (managed.StartUtc >= CurrentAppStartUtc - TimeSpan.FromSeconds(2))
+                {
+                    throw new InvalidOperationException(
+                        $"The selected GPTDeskTop Monitor Chrome process PID {managed.ProcessId} is already running but CDP {registration.DebuggingPort} is unavailable. A second Chrome will not be opened. Close/restore that managed browser or Stop/Start after it exits.");
+                }
+
+                status?.Invoke($"SINGLE CHROME — removing stale selected GPTDeskTop Chrome PID {managed.ProcessId} left by an earlier app session before the one allowed Start Monitor launch.");
+                await KillManagedProcessTreeAsync(managed, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            status?.Invoke($"SINGLE CHROME — closing stale GPTDeskTop-managed Chrome PID {managed.ProcessId} for another managed profile. Ordinary Chrome is untouched.");
+            await KillManagedProcessTreeAsync(managed, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static IReadOnlyList<ManagedChromeProcess> DiscoverManagedChromeProcesses()
+    {
+        if (!OperatingSystem.IsWindows()) return Array.Empty<ManagedChromeProcess>();
+
+        var managedDirectories = ChromeProfileCatalog.Discover()
+            .Select(profile => NormalizeDirectory(profile.ManagedUserDataDirectory))
+            .Append(NormalizeDirectory(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "GPTDeskTop",
+                "ChromeProfile")))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var results = new List<ManagedChromeProcess>();
+        using var searcher = new ManagementObjectSearcher(
+            "SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='chrome.exe'");
+        using var collection = searcher.Get();
+        foreach (ManagementObject row in collection)
+        {
+            var commandLine = row["CommandLine"] as string;
+            if (string.IsNullOrWhiteSpace(commandLine)) continue;
+
+            var directory = managedDirectories.FirstOrDefault(candidate =>
+                CommandLineReferencesUserDataDirectory(commandLine, candidate));
+            if (directory is null) continue;
+
+            var processId = Convert.ToInt32(row["ProcessId"], System.Globalization.CultureInfo.InvariantCulture);
+            if (processId <= 0) continue;
+            results.Add(new ManagedChromeProcess(processId, directory, SafeProcessStartUtc(processId)));
+        }
+
+        return results;
+    }
+
+    private static bool CommandLineReferencesUserDataDirectory(string commandLine, string directory)
+    {
+        var quoted = $"--user-data-dir=\"{directory}\"";
+        var unquoted = $"--user-data-dir={directory}";
+        return commandLine.Contains(quoted, StringComparison.OrdinalIgnoreCase)
+            || commandLine.Contains(unquoted, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task KillManagedProcessTreeAsync(ManagedChromeProcess managed, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(managed.ProcessId);
+            if (process.HasExited) return;
+            process.Kill(entireProcessTree: true);
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken)
+                    .WaitAsync(CloseTimeout, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                throw new InvalidOperationException(
+                    $"GPTDeskTop-managed Chrome PID {managed.ProcessId} did not exit. A new Monitor Chrome is blocked to preserve the single-browser invariant.");
+            }
+        }
+        catch (ArgumentException)
+        {
+            // Process already exited between inventory and cleanup.
+        }
+    }
+
     private static IReadOnlyList<int> DiscoverManagedPorts(Registration selected)
     {
         var ports = new HashSet<int> { selected.DebuggingPort };
@@ -194,11 +328,49 @@ internal static class SimpleMonitorChromeOwnershipGate
         return !await IsEndpointAliveAsync(port, cancellationToken).ConfigureAwait(false);
     }
 
+    private static string NormalizeDirectory(string path)
+        => Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+    private static bool PathsEqual(string left, string right)
+        => string.Equals(NormalizeDirectory(left), NormalizeDirectory(right), StringComparison.OrdinalIgnoreCase);
+
+    private static DateTime SafeCurrentProcessStartUtc()
+    {
+        try { return Process.GetCurrentProcess().StartTime.ToUniversalTime(); }
+        catch { return DateTime.UtcNow; }
+    }
+
+    private static DateTime SafeProcessStartUtc(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.StartTime.ToUniversalTime();
+        }
+        catch
+        {
+            return DateTime.MinValue;
+        }
+    }
+
     private static string Compact(string? value)
     {
         var text = string.Join(' ', (value ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
         return text.Length <= 80 ? text : text[..80];
     }
 
-    private sealed record Registration(ChromeProfileInfo Profile, int DebuggingPort);
+    private sealed class Registration
+    {
+        internal Registration(ChromeProfileInfo profile, int debuggingPort)
+        {
+            Profile = profile;
+            DebuggingPort = debuggingPort;
+        }
+
+        internal ChromeProfileInfo Profile { get; }
+        internal int DebuggingPort { get; }
+        internal bool EndpointEverSeen { get; set; }
+    }
+
+    private sealed record ManagedChromeProcess(int ProcessId, string UserDataDirectory, DateTime StartUtc);
 }

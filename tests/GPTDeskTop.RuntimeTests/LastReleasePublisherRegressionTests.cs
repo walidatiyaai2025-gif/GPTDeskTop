@@ -63,12 +63,15 @@ public sealed class LastReleasePublisherRegressionTests
     }
 
     [Fact]
-    public void ProgramShowsStableBuildIdentityOnlyForStampedBuilds()
+    public void MonitorOnlySurfaceShowsCanonicalBuildIdentity()
     {
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
+        var cutoverUi = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyHardCutoverUi.cs");
 
-        Assert.Contains("ApplicationBuildIdentity.StableBuildId is not null", program, StringComparison.Ordinal);
-        Assert.Contains("mainForm.Text = $\"GPTDeskTop {ApplicationBuildIdentity.DisplayVersion}\";", program, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", program, StringComparison.Ordinal);
+        Assert.Contains("ApplicationBuildIdentity.DisplayVersion", cutoverUi, StringComparison.Ordinal);
+        Assert.Contains("— Monitor Only", cutoverUi, StringComparison.Ordinal);
+        Assert.DoesNotContain("mainForm.Text", program, StringComparison.Ordinal);
     }
 
     [Fact]

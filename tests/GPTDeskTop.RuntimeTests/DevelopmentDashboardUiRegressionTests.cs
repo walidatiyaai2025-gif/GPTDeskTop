@@ -55,11 +55,12 @@ public sealed class DevelopmentDashboardUiRegressionTests
     }
 
     [Fact]
-    public void ProgramDoesNotForceDashboardToConsume190Pixels()
+    public void MonitorOnlyStartupDoesNotConstructLegacyDevelopmentDashboard()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
 
-        Assert.Contains("new DevelopmentTaskDashboardControl(developmentRuntime)", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("Height = 190", source, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new DevelopmentTaskDashboardControl(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("DevelopmentTaskRuntimeBinding", source, StringComparison.Ordinal);
     }
 }

@@ -149,39 +149,46 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ModeSwitchStopsClassicSavedMonitorsBeforeHidingCurrentUi()
-    {
-        var source = ReadSource("src", "GPTDeskTop", "UI", "SimpleMonitorModeBootstrap.cs");
-
-        Assert.Contains("await monitor.StopAllAsync()", source, StringComparison.Ordinal);
-        Assert.Contains("ReplaceDesiredMonitorIdsAsync(database, Array.Empty<long>())", source, StringComparison.Ordinal);
-        Assert.True(
-            source.IndexOf("await monitor.StopAllAsync()", StringComparison.Ordinal)
-            < source.IndexOf("main.Hide()", StringComparison.Ordinal));
-        Assert.Contains("MonitorOnlyExperienceController.Attach(_monitorOnlyForm)", source, StringComparison.Ordinal);
-        Assert.Contains("Current GPTDeskTop", source, StringComparison.Ordinal);
-        Assert.Contains("Monitor Only — Same Chat", source, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void MonitorOnlyColdStartBlocksLegacyBusinessUntilCurrentRadioSelected()
+    public void MonitorOnlyIsTheOnlyColdStartBusiness()
     {
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
         var gate = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyStartupGate.cs");
-        var experience = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyExperienceController.cs");
+        var hardCutover = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyHardCutoverUi.cs");
 
-        var gateIndex = program.IndexOf("MonitorOnlyStartupGate.Run(database)", StringComparison.Ordinal);
-        Assert.True(gateIndex >= 0);
-        Assert.True(gateIndex < program.IndexOf("CrashRecoveryStateService.PrepareStartupAsync", StringComparison.Ordinal));
-        Assert.True(gateIndex < program.IndexOf("new ChromeDevToolsService", StringComparison.Ordinal));
-        Assert.True(gateIndex < program.IndexOf("new ChatGptMonitorService", StringComparison.Ordinal));
-        Assert.True(gateIndex < program.IndexOf("new DevelopmentTaskRuntimeBinding", StringComparison.Ordinal));
-        Assert.DoesNotContain("MonitorOnlyStartupCoordinator.Prepare", program, StringComparison.Ordinal);
-
+        Assert.Contains("MonitorOnlyStartupGate.Run(database)", program, StringComparison.Ordinal);
+        Assert.Contains("GPTDeskTop-MonitorOnly-SingleInstance", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new MainForm(", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new ChatGptMonitorService(", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new DevelopmentTaskRuntimeBinding(", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new TrayNotificationService(", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryRestartAfterFatal", program, StringComparison.Ordinal);
         Assert.Contains("Application.Run(form)", gate, StringComparison.Ordinal);
-        Assert.Contains("return experience.SwitchToCurrentRequested", gate, StringComparison.Ordinal);
-        Assert.Contains("SwitchToCurrentRequested = _currentModeRadio.Checked", experience, StringComparison.Ordinal);
-        Assert.Contains("Closing the window with X/Alt+F4", experience, StringComparison.Ordinal);
+        Assert.DoesNotContain("return experience.SwitchToCurrentRequested", gate, StringComparison.Ordinal);
+
+        Assert.Contains("_currentModeRadio", hardCutover, StringComparison.Ordinal);
+        Assert.Contains("current.Visible = false", hardCutover, StringComparison.Ordinal);
+        Assert.Contains("current.Enabled = false", hardCutover, StringComparison.Ordinal);
+        Assert.Contains("modes.Controls.Clear()", hardCutover, StringComparison.Ordinal);
+        Assert.Contains("Text = \"Monitor Only\"", hardCutover, StringComparison.Ordinal);
+        Assert.DoesNotContain("Current GPTDeskTop", hardCutover, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ManagedChromeSingletonDetectsStaleProcessResidueBeforeLaunch()
+    {
+        var ownership = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorChromeOwnershipGate.cs");
+        var project = ReadSource("src", "GPTDeskTop", "GPTDeskTop.csproj");
+
+        Assert.Contains("System.Management", project, StringComparison.Ordinal);
+        Assert.Contains("ManagementObjectSearcher", ownership, StringComparison.Ordinal);
+        Assert.Contains("Win32_Process WHERE Name='chrome.exe'", ownership, StringComparison.Ordinal);
+        Assert.Contains("--user-data-dir=", ownership, StringComparison.Ordinal);
+        Assert.Contains("ChromeProfileCatalog.Discover()", ownership, StringComparison.Ordinal);
+        Assert.Contains("EndpointEverSeen", ownership, StringComparison.Ordinal);
+        Assert.Contains("process.Kill(entireProcessTree: true)", ownership, StringComparison.Ordinal);
+        Assert.Contains("A second Chrome will not be opened", ownership, StringComparison.Ordinal);
+        Assert.Contains("Ordinary Chrome is untouched", ownership, StringComparison.Ordinal);
+        Assert.Contains("OperatingSystem.IsWindows()", ownership, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -246,9 +253,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointForty()
+    public void ProductVersionIsBumpedToTwoPointZeroPointFortyOne()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.40</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.41</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }

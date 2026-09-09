@@ -40,7 +40,7 @@ public sealed class OperatorWorkspaceV2RegressionTests
     }
 
     [Fact]
-    public void WorkspaceActivationKeepsCanonicalMainFormHistoryAndNoSecondHistoryPipeline()
+    public void LegacyWorkspaceRemainsInternallyConsistentButIsNotPartOfMonitorOnlyStartup()
     {
         var source = ReadSource("src", "GPTDeskTop", "UI", "OperatorWorkspaceV2Experience.cs");
         var main = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
@@ -51,8 +51,9 @@ public sealed class OperatorWorkspaceV2RegressionTests
         Assert.Contains("BuildDiagnostics()", main, StringComparison.Ordinal);
         Assert.Contains("CreateSection(\"Live Activity\"", main, StringComparison.Ordinal);
         Assert.Contains("CreateSection(\"Stored History\"", main, StringComparison.Ordinal);
-        Assert.Contains("HistoryWorkspaceControl duplicated a second grid", program, StringComparison.Ordinal);
-        Assert.Contains("intentionally no longer constructed here", program, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new MainForm(", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("OperatorWorkspaceV2Experience", program, StringComparison.Ordinal);
     }
 
     [Fact]

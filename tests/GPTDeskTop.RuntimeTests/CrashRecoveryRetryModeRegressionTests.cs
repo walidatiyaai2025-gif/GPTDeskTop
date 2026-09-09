@@ -12,17 +12,17 @@ public sealed class CrashRecoveryRetryModeRegressionTests
     }
 
     [Fact]
-    public void ProgramRecordsCrashStateButDefersRecoveryUntilExplicitOperatorAction()
+    public void ProgramDoesNotAutoEnterLegacyCrashRecoveryAfterMonitorOnlyCutover()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
 
-        Assert.Contains("var currentStartupWasUnclean = CrashRecoveryStateService.PrepareStartupAsync(database)", source, StringComparison.Ordinal);
-        Assert.Contains("Runtime.StartupBrowserMutationPolicy", source, StringComparison.Ordinal);
-        Assert.Contains("OperatorOnly", source, StringComparison.Ordinal);
-        Assert.Contains("Runtime.StartupRecoveryDeferred", source, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", source, StringComparison.Ordinal);
+        Assert.Contains("GPTDeskTop-MonitorOnly-SingleInstance", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CrashRecoveryStateService.PrepareStartupAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("CrashRecoveryService.RecoverIfPendingAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("CrashRecoveryMode.FreshCrashReset", source, StringComparison.Ordinal);
         Assert.DoesNotContain("CrashRecoveryMode.PendingRetry", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("LaunchMonitorChrome", source, StringComparison.Ordinal);
     }
 
     [Fact]

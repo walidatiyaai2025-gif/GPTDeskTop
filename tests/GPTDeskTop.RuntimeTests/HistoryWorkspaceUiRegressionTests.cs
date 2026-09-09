@@ -50,14 +50,16 @@ public sealed class HistoryWorkspaceUiRegressionTests
     }
 
     [Fact]
-    public void ProgramAvoidsDuplicateHistoryStartupWhilePreservingShutdownContract()
+    public void MonitorOnlyStartupDoesNotConstructLegacyHistoryOrShutdownPipeline()
     {
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
         var main = ReadSource("src", "GPTDeskTop", "UI", "MainForm.cs");
 
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", program, StringComparison.Ordinal);
         Assert.DoesNotContain("new HistoryWorkspaceControl(database)", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("FinalizeGracefulShutdownAsync", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new MainForm(", program, StringComparison.Ordinal);
         Assert.Contains("Stored History", main, StringComparison.Ordinal);
         Assert.Contains("RefreshHistoryAsync", main, StringComparison.Ordinal);
-        Assert.Contains("Task.Run(() => FinalizeGracefulShutdownAsync(database, developmentRuntime))", program, StringComparison.Ordinal);
     }
 }

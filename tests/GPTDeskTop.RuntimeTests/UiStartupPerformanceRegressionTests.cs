@@ -3,24 +3,25 @@ namespace GPTDeskTop.RuntimeTests;
 public sealed class UiStartupPerformanceRegressionTests
 {
     [Fact]
-    public void ColdStartupDoesNotConstructDuplicateHistoryWorkspaceOrSupportDiagnosticsByDefault()
+    public void ColdStartupConstructsOnlyMonitorOnlySurface()
     {
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
+        var gate = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyStartupGate.cs");
 
-        Assert.DoesNotContain("var historyWorkspace = new HistoryWorkspaceControl", program, StringComparison.Ordinal);
-        Assert.Contains("SupportDiagnosticsControl? supportDiagnostics = null;", program, StringComparison.Ordinal);
-        Assert.Contains("void EnsureSupportDiagnostics()", program, StringComparison.Ordinal);
-        Assert.Contains("if (runtimeHealth.IsExpanded)", program, StringComparison.Ordinal);
-        Assert.Contains("EnsureSupportDiagnostics();", program, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new HistoryWorkspaceControl", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("SupportDiagnosticsControl", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new MainForm(", program, StringComparison.Ordinal);
+        Assert.Contains("using var form = new SimpleMonitorForm(database);", gate, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ProjectsEntryUsesExplicitOneTimeInstallationWithoutIdleOrModuleInitializer()
+    public void ProjectsBootstrapRemainsExplicitButIsNotInstalledByMonitorOnlyStartup()
     {
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
         var projects = ReadSource("src", "GPTDeskTop", "UI", "ProjectMonitorUiBootstrap.cs");
 
-        Assert.Contains("ProjectMonitorUiBootstrap.Install(mainForm);", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("ProjectMonitorUiBootstrap.Install(", program, StringComparison.Ordinal);
         Assert.Contains("internal static void Install(MainForm main)", projects, StringComparison.Ordinal);
         Assert.DoesNotContain("[ModuleInitializer]", projects, StringComparison.Ordinal);
         Assert.DoesNotContain("Application.Idle +=", projects, StringComparison.Ordinal);
@@ -49,14 +50,16 @@ public sealed class UiStartupPerformanceRegressionTests
     }
 
     [Fact]
-    public void StartupBudgetIsRecordedAndBoundedWithoutBlockingLaunch()
+    public void MonitorOnlyStartupAvoidsLegacyStartupInstrumentationAndBlockingResumeWork()
     {
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
 
-        Assert.Contains("var startupTimer = Stopwatch.StartNew();", program, StringComparison.Ordinal);
-        Assert.Contains("Runtime.LastUiStartupMs", program, StringComparison.Ordinal);
-        Assert.Contains("Runtime.LastUiStartupBudget", program, StringComparison.Ordinal);
-        Assert.Contains("startupTimer.ElapsedMilliseconds <= 3000 ? \"PASS\" : \"WARN\"", program, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("startupTimer", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("Runtime.LastUiStartupMs", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("Runtime.LastUiStartupBudget", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResumeIfActiveAsync", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("StartMonitorAsync", program, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] segments)

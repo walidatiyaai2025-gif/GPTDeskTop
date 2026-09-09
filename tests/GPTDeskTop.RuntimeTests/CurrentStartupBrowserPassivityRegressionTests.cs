@@ -12,28 +12,24 @@ public sealed class CurrentStartupBrowserPassivityRegressionTests
     }
 
     [Fact]
-    public void CurrentUiShownDoesNotAutoRecoverLaunchOrResumeBrowserWork()
+    public void MonitorOnlyStartupReplacesCurrentUiAndRemainsPassiveUntilExplicitStart()
     {
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
-        var start = program.IndexOf("mainForm.Shown += async", StringComparison.Ordinal);
-        var end = program.IndexOf("Application.Run(mainForm);", start, StringComparison.Ordinal);
+        var gate = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyStartupGate.cs");
 
-        Assert.True(start >= 0 && end > start, "Current GPTDeskTop Shown startup block was not found.");
-        var shownBlock = program[start..end];
-
-        Assert.Contains("Runtime.StartupBrowserMutationPolicy", shownBlock, StringComparison.Ordinal);
-        Assert.Contains("OperatorOnly", shownBlock, StringComparison.Ordinal);
-        Assert.Contains("Runtime.StartupAutoResumeDeferred", shownBlock, StringComparison.Ordinal);
-        Assert.Contains("ReplaceDesiredMonitorIdsAsync", shownBlock, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("CrashRecoveryService.RecoverIfPendingAsync", shownBlock, StringComparison.Ordinal);
-        Assert.DoesNotContain("InstanceHandoffCoordinator.ResumeRunningMonitorsAsync", shownBlock, StringComparison.Ordinal);
-        Assert.DoesNotContain("LastWorkingStateService.ResumeDesiredMonitorsAsync", shownBlock, StringComparison.Ordinal);
-        Assert.DoesNotContain("ResumeIfActiveAsync", shownBlock, StringComparison.Ordinal);
-        Assert.DoesNotContain("LaunchMonitorChrome", shownBlock, StringComparison.Ordinal);
-        Assert.DoesNotContain("CreateTabAsync", shownBlock, StringComparison.Ordinal);
-        Assert.DoesNotContain("SendChatMessageVerifiedAsync", shownBlock, StringComparison.Ordinal);
-        Assert.DoesNotContain("StartMonitorAsync", shownBlock, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", program, StringComparison.Ordinal);
+        Assert.Contains("GPTDeskTop-MonitorOnly-SingleInstance", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("Application.Run(mainForm);", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new MainForm(", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("CrashRecoveryService.RecoverIfPendingAsync", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("InstanceHandoffCoordinator.ResumeRunningMonitorsAsync", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("LastWorkingStateService.ResumeDesiredMonitorsAsync", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("LaunchMonitorChrome", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateTabAsync", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("SendChatMessageVerifiedAsync", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("StartMonitorAsync", program, StringComparison.Ordinal);
+        Assert.Contains("using var form = new SimpleMonitorForm(database);", gate, StringComparison.Ordinal);
+        Assert.Contains("Application.Run(form);", gate, StringComparison.Ordinal);
     }
 
     [Fact]

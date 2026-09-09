@@ -12,63 +12,57 @@ public sealed class InstanceHandoffRegressionTests
     }
 
     [Fact]
-    public void StartupAcquiresExclusiveInstanceOwnershipBeforeDatabaseRuntime()
+    public void StartupAcquiresMonitorOnlySingletonBeforeDatabaseRuntime()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
 
-        var ownership = source.IndexOf("InstanceHandoffCoordinator.AcquireOrTakeOver()", StringComparison.Ordinal);
+        var ownership = source.IndexOf("using var singleInstance = new Mutex", StringComparison.Ordinal);
         var database = source.IndexOf("database = new LocalDatabase(databasePath);", StringComparison.Ordinal);
 
-        Assert.True(ownership >= 0, "Program must acquire or safely take over single-instance ownership.");
+        Assert.True(ownership >= 0, "Program must acquire the Monitor Only singleton before creating runtime state.");
         Assert.True(database > ownership, "SQLite/runtime startup must happen only after exclusive instance ownership is established.");
-        Assert.Contains("if (!instanceStartup.IsPrimary)", source, StringComparison.Ordinal);
-        Assert.Contains("The second runtime was not started", ReadSource("src", "GPTDeskTop", "Services", "InstanceHandoffCoordinator.cs"), StringComparison.Ordinal);
+        Assert.Contains("GPTDeskTop-MonitorOnly-SingleInstance", source, StringComparison.Ordinal);
+        Assert.Contains("if (!ownsMutex)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("InstanceHandoffCoordinator.AcquireOrTakeOver", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void TakeoverCarriesAbsoluteDatabaseAndEffectiveConfigurationAcrossExeFolders()
+    public void LegacyTakeoverContractRemainsReusableButMonitorOnlyDoesNotActivateIt()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
         var coordinator = ReadSource("src", "GPTDeskTop", "Services", "InstanceHandoffCoordinator.cs");
 
-        Assert.Contains("var config = takeover?.Config ?? AppConfig.Load();", source, StringComparison.Ordinal);
-        Assert.Contains("takeover?.DatabasePath", source, StringComparison.Ordinal);
+        Assert.Contains("var config = AppConfig.Load();", source, StringComparison.Ordinal);
         Assert.Contains("ResolveDatabasePath", source, StringComparison.Ordinal);
         Assert.Contains("config.Database.FileName = databasePath;", source, StringComparison.Ordinal);
         Assert.Contains("string DatabasePath", coordinator, StringComparison.Ordinal);
         Assert.Contains("AppConfig Config", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("takeover?.Config", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("takeover?.DatabasePath", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void LiveOperatorWorkspaceIsPersistedBeforeTakeoverOfferIsCaptured()
+    public void MonitorOnlyStartupDoesNotCaptureLegacyOperatorWorkspaceForTakeover()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
 
-        var persist = source.IndexOf("await PersistOperatorLayoutForInstanceHandoffAsync(mainForm, cancellationToken);", StringComparison.Ordinal);
-        var snapshot = source.IndexOf("var savedMonitors = await database.GetSavedMonitorsAsync(cancellationToken);", persist, StringComparison.Ordinal);
-
-        Assert.True(persist >= 0 && snapshot > persist, "Current window/splitter state must be saved before the handoff snapshot is offered.");
-        Assert.Contains("PersistOperatorLayoutAsync", source, StringComparison.Ordinal);
-        Assert.Contains("BindingFlags.Instance | BindingFlags.NonPublic", source, StringComparison.Ordinal);
-        Assert.Contains("mainForm.BeginInvoke", source, StringComparison.Ordinal);
-        Assert.Contains("completion.Task.WaitAsync(cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("PersistOperatorLayoutForInstanceHandoffAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("mainForm.BeginInvoke", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("InstanceHandoffCoordinator", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void CommittedTakeoverStopsWorkersButLeavesChromeAndGeneratingChatsAlive()
+    public void MonitorOnlyHasNoCommittedLegacyTakeoverShutdownPath()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
-        var start = source.IndexOf("private static async Task CompleteCommittedInstanceHandoffAsync", StringComparison.Ordinal);
-        var end = source.IndexOf("private static async Task FinalizeGracefulShutdownAsync", start, StringComparison.Ordinal);
-        Assert.True(start >= 0 && end > start);
-        var method = source[start..end];
+        var ownership = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorChromeOwnershipGate.cs");
 
-        Assert.Contains("monitor.StopAllAsync()", method, StringComparison.Ordinal);
-        Assert.Contains("CrashRecoveryStateService.MarkCleanShutdownAsync", method, StringComparison.Ordinal);
-        Assert.Contains("Environment.Exit(0);", method, StringComparison.Ordinal);
-        Assert.DoesNotContain("CloseAllMonitorTabsAsync", method, StringComparison.Ordinal);
-        Assert.DoesNotContain("Process.Kill", method, StringComparison.Ordinal);
-        Assert.DoesNotContain("chrome.", method, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("GPTDeskTop-MonitorOnly-SingleInstance", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CompleteCommittedInstanceHandoffAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("FinalizeGracefulShutdownAsync", source, StringComparison.Ordinal);
+        Assert.Contains("Kill(entireProcessTree: true)", ownership, StringComparison.Ordinal);
+        Assert.Contains("Ordinary Chrome is untouched", ownership, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -151,7 +145,7 @@ public sealed class InstanceHandoffRegressionTests
     }
 
     [Fact]
-    public void OnlyPreviouslyRunningEnabledMonitorsAreResumed()
+    public void LegacyResumeCoordinatorRemainsBoundedButMonitorOnlyNeverAutoResumesIt()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "InstanceHandoffCoordinator.cs");
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
@@ -164,7 +158,8 @@ public sealed class InstanceHandoffRegressionTests
         Assert.Contains("pendingIds.Add(monitorId)", source, StringComparison.Ordinal);
         Assert.Contains("SavedMonitorTabResolver.Resolve(savedMonitor, tabs)", source, StringComparison.Ordinal);
         Assert.Contains("monitorService.StartMonitorAsync(savedMonitor, tab)", source, StringComparison.Ordinal);
-        Assert.Contains("monitor.IsMonitorRunning(saved.Id)", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("monitor.IsMonitorRunning(saved.Id)", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResumeRunningMonitorsAsync", program, StringComparison.Ordinal);
     }
 
     [Fact]

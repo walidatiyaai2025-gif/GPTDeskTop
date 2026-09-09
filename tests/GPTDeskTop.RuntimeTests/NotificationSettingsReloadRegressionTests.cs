@@ -12,14 +12,14 @@ public sealed class NotificationSettingsReloadRegressionTests
     }
 
     [Fact]
-    public void ProgramWiresTrayReloadIntoMainForm()
+    public void MonitorOnlyStartupDoesNotConstructLegacyTrayOrMainForm()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
 
-        Assert.Contains(
-            "new MainForm(chrome, monitor, database, notifications.ReloadSettingsAsync)",
-            source,
-            StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new MainForm(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TrayNotificationService", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("notifications.ReloadSettingsAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]

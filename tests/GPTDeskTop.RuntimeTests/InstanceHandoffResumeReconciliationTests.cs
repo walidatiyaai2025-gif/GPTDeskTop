@@ -73,18 +73,14 @@ public sealed class InstanceHandoffResumeReconciliationTests
     }
 
     [Fact]
-    public void ProgramPersistsDeferredHandoffIntentWithoutAutomaticResumePass()
+    public void MonitorOnlyStartupDoesNotPersistOrAutomaticallyResumeLegacyHandoffIntent()
     {
         var source = ReadSource("src", "GPTDeskTop", "Program.cs");
-        var requested = source.IndexOf("LastInstanceHandoffRequestedCount", StringComparison.Ordinal);
-        var resumed = source.IndexOf("LastInstanceHandoffResumedCount", requested, StringComparison.Ordinal);
-        var incomplete = source.IndexOf("LastInstanceHandoffIncompleteCount", resumed, StringComparison.Ordinal);
-        var incompleteIds = source.IndexOf("LastInstanceHandoffIncompleteIds", incomplete, StringComparison.Ordinal);
 
-        Assert.True(requested >= 0 && resumed > requested && incomplete > resumed && incompleteIds > incomplete);
-        Assert.Contains("LastWorkingStateService.ReplaceDesiredMonitorIdsAsync", source, StringComparison.Ordinal);
-        Assert.Contains("LastInstanceHandoffResumedCount\", \"0\"", source, StringComparison.Ordinal);
-        Assert.Contains("Runtime.StartupAutoResumeDeferred", source, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", source, StringComparison.Ordinal);
+        Assert.Contains("GPTDeskTop-MonitorOnly-SingleInstance", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("LastInstanceHandoffRequestedCount", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("LastWorkingStateService.ReplaceDesiredMonitorIdsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("InstanceHandoffCoordinator.ResumeRunningMonitorsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("InstanceHandoffResumeReconciler.ReconcileAsync", source, StringComparison.Ordinal);
     }
