@@ -12,18 +12,15 @@ public sealed class SupportBundleUiRegressionTests
     }
 
     [Fact]
-    public void SupportLauncherIsBoundToRuntimeHealthExpansion()
+    public void MonitorOnlyStartupDoesNotConstructLegacyRuntimeHealthSupportLauncher()
     {
         var program = ReadSource("src", "GPTDeskTop", "Program.cs");
 
-        Assert.Contains("SupportDiagnosticsControl? supportDiagnostics = null;", program, StringComparison.Ordinal);
-        Assert.Contains("void EnsureSupportDiagnostics()", program, StringComparison.Ordinal);
-        Assert.Contains("new SupportBundleService(chrome, monitor, database, config)", program, StringComparison.Ordinal);
-        Assert.Contains("new SupportDiagnosticsControl(supportBundleService)", program, StringComparison.Ordinal);
-        Assert.Contains("Visible = runtimeHealth.IsExpanded", program, StringComparison.Ordinal);
-        Assert.Contains("if (runtimeHealth.IsExpanded)", program, StringComparison.Ordinal);
-        Assert.Contains("EnsureSupportDiagnostics();", program, StringComparison.Ordinal);
-        Assert.Contains("supportDiagnostics.Visible = runtimeHealth.IsExpanded", program, StringComparison.Ordinal);
+        Assert.Contains("MonitorOnlyStartupGate.Run(database);", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("SupportDiagnosticsControl", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("SupportBundleService", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("RuntimeHealthControl", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("new MainForm(", program, StringComparison.Ordinal);
     }
 
     [Fact]
