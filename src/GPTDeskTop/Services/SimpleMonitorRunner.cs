@@ -217,7 +217,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 try
                 {
                     activeTab = await RequireActiveTargetAsync(session, activeTab, cancellationToken).ConfigureAwait(false);
-                    before = await ReadPassiveStateResilientAsync(session.Chrome, activeTab, cancellationToken).ConfigureAwait(false);
+                    before = await ReadPassiveStateResilientAsync(session, activeTab, cancellationToken).ConfigureAwait(false);
                     await HandleRateLimitIfNeededAsync(session, activeTab, cancellationToken).ConfigureAwait(false);
 
                     if (HasConversationError(before))
@@ -244,7 +244,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     await using var sendPermit = await _safety.AcquireSendPermitAsync(
                         session.Chrome,
                         token => RequireActiveTargetAsync(session, activeTab, token),
-                        (liveTab, token) => ReadPassiveStateResilientAsync(session.Chrome, liveTab, token),
+                        (liveTab, token) => ReadPassiveStateResilientAsync(session, liveTab, token),
                         status => SetStatus(status, "SendGate"),
                         cancellationToken).ConfigureAwait(false);
 
@@ -386,7 +386,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 try
                 {
                     activeTab = await RequireActiveTargetAsync(session, activeTab, cancellationToken).ConfigureAwait(false);
-                    var recheck = await ReadPassiveStateResilientAsync(session.Chrome, activeTab, cancellationToken).ConfigureAwait(false);
+                    var recheck = await ReadPassiveStateResilientAsync(session, activeTab, cancellationToken).ConfigureAwait(false);
                     await HandleRateLimitIfNeededAsync(session, activeTab, cancellationToken).ConfigureAwait(false);
                     if (HasConversationError(recheck))
                     {
@@ -464,7 +464,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                         }
                         try
                         {
-                            _ = await InvokePassiveStateReaderAsync(session.Chrome, live, cancellationToken).ConfigureAwait(false);
+                            _ = await ReadPassiveStateResilientAsync(session, live, cancellationToken).ConfigureAwait(false);
                             _lastRecovery = recoveryCycle == 0 ? "Healthy" : $"Recovered after clean retry {recoveryCycle}";
                             _lastTransientError = string.Empty;
                             _lastError = string.Empty;
@@ -572,7 +572,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             try
             {
                 tab = await RequireActiveTargetAsync(session, activeTab, cancellationToken).ConfigureAwait(false);
-                state = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+                state = await ReadPassiveStateResilientAsync(session, tab, cancellationToken).ConfigureAwait(false);
             }
             catch (ConversationTargetException)
             {
@@ -604,7 +604,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         while (true)
         {
             var tab = await RequireActiveTargetAsync(session, activeTab, cancellationToken).ConfigureAwait(false);
-            var state = await ReadPassiveStateResilientAsync(session.Chrome, tab, cancellationToken).ConfigureAwait(false);
+            var state = await ReadPassiveStateResilientAsync(session, tab, cancellationToken).ConfigureAwait(false);
             await HandleRateLimitIfNeededAsync(session, tab, cancellationToken).ConfigureAwait(false);
             if (HasConversationError(state)) return false;
 
@@ -650,11 +650,12 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
     }
 
     private async Task<ChatPageState> ReadPassiveStateResilientAsync(
-        ChromeDevToolsService chrome,
+        SimpleMonitorProfileSession session,
         ChromeTab tab,
         CancellationToken cancellationToken)
     {
         const int maxAttempts = 4;
+        var chrome = session.Chrome;
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
@@ -683,13 +684,49 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             catch (Exception ex) when (IsTransientRuntimeEvaluateTimeout(ex))
             {
                 _consecutivePassiveReadFailures++;
-                _lastRecovery = "Exhausted";
+                _lastRecovery = "Waiting 60s for managed Chrome restart";
                 _lastTransientError = ex.Message;
-                _lastError = ex.Message;
-                _lastCdpEvent = "Runtime.evaluate timeout exhausted";
-                PublishInspector("ConversationRollover");
-                throw new ConversationTargetException(
-                    "Chrome DevTools passive state remained unavailable before the next send.", ex);
+                _lastError = string.Empty;
+                _lastCdpEvent = "Runtime.evaluate timeout exhausted; managed restart scheduled";
+                SetStatus(
+                    "Runtime.evaluate timeout persisted after safe passive retries. Start Monitor stays active; waiting 60 seconds before restarting GPTDeskTop-managed Chrome only.",
+                    "WaitingRuntimeEvaluateRestart");
+
+                try
+                {
+                    await RuntimeEvaluateTimeoutRecoveryService.RestartAfterDelayAsync(
+                        session,
+                        status => SetStatus(status, "RecoveringRuntimeEvaluate"),
+                        cancellationToken).ConfigureAwait(false);
+                    _consecutivePassiveReadFailures = 0;
+                    _lastRecovery = "Managed Chrome restarted; monitor resuming";
+                    _lastTransientError = ex.Message;
+                    _lastError = string.Empty;
+                    _lastCdpEvent = "Runtime.evaluate managed Chrome recovery complete";
+                    PublishInspector("RuntimeEvaluateRecovered");
+                    throw new ConversationTargetException(
+                        "Runtime.evaluate timeout recovery restarted managed Chrome. Rebuilding a fresh target and resuming from the existing pending/checkpoint state.",
+                        ex);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (ConversationTargetException)
+                {
+                    throw;
+                }
+                catch (Exception recoveryException)
+                {
+                    _lastRecovery = "Managed Chrome restart failed safely";
+                    _lastTransientError = ex.Message;
+                    _lastError = recoveryException.Message;
+                    _lastCdpEvent = "Runtime.evaluate managed restart failed; no send mutation";
+                    PublishInspector("RuntimeEvaluateRecoveryFailed");
+                    throw new ConversationTargetException(
+                        $"Runtime.evaluate timeout recovery could not restart the managed Chrome safely ({recoveryException.Message}). Pending/checkpoint state was preserved.",
+                        new AggregateException(ex, recoveryException));
+                }
             }
         }
 
