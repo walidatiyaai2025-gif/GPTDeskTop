@@ -62,13 +62,14 @@ public sealed class SimpleMonitorRateLimitSafetyRegressionTests
         Assert.Contains("No message will be sent or retried", safety, StringComparison.Ordinal);
         Assert.Contains("No physical send yet", safety, StringComparison.Ordinal);
 
-        var senderCall = runner.IndexOf("session.Chrome.SendChatMessageVerifiedAsync(", StringComparison.Ordinal);
+        var senderCall = runner.IndexOf("session.Chrome.SendChatMessageWithOutcomeAsync(", StringComparison.Ordinal);
         var uncertainCatch = runner.IndexOf("catch (Exception ex)", senderCall, StringComparison.Ordinal);
-        var falseBranch = runner.IndexOf("if (!sent)", senderCall, StringComparison.Ordinal);
+        var falseBranch = runner.IndexOf("if (delivery == VerifiedDeliveryOutcome.Ambiguous)", senderCall, StringComparison.Ordinal);
         var safePreSendCatch = runner.IndexOf("catch (ConversationTargetException ex)", falseBranch, StringComparison.Ordinal);
         Assert.True(senderCall >= 0 && uncertainCatch > senderCall && falseBranch > uncertainCatch && safePreSendCatch > falseBranch);
 
-        var uncertainOutcome = runner[uncertainCatch..falseBranch];
+        var notSubmitted = runner.IndexOf("if (delivery == VerifiedDeliveryOutcome.NotSubmitted)", uncertainCatch, StringComparison.Ordinal);
+        var uncertainOutcome = runner[uncertainCatch..notSubmitted];
         Assert.DoesNotContain("RollOverBeforeSendAsync", uncertainOutcome, StringComparison.Ordinal);
         Assert.DoesNotContain("continue;", uncertainOutcome, StringComparison.Ordinal);
 

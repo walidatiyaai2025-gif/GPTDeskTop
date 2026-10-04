@@ -875,7 +875,7 @@ public sealed class ChromeDevToolsService
         }
     }
 
-    public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default)
+    public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default, Action<bool>? physicalSubmitState = null)
     {
         var preparationDecision = await ReadComposerDecisionAsync(tab, requireSendReady: false, cancellationToken);
         if (preparationDecision != ComposerAutomationDecision.ReadyToPrepare)
@@ -952,11 +952,44 @@ public sealed class ChromeDevToolsService
         })()
         """;
 
-        var submitted = await EvaluateAsync(tab, submitExpression, cancellationToken, false);
+        // Only this command can click Send. Preparation/read failures are definitely unsent.
+        // Mark BEFORE dispatch: a lost reply cannot prove the click did not happen.
+        cancellationToken.ThrowIfCancellationRequested();
+        physicalSubmitState?.Invoke(true);
+        var submitted = await SendCommandAsync(tab, "Runtime.evaluate",
+            new { expression = submitExpression, returnByValue = true, awaitPromise = false, userGesture = true },
+            cancellationToken, extractRuntimeValue: true);
+        if (submitted.ValueKind == JsonValueKind.False)
+            physicalSubmitState?.Invoke(false); // Explicit JS acknowledgement: no click occurred.
         return submitted.ValueKind == JsonValueKind.True;
     }
 
     public async Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default, bool requireNewTurn = false)
+        => await SendChatMessageWithOutcomeAsync(tab, message, cancellationToken, requireNewTurn,
+            readOnlyReconciliation: false).ConfigureAwait(false) == VerifiedDeliveryOutcome.Delivered;
+
+    public async Task<VerifiedDeliveryOutcome> SendChatMessageWithOutcomeAsync(
+        ChromeTab tab, string message, CancellationToken cancellationToken = default,
+        bool requireNewTurn = false, bool readOnlyReconciliation = true, Action? reconciling = null)
+    {
+        var attempt = new VerifiedDeliveryAttempt();
+        try
+        {
+            var delivered = await SendChatMessageVerifiedCoreAsync(tab, message, attempt,
+                cancellationToken, requireNewTurn, readOnlyReconciliation, reconciling).ConfigureAwait(false);
+            return attempt.Complete(delivered);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            ExceptionLogService.Log(ex, "ChromeDevToolsService.TypedDelivery", null, tab.Id, tab.Title);
+            return attempt.Complete(false);
+        }
+    }
+
+    private async Task<bool> SendChatMessageVerifiedCoreAsync(ChromeTab tab, string message,
+        VerifiedDeliveryAttempt attempt, CancellationToken cancellationToken, bool requireNewTurn,
+        bool readOnlyReconciliation, Action? reconciling)
     {
         var expected = message.Trim();
         if (expected.Length == 0)
@@ -1009,6 +1042,18 @@ public sealed class ChromeDevToolsService
         while (DateTimeOffset.UtcNow < deadline || unacknowledgedSubmitSinceUtc is not null)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (readOnlyReconciliation && attempt.SubmitMayHaveOccurred)
+            {
+                reconciling?.Invoke();
+                var receipt = await ReconcileDeliveryReadOnlyAsync(tab, expected, before.Count,
+                    unacknowledgedSubmitOriginUrl!, cancellationToken).ConfigureAwait(false);
+                if (receipt == VerifiedDeliveryOutcome.Delivered) return true;
+                // Missing target, partial hydration, rendered error or transport failure never authorizes
+                // a second click, reload or new chat. Cancellation exits without claiming delivery.
+                await Task.Delay(1500, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
 
             var current = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
             if (!current.Success)
@@ -1143,12 +1188,26 @@ public sealed class ChromeDevToolsService
             bool submitted;
             try
             {
-                submitted = await SendChatMessageAsync(tab, message, cancellationToken);
+                submitted = await SendChatMessageAsync(tab, message, cancellationToken, attempt.RecordDispatch);
+                if (!submitted && attempt.SubmitMayHaveOccurred)
+                {
+                    // A non-boolean CDP result is not an explicit no-click acknowledgement.
+                    unacknowledgedSubmitOriginUrl = tab.Url;
+                    unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
+                    continue;
+                }
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
             {
-                // SendChatMessageAsync mutates the editor before the final Runtime.evaluate click.
-                // A transport loss here has an unknown physical outcome, so reconcile before any retry.
+                if (!attempt.SubmitMayHaveOccurred)
+                {
+                    // Draft preparation / readiness failed before the click command was dispatched.
+                    await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+                // A transport loss during the click command has an unknown physical outcome.
+                // Reconcile before any retry; Monitor Only reconciliation is strictly read-only.
                 submitAttempts++;
                 unacknowledgedSubmitOriginUrl = tab.Url;
                 unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
@@ -1159,6 +1218,12 @@ public sealed class ChromeDevToolsService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                if (readOnlyReconciliation && attempt.SubmitMayHaveOccurred)
+                {
+                    unacknowledgedSubmitOriginUrl = tab.Url;
+                    unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
+                    continue;
+                }
                 ExceptionLogService.Log(ex, "ChromeDevToolsService.SendChatMessageVerified", null, tab.Id, tab.Title);
                 VerifiedSendDiagnostics.Record("FailedClosed", "nonrecoverable-send-exception", submitAttempts);
                 return false;
@@ -1219,6 +1284,7 @@ public sealed class ChromeDevToolsService
             VerifiedSendDiagnostics.Record("AwaitingReceipt", "physical-submit-unacknowledged", submitAttempts);
 
             await Task.Delay(300, cancellationToken);
+            if (readOnlyReconciliation) continue; // Verify identity before accepting a receipt.
             var after = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
             if (after.Success && after.Count > before.Count && string.Equals(after.LastText, expected, StringComparison.Ordinal))
             {
@@ -1229,6 +1295,36 @@ public sealed class ChromeDevToolsService
 
         VerifiedSendDiagnostics.Record("FailedClosed", "verified-send-deadline-without-receipt", submitAttempts);
         return false;
+    }
+
+    private async Task<VerifiedDeliveryOutcome> ReconcileDeliveryReadOnlyAsync(
+        ChromeTab tab, string expected, int baselineCount, string originUrl,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var liveTabs = await GetTabsAsync(cancellationToken).ConfigureAwait(false);
+            // Root chats may ONLY rebind to the same target. Established chats may rebind by
+            // the same durable conversation identity if Chrome replaced their target.
+            var tracked = new ChromeTab { Id = tab.Id, Url = originUrl };
+            var live = MonitorDeliveryRecoveryPolicy.FindBestBinding(liveTabs, tracked);
+            if (live is null || !MonitorDeliveryRecoveryPolicy.IsDeliveryBindingAllowed(
+                    tracked.Id, originUrl, live.Id, live.Url))
+                return VerifiedDeliveryOutcome.Ambiguous;
+            RebindTab(tab, live);
+            var snapshot = await TryGetUserMessageSnapshotAsync(tab, cancellationToken).ConfigureAwait(false);
+            // URL promotion is identity evidence, never a delivery receipt by itself.
+            if (snapshot.Success && snapshot.Count > baselineCount
+                && string.Equals(snapshot.LastText, expected, StringComparison.Ordinal))
+                return VerifiedDeliveryOutcome.Delivered;
+            return VerifiedDeliveryOutcome.Ambiguous;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+        {
+            _sessionPool.Invalidate(tab.Id);
+            return VerifiedDeliveryOutcome.Ambiguous;
+        }
     }
 
     private enum UnacknowledgedSubmitReconciliationResult

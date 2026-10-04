@@ -66,6 +66,15 @@ internal static class MonitorDeliveryRecoveryPolicy
         return string.IsNullOrWhiteSpace(origin.AbsolutePath.Trim('/'));
     }
 
+    internal static bool IsDeliveryBindingAllowed(string targetId, string originUrl, string liveId, string liveUrl)
+    {
+        if (RuntimeHealthPresentation.IsChatGptConversationUrl(originUrl))
+            return ChatGptConversationIdentity.IsSame(originUrl, liveUrl);
+        return string.Equals(targetId, liveId, StringComparison.Ordinal)
+            && (string.Equals(originUrl, liveUrl, StringComparison.Ordinal)
+                || IsFreshChatPromotion(originUrl, liveUrl));
+    }
+
     internal static ChromeTab? FindBestBinding(IReadOnlyCollection<ChromeTab> liveTabs, ChromeTab trackedTab)
     {
         ArgumentNullException.ThrowIfNull(liveTabs);

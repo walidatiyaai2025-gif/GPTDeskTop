@@ -78,7 +78,7 @@ public sealed class SimpleMonitorModeRegressionTests
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
         var chrome = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
 
-        Assert.Contains("session.Chrome.SendChatMessageVerifiedAsync(", runner, StringComparison.Ordinal);
+        Assert.Contains("session.Chrome.SendChatMessageWithOutcomeAsync(", runner, StringComparison.Ordinal);
         Assert.Contains("requireNewTurn: true", runner, StringComparison.Ordinal);
         Assert.DoesNotContain("SimpleMonitorVerifiedSender.SendOnceAndVerifyAsync", runner, StringComparison.Ordinal);
         Assert.Contains("public async Task<bool> SendChatMessageVerifiedAsync", chrome, StringComparison.Ordinal);

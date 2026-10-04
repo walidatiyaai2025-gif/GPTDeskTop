@@ -82,7 +82,7 @@ public sealed class VerifiedSendTaskCancellationSelfHealRegressionTests
         Assert.Contains("const int maxSubmitAttempts = 2", method, StringComparison.Ordinal);
         Assert.Contains("RetryAuthorized", method, StringComparison.Ordinal);
         Assert.Contains("stable-absence-after-refresh", method, StringComparison.Ordinal);
-        Assert.Equal(1, Count(method, "submitted = await SendChatMessageAsync(tab, message, cancellationToken)"));
+        Assert.Equal(1, Count(method, "submitted = await SendChatMessageAsync(tab, message, cancellationToken, attempt.RecordDispatch)"));
         Assert.DoesNotContain("Task.Run", method, StringComparison.Ordinal);
         Assert.DoesNotContain("Timer", method, StringComparison.Ordinal);
     }

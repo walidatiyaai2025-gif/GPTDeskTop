@@ -129,11 +129,22 @@ jobs:
           Copy-Item 'Output/Setup/GPTDeskTop-Setup.exe' 'Dist/GPTDeskTop-Setup.exe' -Force
           Compress-Archive -Path 'Output/Setup/*' -DestinationPath 'Dist/GPTDeskTop-Windows-x64.zip' -Force
 
+          $version = '${{ steps.release_version.outputs.version }}'
+          $portableName = "GPTDeskTop-Portable-$version-win-x64.zip"
+          @{
+            ProductVersion = $version
+            SourceSha = '${{ github.sha }}'
+            WorkflowRun = '${{ github.run_id }}'
+            GeneratedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+          } | ConvertTo-Json | Set-Content 'Output/Publish/build-manifest.json' -Encoding utf8
+          Compress-Archive -Path 'Output/Publish/*' -DestinationPath "Dist/$portableName" -Force
+          $portableHash = (Get-FileHash "Dist/$portableName" -Algorithm SHA256).Hash.ToLowerInvariant()
           $exeHash = (Get-FileHash 'Dist/GPTDeskTop-Setup.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           $zipHash = (Get-FileHash 'Dist/GPTDeskTop-Windows-x64.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
           @(
             "$exeHash  GPTDeskTop-Setup.exe"
             "$zipHash  GPTDeskTop-Windows-x64.zip"
+            "$portableHash  $portableName"
           ) | Set-Content -Path 'Dist/SHA256SUMS.txt' -Encoding ascii
 
           if ((Get-Item 'Dist/GPTDeskTop-Windows-x64.zip').Length -le 0) { throw 'Release ZIP is empty.' }
@@ -178,6 +189,7 @@ jobs:
           gh release create $tag `
             'Dist/GPTDeskTop-Setup.exe' `
             'Dist/GPTDeskTop-Windows-x64.zip' `
+            "Dist/GPTDeskTop-Portable-$version-win-x64.zip" `
             'Dist/SHA256SUMS.txt' `
             --repo '${{ github.repository }}' `
             --target '${{ github.sha }}' `
@@ -194,7 +206,7 @@ jobs:
           $version = '${{ steps.release_version.outputs.version }}'
           $tag = "v$version-build.${{ github.run_number }}"
           $assets = gh release view $tag --repo '${{ github.repository }}' --json assets --jq '.assets[].name'
-          $required = @('GPTDeskTop-Setup.exe', 'GPTDeskTop-Windows-x64.zip', 'SHA256SUMS.txt')
+          $required = @('GPTDeskTop-Setup.exe', 'GPTDeskTop-Windows-x64.zip', "GPTDeskTop-Portable-$version-win-x64.zip", 'SHA256SUMS.txt')
           foreach ($name in $required) {
             if ($assets -notcontains $name) { throw "Published GitHub Release is missing required asset: $name" }
           }
