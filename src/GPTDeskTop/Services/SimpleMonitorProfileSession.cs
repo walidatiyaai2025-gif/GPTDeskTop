@@ -189,15 +189,44 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(tab);
         await EnsureAttachedOrThrowAsync(cancellationToken).ConfigureAwait(false);
         var tabs = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
-        var live = tabs.FirstOrDefault(candidate => string.Equals(candidate.Id, tab.Id, StringComparison.Ordinal));
+        var originalId = tab.Id;
+        var live = tabs.FirstOrDefault(candidate => string.Equals(candidate.Id, originalId, StringComparison.Ordinal));
         if (live is null && TryGetConversationId(tab.Url, out var expectedId))
         {
             live = tabs.FirstOrDefault(candidate =>
                 TryGetConversationId(candidate.Url, out var actualId)
                 && string.Equals(expectedId, actualId, StringComparison.Ordinal));
         }
+
+        HashSet<string>? freshBaseline = null;
+        if (live is null)
+        {
+            lock (_freshTargetSync)
+            {
+                if (_freshTargetBaselines.TryGetValue(originalId, out var stored))
+                    freshBaseline = new HashSet<string>(stored, StringComparer.Ordinal);
+            }
+
+            if (freshBaseline is not null)
+                live = NewChatStableTargetSelector.SelectLiveFreshTarget(tab, freshBaseline, tabs);
+        }
+
         if (live is null) return null;
+
         CopyTab(tab, live);
+
+        if (freshBaseline is not null && !string.Equals(originalId, tab.Id, StringComparison.Ordinal))
+        {
+            // Preserve the original pre-create ownership baseline across any number of CDP target
+            // replacements so later /c/{conversation-id} promotion is still attributable to this
+            // exact fresh-chat workflow.
+            lock (_freshTargetSync)
+            {
+                _freshTargetBaselines.Remove(originalId);
+                _freshTargetBaselines[tab.Id] = freshBaseline;
+            }
+        }
+
         return tab;
     }
 
