@@ -970,13 +970,15 @@ public sealed class ChromeDevToolsService
 
     public async Task<VerifiedDeliveryOutcome> SendChatMessageWithOutcomeAsync(
         ChromeTab tab, string message, CancellationToken cancellationToken = default,
-        bool requireNewTurn = false, bool readOnlyReconciliation = true, Action? reconciling = null)
+        bool requireNewTurn = false, bool readOnlyReconciliation = true, Action? reconciling = null,
+        TimeSpan? readOnlyReconciliationTimeout = null)
     {
         var attempt = new VerifiedDeliveryAttempt();
         try
         {
             var delivered = await SendChatMessageVerifiedCoreAsync(tab, message, attempt,
-                cancellationToken, requireNewTurn, readOnlyReconciliation, reconciling).ConfigureAwait(false);
+                cancellationToken, requireNewTurn, readOnlyReconciliation, reconciling,
+                readOnlyReconciliationTimeout).ConfigureAwait(false);
             return attempt.Complete(delivered);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -989,7 +991,7 @@ public sealed class ChromeDevToolsService
 
     private async Task<bool> SendChatMessageVerifiedCoreAsync(ChromeTab tab, string message,
         VerifiedDeliveryAttempt attempt, CancellationToken cancellationToken, bool requireNewTurn,
-        bool readOnlyReconciliation, Action? reconciling)
+        bool readOnlyReconciliation, Action? reconciling, TimeSpan? readOnlyReconciliationTimeout)
     {
         var expected = message.Trim();
         if (expected.Length == 0)
@@ -1001,6 +1003,9 @@ public sealed class ChromeDevToolsService
         const int maxSubmitAttempts = 2;
         var receiptGrace = TimeSpan.FromSeconds(3);
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        var reconciliationTimeout = readOnlyReconciliationTimeout is { } requestedTimeout && requestedTimeout > TimeSpan.Zero
+            ? requestedTimeout
+            : TimeSpan.FromSeconds(30);
         VerifiedSendDiagnostics.Record("Baseline", "reading-baseline", 0);
 
         var before = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
@@ -1050,7 +1055,14 @@ public sealed class ChromeDevToolsService
                     unacknowledgedSubmitOriginUrl!, cancellationToken).ConfigureAwait(false);
                 if (receipt == VerifiedDeliveryOutcome.Delivered) return true;
                 // Missing target, partial hydration, rendered error or transport failure never authorizes
-                // a second click, reload or new chat. Cancellation exits without claiming delivery.
+                // a second click, reload or new chat. Keep the observation window bounded so Monitor Only
+                // cannot remain silently stuck in Sending forever; timeout remains Ambiguous, never Unsent.
+                if (unacknowledgedSubmitSinceUtc is not null
+                    && DateTimeOffset.UtcNow - unacknowledgedSubmitSinceUtc.Value >= reconciliationTimeout)
+                {
+                    VerifiedSendDiagnostics.Record("FailedClosed", "read-only-reconciliation-timeout", submitAttempts);
+                    return false;
+                }
                 await Task.Delay(1500, cancellationToken).ConfigureAwait(false);
                 continue;
             }
@@ -1316,6 +1328,19 @@ public sealed class ChromeDevToolsService
             if (snapshot.Success && snapshot.Count > baselineCount
                 && string.Equals(snapshot.LastText, expected, StringComparison.Ordinal))
                 return VerifiedDeliveryOutcome.Delivered;
+
+            // The pre-submit gate verified this target was idle. Generation beginning on the same
+            // allowed target after dispatch is positive acceptance evidence even when the user-turn
+            // DOM receipt is temporarily late. It is read-only evidence and never authorizes another click.
+            var readiness = await ReadComposerReadinessAsync(tab, cancellationToken).ConfigureAwait(false);
+            if (readiness.IsGenerating)
+            {
+                VerifiedSendDiagnostics.Record("ReceiptConfirmed", "same-target-generation-after-submit", 1);
+                return VerifiedDeliveryOutcome.Delivered;
+            }
+            if (readiness.HasRenderedError)
+                return VerifiedDeliveryOutcome.Ambiguous;
+
             return VerifiedDeliveryOutcome.Ambiguous;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }

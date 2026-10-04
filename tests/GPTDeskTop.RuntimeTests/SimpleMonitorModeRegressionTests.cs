@@ -253,9 +253,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointFortySeven()
+    public void ProductVersionIsBumpedToTwoPointZeroPointFortyEight()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.47</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.48</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
