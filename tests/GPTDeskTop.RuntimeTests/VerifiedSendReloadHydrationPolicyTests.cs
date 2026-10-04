@@ -40,6 +40,30 @@ public sealed class VerifiedSendReloadHydrationPolicyTests
         Assert.Equal(expectedDecision, result!.ToString());
     }
 
+    [Theory]
+    [InlineData("https://chatgpt.com/", "https://chatgpt.com/c/new-id", true)]
+    [InlineData("https://chatgpt.com/?model=auto", "https://chatgpt.com/c/new-id", true)]
+    [InlineData("https://chat.openai.com/", "https://chatgpt.com/c/new-id", true)]
+    [InlineData("https://chatgpt.com/c/old-id", "https://chatgpt.com/c/new-id", false)]
+    [InlineData("https://chatgpt.com/", "https://chatgpt.com/", false)]
+    [InlineData("https://chatgpt.com/share/public-id", "https://chatgpt.com/c/new-id", false)]
+    [InlineData("https://example.com/", "https://chatgpt.com/c/new-id", false)]
+    public void FreshChatPromotionRequiresChatGptRootAndStableConversationTarget(
+        string submitOriginUrl,
+        string reboundUrl,
+        bool expected)
+    {
+        var policyType = typeof(ChatGptMonitorService).Assembly.GetType(
+            "GPTDeskTop.Services.MonitorDeliveryRecoveryPolicy",
+            throwOnError: true)!;
+        var method = policyType.GetMethod(
+            "IsFreshChatPromotion",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(policyType.FullName, "IsFreshChatPromotion");
+
+        Assert.Equal(expected, (bool)method.Invoke(null, new object?[] { submitOriginUrl, reboundUrl })!);
+    }
+
     [Fact]
     public void ReconciliationUsesHydrationPolicyAndNeedsStableUnexpectedEvidence()
     {
