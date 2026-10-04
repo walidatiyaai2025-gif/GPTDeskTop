@@ -1088,12 +1088,11 @@ public sealed class ChromeDevToolsService
                 // A brand-new ChatGPT target starts at the site root. After the first accepted submit,
                 // ChatGPT promotes that SAME target to a stable /c/{conversation-id} URL. Rebind first;
                 // for a non-conversation origin FindBestBinding can only match the exact target ID.
-                // Therefore this is positive, read-only acceptance evidence and cannot adopt an unrelated chat.
+                // Promotion identifies the conversation; only a receipt can confirm delivery.
                 await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
                 if (MonitorDeliveryRecoveryPolicy.IsFreshChatPromotion(unacknowledgedSubmitOriginUrl, tab.Url))
                 {
-                    VerifiedSendDiagnostics.Record("ReceiptConfirmed", "fresh-chat-url-promoted", submitAttempts);
-                    return true;
+                    VerifiedSendDiagnostics.Record("Reconciling", "fresh-chat-url-promoted", submitAttempts);
                 }
 
                 try

@@ -43,7 +43,7 @@ public sealed class SmartChatAutoFollowTests
         var source = RepoFile("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
         var click = source.IndexOf("sendButton.click();", StringComparison.Ordinal);
         var rearm = source.IndexOf("autoFollow?.rearm?.('automation-send')", click, StringComparison.Ordinal);
-        var submitted = source.IndexOf("var submitted = await EvaluateAsync", rearm, StringComparison.Ordinal);
+        var submitted = source.IndexOf("var submitted = await SendCommandAsync", rearm, StringComparison.Ordinal);
         Assert.True(click >= 0);
         Assert.True(rearm > click);
         Assert.True(submitted > rearm);

@@ -20,12 +20,23 @@ public sealed class TypedDeliveryOutcomeTests
         Assert.Equal(0, endpoint.Clicks);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ClickOrLostClickReplyReconcilesReadOnlyUntilMatchingReceipt(bool loseReply)
+    [Fact]
+    public async Task ExplicitNoClickReplyRemainsDefinitelyUnsent()
     {
-        await using var endpoint = new FakeCdp { LoseClickReply = loseReply };
+        await using var endpoint = new FakeCdp { RejectClick = true };
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var outcome = await endpoint.Chrome.SendChatMessageWithOutcomeAsync(endpoint.Tab, "test", stop.Token, requireNewTurn: true);
+        Assert.Equal(VerifiedDeliveryOutcome.NotSubmitted, outcome);
+        Assert.Equal(0, endpoint.Clicks);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    public async Task ClickOrLostClickReplyReconcilesReadOnlyUntilMatchingReceipt(bool loseReply, bool promote)
+    {
+        await using var endpoint = new FakeCdp { LoseClickReply = loseReply, PromoteTarget = promote };
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var send = endpoint.Chrome.SendChatMessageWithOutcomeAsync(endpoint.Tab, "test", stop.Token, requireNewTurn: true);
         await endpoint.Clicked.Task.WaitAsync(stop.Token);
@@ -82,6 +93,8 @@ public sealed class TypedDeliveryOutcomeTests
         private readonly List<Task> _clients = new();
         public bool FailPreparation;
         public bool LoseClickReply;
+        public bool RejectClick;
+        public bool PromoteTarget = true;
         public volatile bool ShowReceipt;
         public int Clicks;
         public int Reloads;
@@ -124,7 +137,7 @@ public sealed class TypedDeliveryOutcomeTests
             {
                 if (!context.Request.IsWebSocketRequest)
                 {
-                    var bytes = JsonSerializer.SerializeToUtf8Bytes(new[] { new { id = "target", type = "page", title = "test", url = Clicks > 0 ? "https://chatgpt.com/c/new" : "https://chatgpt.com/", webSocketDebuggerUrl = _socketUrl } });
+                    var bytes = JsonSerializer.SerializeToUtf8Bytes(new[] { new { id = "target", type = "page", title = "test", url = Clicks > 0 && PromoteTarget ? "https://chatgpt.com/c/new" : "https://chatgpt.com/", webSocketDebuggerUrl = _socketUrl } });
                     context.Response.ContentType = "application/json";
                     await context.Response.OutputStream.WriteAsync(bytes, _stop.Token);
                     context.Response.Close();
@@ -151,6 +164,13 @@ public sealed class TypedDeliveryOutcomeTests
                     object value;
                     if (expression.Contains("sendButton.click()", StringComparison.Ordinal))
                     {
+                        if (RejectClick)
+                        {
+                            FailPreparation = true;
+                            var rejected = JsonSerializer.SerializeToUtf8Bytes(new { id, result = new { result = new { type = "boolean", value = false } } });
+                            await socket.SendAsync(rejected, WebSocketMessageType.Text, true, _stop.Token);
+                            continue;
+                        }
                         Interlocked.Increment(ref Clicks);
                         Clicked.TrySetResult();
                         if (LoseClickReply) { socket.Abort(); return; }

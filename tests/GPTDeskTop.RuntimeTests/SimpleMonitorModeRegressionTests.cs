@@ -96,7 +96,7 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("No sender has been entered for this iteration", runner, StringComparison.Ordinal);
         Assert.Contains("RollOverAfterCheckpointAsync", runner, StringComparison.Ordinal);
         Assert.Contains("Confirmed delivery is durable before any later read or rollover", runner, StringComparison.Ordinal);
-        Assert.Contains("The stable sender did not confirm delivery", runner, StringComparison.Ordinal);
+        Assert.Contains("The submit command was dispatched without a confirmed receipt", runner, StringComparison.Ordinal);
         Assert.Contains("automatic New Chat/resend is blocked", runner, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Fresh-chat rollover is blocked for this message", runner, StringComparison.Ordinal);
     }
@@ -253,9 +253,9 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
-    public void ProductVersionIsBumpedToTwoPointZeroPointFortySix()
+    public void ProductVersionIsBumpedToTwoPointZeroPointFortySeven()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.46</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.47</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
