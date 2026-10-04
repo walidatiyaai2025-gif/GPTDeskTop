@@ -50,6 +50,22 @@ internal static class MonitorDeliveryRecoveryPolicy
             : PostRefreshUserTurnObservation.UnexpectedChange;
     }
 
+    internal static bool IsFreshChatPromotion(string? submitOriginUrl, string? reboundUrl)
+    {
+        if (!RuntimeHealthPresentation.IsChatGptTabUrl(submitOriginUrl)
+            || RuntimeHealthPresentation.IsChatGptConversationUrl(submitOriginUrl)
+            || !RuntimeHealthPresentation.IsChatGptConversationUrl(reboundUrl))
+            return false;
+
+        if (!Uri.TryCreate(submitOriginUrl, UriKind.Absolute, out var origin))
+            return false;
+
+        // Monitor Only creates a fresh ChatGPT target at the site root. A successful first submit
+        // promotes that exact target to /c/{conversation-id}. The caller must rebind by exact target
+        // ID before using this signal, so an unrelated pre-existing conversation can never satisfy it.
+        return string.IsNullOrWhiteSpace(origin.AbsolutePath.Trim('/'));
+    }
+
     internal static ChromeTab? FindBestBinding(IReadOnlyCollection<ChromeTab> liveTabs, ChromeTab trackedTab)
     {
         ArgumentNullException.ThrowIfNull(liveTabs);

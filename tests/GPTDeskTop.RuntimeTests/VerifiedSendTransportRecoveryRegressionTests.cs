@@ -78,6 +78,33 @@ public sealed class VerifiedSendTransportRecoveryRegressionTests
     }
 
     [Fact]
+    public void FreshChatSubmitUsesSameTargetPromotionAsReadOnlyReceiptEvidence()
+    {
+        var method = VerifiedSendMethod(ServiceSource());
+
+        Assert.Contains("string? unacknowledgedSubmitOriginUrl = null;", method, StringComparison.Ordinal);
+        Assert.Contains("unacknowledgedSubmitOriginUrl = tab.Url;", method, StringComparison.Ordinal);
+        Assert.Contains("TryRefreshTabBindingAsync(tab, cancellationToken)", method, StringComparison.Ordinal);
+        Assert.Contains("MonitorDeliveryRecoveryPolicy.IsFreshChatPromotion", method, StringComparison.Ordinal);
+        Assert.Contains("fresh-chat-url-promoted", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FreshChatWithoutPromotionStaysInReadOnlyReconciliation()
+    {
+        var source = ServiceSource();
+        var helperStart = source.IndexOf("private async Task<UnacknowledgedSubmitReconciliationResult> ReconcileUnacknowledgedSubmitAsync", StringComparison.Ordinal);
+        var snapshotStart = source.IndexOf("private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync", helperStart, StringComparison.Ordinal);
+        Assert.True(helperStart >= 0 && snapshotStart > helperStart);
+        var helper = source[helperStart..snapshotStart];
+
+        Assert.Contains("RuntimeHealthPresentation.IsChatGptTabUrl(originalUrl)", helper, StringComparison.Ordinal);
+        Assert.Contains("if (!RuntimeHealthPresentation.IsChatGptConversationUrl(originalUrl))", helper, StringComparison.Ordinal);
+        Assert.Contains("return UnacknowledgedSubmitReconciliationResult.TransientInterruption;", helper, StringComparison.Ordinal);
+        Assert.Contains("Do not authorize a retry or fresh-chat rollover", helper, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ReconciliationNeedsHydratedStablePostRefreshEvidenceBeforeAuthorizingOneRetry()
     {
         var source = ServiceSource();

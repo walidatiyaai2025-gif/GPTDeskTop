@@ -999,6 +999,7 @@ public sealed class ChromeDevToolsService
 
         DateTimeOffset? sendBlockedSinceUtc = null;
         DateTimeOffset? unacknowledgedSubmitSinceUtc = null;
+        string? unacknowledgedSubmitOriginUrl = null;
         var stuckRefreshUsed = false;
         var submitAttempts = 0;
 
@@ -1037,6 +1038,17 @@ public sealed class ChromeDevToolsService
                 {
                     await Task.Delay(250, cancellationToken);
                     continue;
+                }
+
+                // A brand-new ChatGPT target starts at the site root. After the first accepted submit,
+                // ChatGPT promotes that SAME target to a stable /c/{conversation-id} URL. Rebind first;
+                // for a non-conversation origin FindBestBinding can only match the exact target ID.
+                // Therefore this is positive, read-only acceptance evidence and cannot adopt an unrelated chat.
+                await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
+                if (MonitorDeliveryRecoveryPolicy.IsFreshChatPromotion(unacknowledgedSubmitOriginUrl, tab.Url))
+                {
+                    VerifiedSendDiagnostics.Record("ReceiptConfirmed", "fresh-chat-url-promoted", submitAttempts);
+                    return true;
                 }
 
                 try
@@ -1088,6 +1100,7 @@ public sealed class ChromeDevToolsService
                     }
 
                     unacknowledgedSubmitSinceUtc = null;
+                    unacknowledgedSubmitOriginUrl = null;
                     sendBlockedSinceUtc = null;
                     VerifiedSendDiagnostics.Record("RetryAuthorized", "stable-absence-after-refresh", submitAttempts);
                     continue;
@@ -1137,6 +1150,7 @@ public sealed class ChromeDevToolsService
                 // SendChatMessageAsync mutates the editor before the final Runtime.evaluate click.
                 // A transport loss here has an unknown physical outcome, so reconcile before any retry.
                 submitAttempts++;
+                unacknowledgedSubmitOriginUrl = tab.Url;
                 unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
                 _sessionPool.Invalidate(tab.Id);
                 VerifiedSendDiagnostics.Record("AwaitingReceipt", "transport-uncertain-submit", submitAttempts);
@@ -1200,6 +1214,7 @@ public sealed class ChromeDevToolsService
             }
 
             submitAttempts++;
+            unacknowledgedSubmitOriginUrl = tab.Url;
             unacknowledgedSubmitSinceUtc = DateTimeOffset.UtcNow;
             VerifiedSendDiagnostics.Record("AwaitingReceipt", "physical-submit-unacknowledged", submitAttempts);
 
@@ -1231,8 +1246,15 @@ public sealed class ChromeDevToolsService
         CancellationToken cancellationToken)
     {
         var originalUrl = tab.Url;
-        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(originalUrl))
+        if (!RuntimeHealthPresentation.IsChatGptTabUrl(originalUrl))
             return UnacknowledgedSubmitReconciliationResult.Ambiguous;
+        if (!RuntimeHealthPresentation.IsChatGptConversationUrl(originalUrl))
+        {
+            // A fresh-chat root has no durable conversation identity yet. Lack of promotion is not
+            // proof that the physical submit failed, so keep the original operation in read-only
+            // reconciliation. Do not authorize a retry or fresh-chat rollover from this state.
+            return UnacknowledgedSubmitReconciliationResult.TransientInterruption;
+        }
 
         var receiptBeforeRefresh = await TryGetUserMessageSnapshotAsync(tab, cancellationToken);
         if (!receiptBeforeRefresh.Success)
