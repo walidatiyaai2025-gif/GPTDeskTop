@@ -792,7 +792,9 @@ public sealed class ChromeDevToolsService
         var expression = $$"""
         (() => {
           const expected = {{expectedLiteral}};
-          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
+          const editor = document.querySelector('#prompt-textarea') ||
+            document.querySelector('[data-testid="prompt-textarea"]') ||
+            document.querySelector('textarea[placeholder]');
           if (!editor) return false;
           const text = editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
             ? editor.value
@@ -881,10 +883,11 @@ public sealed class ChromeDevToolsService
         if (preparationDecision != ComposerAutomationDecision.ReadyToPrepare)
             return false;
 
-        var textLiteral = JsonSerializer.Serialize(message);
-        var setEditorExpression = $$"""
+        // Focus the current ChatGPT composer and select any stale draft, but do not mutate it
+        // through document.execCommand. Current ChatGPT uses a framework-managed contenteditable
+        // editor where execCommand can report success while leaving the visible composer empty.
+        const string focusComposerExpression = """
         (() => {
-          const text = {{textLiteral}};
           const visible = element => {
             if (!element) return false;
             const rect = element.getBoundingClientRect();
@@ -893,31 +896,61 @@ public sealed class ChromeDevToolsService
           };
           const stop = document.querySelector('button[data-testid="stop-button"]');
           if (visible(stop)) return false;
-          const editor = document.querySelector('#prompt-textarea') || document.querySelector('textarea[placeholder]');
+          const editor = document.querySelector('#prompt-textarea') ||
+            document.querySelector('[data-testid="prompt-textarea"]') ||
+            document.querySelector('textarea[placeholder]');
           if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
+
           editor.focus();
           if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
-            const setter = Object.getOwnPropertyDescriptor(editor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set;
-            setter?.call(editor, text);
-            editor.dispatchEvent(new Event('input', { bubbles: true }));
-            editor.dispatchEvent(new Event('change', { bubbles: true }));
+            try { editor.setSelectionRange(0, editor.value.length); }
+            catch { try { editor.select(); } catch { } }
           } else {
             const selection = window.getSelection();
             const range = document.createRange();
             range.selectNodeContents(editor);
             selection?.removeAllRanges();
             selection?.addRange(range);
-            document.execCommand('insertText', false, text);
-            editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
           }
           return true;
         })()
         """;
 
-        var editorPrepared = await EvaluateAsync(tab, setEditorExpression, cancellationToken, false);
-        if (editorPrepared.ValueKind != JsonValueKind.True) return false;
+        var composerFocused = await EvaluateAsync(tab, focusComposerExpression, cancellationToken, false);
+        if (composerFocused.ValueKind != JsonValueKind.True)
+            return false;
 
-        for (var readinessAttempt = 0; readinessAttempt < 6; readinessAttempt++)
+        // CDP Input.insertText is the authoritative editor mutation path. It inserts into the
+        // focused control/contenteditable using Chrome's input pipeline so ChatGPT receives the
+        // same input semantics as a real text entry. This is preparation only, not a physical send.
+        await SendCommandAsync(tab, "Input.insertText", new { text = message }, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Never authorize a physical Send click unless the visible composer contains exactly the
+        // pending message. Give framework state a short bounded window to reflect the native input.
+        var composerVerified = false;
+        for (var verificationAttempt = 0; verificationAttempt < 8; verificationAttempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await ComposerEditorMatchesExpectedAsync(tab, message, cancellationToken).ConfigureAwait(false))
+            {
+                composerVerified = true;
+                break;
+            }
+
+            if (verificationAttempt < 7)
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!composerVerified)
+        {
+            VerifiedSendDiagnostics.Record("PreparationFailed", "composer-text-mismatch", 0);
+            return false;
+        }
+
+        VerifiedSendDiagnostics.Record("Prepared", "composer-text-verified", 0);
+
+        for (var readinessAttempt = 0; readinessAttempt < 8; readinessAttempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var submitDecision = await ReadComposerDecisionAsync(tab, requireSendReady: true, cancellationToken);
@@ -925,7 +958,7 @@ public sealed class ChromeDevToolsService
                 break;
             if (submitDecision is ComposerAutomationDecision.DeferWhileGenerating or ComposerAutomationDecision.DeferForRenderedError)
                 return false;
-            if (readinessAttempt == 5) return false;
+            if (readinessAttempt == 7) return false;
             await Task.Delay(150, cancellationToken);
         }
 
@@ -940,10 +973,11 @@ public sealed class ChromeDevToolsService
           const stop = document.querySelector('button[data-testid="stop-button"]');
           if (visible(stop)) return false;
           const sendButton = document.querySelector('button[data-testid="send-button"]') ||
+            document.querySelector('button[data-testid="composer-submit-button"]') ||
             [...document.querySelectorAll('button')].find(button => {
               if (!visible(button)) return false;
               const label = button.getAttribute('aria-label') || '';
-              return /^(send|send message|إرسال|إرسال الرسالة)$/i.test(label.trim());
+              return /^(send|send message|send prompt|submit prompt|إرسال|إرسال الرسالة|إرسال المطالبة)$/i.test(label.trim());
             });
           if (!sendButton || sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true' || !visible(sendButton)) return false;
           sendButton.click();
