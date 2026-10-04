@@ -267,15 +267,17 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     // the sender later reports an uncertain result.
                     await sendPermit.RecordPhysicalAttemptAsync(CancellationToken.None).ConfigureAwait(false);
 
-                    bool sent;
+                    VerifiedDeliveryOutcome delivery;
                     try
                     {
-                        sent = await SimpleMonitorPassiveReadGate.RunAsync(
-                            () => session.Chrome.SendChatMessageVerifiedAsync(
+                        delivery = await SimpleMonitorPassiveReadGate.RunAsync(
+                            () => session.Chrome.SendChatMessageWithOutcomeAsync(
                                 activeTab,
                                 message,
                                 cancellationToken,
-                                requireNewTurn: true),
+                                requireNewTurn: true,
+                                readOnlyReconciliation: true,
+                                reconciling: () => SetStatus("Delivery pending — read-only reconciliation on the original chat; no resend.", "Reconciling")),
                             cancellationToken).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
@@ -292,7 +294,16 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                             $"The physical send outcome is uncertain ({ex.Message}). Fresh-chat rollover is blocked for this message to prevent a duplicate.");
                     }
 
-                    if (!sent)
+                    if (delivery == VerifiedDeliveryOutcome.NotSubmitted)
+                    {
+                        // The click command was never dispatched (or explicitly acknowledged no click).
+                        // Retry only through the outer safety gate, which also enforces 429/pacing.
+                        SetStatus("Not submitted — recovering the same target before another send gate check.", "PreSendRecovery");
+                        await Task.Delay(1500, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    if (delivery == VerifiedDeliveryOutcome.Ambiguous)
                     {
                         if (await TryObserveRateLimitAsync(session, activeTab, cancellationToken).ConfigureAwait(false))
                         {
@@ -301,7 +312,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                         }
 
                         throw new SimpleMonitorBlockedException(
-                            "The stable sender did not confirm delivery. Because a physical submit may have occurred, automatic New Chat/resend is blocked for this message.");
+                            "The submit command was dispatched without a confirmed receipt. Automatic New Chat/resend is blocked for this message.");
                     }
                 }
                 catch (ConversationTargetException ex)

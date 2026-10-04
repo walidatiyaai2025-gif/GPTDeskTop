@@ -63,16 +63,16 @@ public sealed class RuntimeEvaluateTimeoutAutoRestartRegressionTests
     public void PhysicalSendPathRemainsFailClosedAndCannotInvokeManagedRestart()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
-        var sendStart = runner.IndexOf("bool sent;", StringComparison.Ordinal);
+        var sendStart = runner.IndexOf("VerifiedDeliveryOutcome delivery;", StringComparison.Ordinal);
         var sendEnd = runner.IndexOf("catch (ConversationTargetException ex)", sendStart, StringComparison.Ordinal);
 
         Assert.True(sendStart >= 0);
         Assert.True(sendEnd > sendStart);
         var physicalSend = runner[sendStart..sendEnd];
 
-        Assert.Contains("SendChatMessageVerifiedAsync", physicalSend, StringComparison.Ordinal);
+        Assert.Contains("SendChatMessageWithOutcomeAsync", physicalSend, StringComparison.Ordinal);
         Assert.Contains("physical send outcome is uncertain", physicalSend, StringComparison.Ordinal);
-        Assert.Contains("automatic New Chat/resend is blocked", physicalSend, StringComparison.Ordinal);
+        Assert.Contains("Automatic New Chat/resend is blocked", physicalSend, StringComparison.Ordinal);
         Assert.DoesNotContain("RuntimeEvaluateTimeoutRecoveryService", physicalSend, StringComparison.Ordinal);
     }
 
