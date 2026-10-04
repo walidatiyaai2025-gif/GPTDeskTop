@@ -52,6 +52,35 @@ public sealed class TypedDeliveryOutcomeTests
     }
 
     [Fact]
+    public async Task SameTargetGenerationAfterDispatchConfirmsDeliveryWithoutSecondClick()
+    {
+        await using var endpoint = new FakeCdp { GenerateAfterClick = true };
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var outcome = await endpoint.Chrome.SendChatMessageWithOutcomeAsync(
+            endpoint.Tab, "test", stop.Token, requireNewTurn: true);
+        Assert.Equal(VerifiedDeliveryOutcome.Delivered, outcome);
+        Assert.Equal(1, endpoint.Clicks);
+        Assert.Equal(0, endpoint.Reloads);
+    }
+
+    [Fact]
+    public async Task NoReceiptOrGenerationTerminatesAmbiguousWithoutSecondClick()
+    {
+        await using var endpoint = new FakeCdp();
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var outcome = await endpoint.Chrome.SendChatMessageWithOutcomeAsync(
+            endpoint.Tab,
+            "test",
+            stop.Token,
+            requireNewTurn: true,
+            readOnlyReconciliation: true,
+            readOnlyReconciliationTimeout: TimeSpan.FromSeconds(2));
+        Assert.Equal(VerifiedDeliveryOutcome.Ambiguous, outcome);
+        Assert.Equal(1, endpoint.Clicks);
+        Assert.Equal(0, endpoint.Reloads);
+    }
+
+    [Fact]
     public async Task CancellationAfterDispatchCannotReturnUnsentOrClickAgain()
     {
         await using var endpoint = new FakeCdp { LoseClickReply = true };
@@ -95,6 +124,7 @@ public sealed class TypedDeliveryOutcomeTests
         public bool LoseClickReply;
         public bool RejectClick;
         public bool PromoteTarget = true;
+        public bool GenerateAfterClick;
         public volatile bool ShowReceipt;
         public int Clicks;
         public int Reloads;
@@ -189,7 +219,7 @@ public sealed class TypedDeliveryOutcomeTests
                     else if (expression.Contains("return { count:", StringComparison.Ordinal))
                         value = new { count = ShowReceipt ? 1 : 0, lastText = ShowReceipt ? "test" : "" };
                     else
-                        value = new { isGenerating = false, editorPresent = true, editorEnabled = true, sendButtonPresent = true, sendButtonEnabled = true, assistantCount = 0, lastAssistantText = "", errorText = "" };
+                        value = new { isGenerating = GenerateAfterClick && Clicks > 0, editorPresent = true, editorEnabled = true, sendButtonPresent = true, sendButtonEnabled = true, assistantCount = 0, lastAssistantText = "", errorText = "" };
                     var response = JsonSerializer.SerializeToUtf8Bytes(new { id, result = new { result = new { type = value is bool ? "boolean" : "object", value } } });
                     await socket.SendAsync(response, WebSocketMessageType.Text, true, _stop.Token);
                 }
