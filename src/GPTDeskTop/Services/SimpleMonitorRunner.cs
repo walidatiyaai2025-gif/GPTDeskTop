@@ -506,6 +506,65 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             }
 
             recoveryCycle++;
+
+            // If every bounded fresh-target attempt failed because the selected GPTDeskTop-managed
+            // CDP endpoint itself disappeared, this is a confirmed pre-submit liveness failure.
+            // Reuse the existing owner-authorized managed-Chrome restart boundary instead of parking
+            // the pending message for 15 minutes. This path is reachable only before physical send.
+            var endpointAvailable = false;
+            try
+            {
+                endpointAvailable = await session.IsAutomationSessionAvailableAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+            }
+
+            if (!endpointAvailable)
+            {
+                _lastTransientError = last?.Message ?? "The selected managed Chrome automation session is unavailable.";
+                _lastError = string.Empty;
+                _lastRecovery = $"Managed Chrome restart scheduled for clean retry {recoveryCycle}";
+                _lastCdpEvent = "Selected managed Chrome endpoint unavailable before physical submit; guarded restart scheduled";
+                SetStatus(
+                    $"SESSION RECOVERY — selected GPTDeskTop-managed Chrome disappeared before any physical submit. The pending message is still unsent. Waiting for the guarded managed-Chrome restart, then retrying the same message automatically.",
+                    "WaitingSessionRestart");
+
+                try
+                {
+                    await RuntimeEvaluateTimeoutRecoveryService.RestartAfterDelayAsync(
+                        session,
+                        status => SetStatus(status, "RecoveringSession"),
+                        cancellationToken).ConfigureAwait(false);
+
+                    _lastRecovery = $"Managed Chrome restarted after endpoint loss {recoveryCycle}";
+                    _lastCdpEvent = "Selected managed Chrome endpoint restored before physical submit";
+                    _lastTransientError = string.Empty;
+                    _lastError = string.Empty;
+                    SetStatus(
+                        "SESSION RECOVERY — selected managed Chrome is ready again. Retrying fresh-chat creation with the same pending message; no sent checkpoint changed.",
+                        "RecoveringSession");
+                    continue;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    last = ex;
+                    _lastTransientError = ex.Message;
+                    _lastRecovery = $"Managed Chrome restart failed for clean retry {recoveryCycle}";
+                    _lastCdpEvent = "Guarded managed Chrome restart failed; falling back to clean retry wait";
+                    _lastError = string.Empty;
+                }
+            }
+
             _lastTransientError = last?.Message ?? "Fresh ChatGPT target did not become ready.";
             _lastError = string.Empty;
             _lastRecovery = $"Waiting 15m for clean retry {recoveryCycle}";

@@ -60,6 +60,30 @@ public sealed class RuntimeEvaluateTimeoutAutoRestartRegressionTests
     }
 
     [Fact]
+    public void FreshTargetEndpointLossUsesGuardedManagedRestartBeforeFifteenMinuteWait()
+    {
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
+        var start = runner.IndexOf("private async Task<ChromeTab> CreateFreshTargetAsync", StringComparison.Ordinal);
+        var end = runner.IndexOf("private async Task<ChromeTab> RollOverBeforeSendAsync", start, StringComparison.Ordinal);
+
+        Assert.True(start >= 0);
+        Assert.True(end > start);
+        var freshTarget = runner[start..end];
+
+        Assert.Contains("IsAutomationSessionAvailableAsync", freshTarget, StringComparison.Ordinal);
+        Assert.Contains("RuntimeEvaluateTimeoutRecoveryService.RestartAfterDelayAsync", freshTarget, StringComparison.Ordinal);
+        Assert.Contains("Selected managed Chrome endpoint unavailable before physical submit", freshTarget, StringComparison.Ordinal);
+        Assert.Contains("CleanFreshTargetRecoveryDelay", freshTarget, StringComparison.Ordinal);
+
+        var endpointProbe = freshTarget.IndexOf("IsAutomationSessionAvailableAsync", StringComparison.Ordinal);
+        var guardedRestart = freshTarget.IndexOf("RuntimeEvaluateTimeoutRecoveryService.RestartAfterDelayAsync", StringComparison.Ordinal);
+        var fifteenMinuteFallback = freshTarget.IndexOf("CleanFreshTargetRecoveryDelay", StringComparison.Ordinal);
+
+        Assert.True(guardedRestart > endpointProbe, "Managed restart must require a failed endpoint probe.");
+        Assert.True(fifteenMinuteFallback > guardedRestart, "The 15-minute wait is fallback only after guarded endpoint-loss recovery.");
+    }
+
+    [Fact]
     public void PhysicalSendPathRemainsFailClosedAndCannotInvokeManagedRestart()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
