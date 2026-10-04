@@ -6,6 +6,52 @@ namespace GPTDeskTop.RuntimeTests;
 public sealed class NewChatStableTargetSelectorTests
 {
     [Fact]
+    public void FreshRootReplacementIsRecoveredBeforeFirstSend()
+    {
+        var opened = Tab("transient-target", "https://chatgpt.com/");
+        var baseline = new HashSet<string>(StringComparer.Ordinal) { "old-target" };
+        var replacement = Tab("replacement-target", "https://chatgpt.com/");
+
+        var selected = NewChatStableTargetSelector.SelectLiveFreshTarget(opened, baseline, new[]
+        {
+            Tab("old-target", "https://chatgpt.com/c/old-conversation"),
+            replacement
+        });
+
+        Assert.Same(replacement, selected);
+    }
+
+    [Fact]
+    public void PreexistingChatIsNeverAdoptedAsFreshRootReplacement()
+    {
+        var opened = Tab("transient-target", "https://chatgpt.com/");
+        var baseline = new HashSet<string>(StringComparer.Ordinal) { "old-target" };
+
+        var selected = NewChatStableTargetSelector.SelectLiveFreshTarget(opened, baseline, new[]
+        {
+            Tab("old-target", "https://chatgpt.com/c/old-conversation")
+        });
+
+        Assert.Null(selected);
+    }
+
+    [Fact]
+    public void MultipleNewFreshTargetsFailClosedBeforeFirstSend()
+    {
+        var opened = Tab("transient-target", "https://chatgpt.com/");
+        var baseline = new HashSet<string>(StringComparer.Ordinal) { "old-target" };
+
+        var selected = NewChatStableTargetSelector.SelectLiveFreshTarget(opened, baseline, new[]
+        {
+            Tab("old-target", "https://chatgpt.com/c/old-conversation"),
+            Tab("new-a", "https://chatgpt.com/"),
+            Tab("new-b", "https://chatgpt.com/")
+        });
+
+        Assert.Null(selected);
+    }
+
+    [Fact]
     public void SameTargetBecomingStableWins()
     {
         var opened = Tab("new-target", "https://chatgpt.com/");
