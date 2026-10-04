@@ -21,6 +21,33 @@ public sealed class TypedDeliveryOutcomeTests
     }
 
     [Fact]
+    public async Task ContentEditablePreparationUsesCdpNativeInputBeforeSingleSendClick()
+    {
+        await using var endpoint = new FakeCdp { GenerateAfterClick = true };
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var outcome = await endpoint.Chrome.SendChatMessageWithOutcomeAsync(
+            endpoint.Tab, "test", stop.Token, requireNewTurn: true);
+
+        Assert.Equal(VerifiedDeliveryOutcome.Delivered, outcome);
+        Assert.Equal(1, endpoint.InputInsertions);
+        Assert.Equal(1, endpoint.Clicks);
+    }
+
+    [Fact]
+    public async Task ComposerTextMismatchNeverAuthorizesPhysicalSubmit()
+    {
+        await using var endpoint = new FakeCdp { DropInsertedText = true };
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var submitted = await endpoint.Chrome.SendChatMessageAsync(endpoint.Tab, "test", stop.Token);
+
+        Assert.False(submitted);
+        Assert.Equal(1, endpoint.InputInsertions);
+        Assert.Equal(0, endpoint.Clicks);
+    }
+
+    [Fact]
     public async Task ExplicitNoClickReplyRemainsDefinitelyUnsent()
     {
         await using var endpoint = new FakeCdp { RejectClick = true };
@@ -125,9 +152,12 @@ public sealed class TypedDeliveryOutcomeTests
         public bool RejectClick;
         public bool PromoteTarget = true;
         public bool GenerateAfterClick;
+        public bool DropInsertedText;
         public volatile bool ShowReceipt;
+        public int InputInsertions;
         public int Clicks;
         public int Reloads;
+        public string ComposerText = string.Empty;
         public TaskCompletionSource Clicked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ChromeDevToolsService Chrome { get; }
         public ChromeTab Tab { get; }
@@ -190,23 +220,37 @@ public sealed class TypedDeliveryOutcomeTests
                     var id = command.GetProperty("id").GetInt32();
                     var method = command.GetProperty("method").GetString();
                     if (method == "Page.reload") Interlocked.Increment(ref Reloads);
+
+                    if (method == "Input.insertText")
+                    {
+                        Interlocked.Increment(ref InputInsertions);
+                        var inserted = command.GetProperty("params").TryGetProperty("text", out var textElement)
+                            ? textElement.GetString() ?? string.Empty
+                            : string.Empty;
+                        if (!DropInsertedText) ComposerText = inserted;
+                        var insertedResponse = JsonSerializer.SerializeToUtf8Bytes(new { id, result = new { } });
+                        await socket.SendAsync(insertedResponse, WebSocketMessageType.Text, true, _stop.Token);
+                        continue;
+                    }
+
                     var expression = command.GetProperty("params").TryGetProperty("expression", out var e) ? e.GetString() ?? "" : "";
                     object value;
                     if (expression.Contains("sendButton.click()", StringComparison.Ordinal))
                     {
-                        if (RejectClick)
+                        if (RejectClick || !string.Equals(ComposerText, "test", StringComparison.Ordinal))
                         {
-                            FailPreparation = true;
+                            FailPreparation = RejectClick;
                             var rejected = JsonSerializer.SerializeToUtf8Bytes(new { id, result = new { result = new { type = "boolean", value = false } } });
                             await socket.SendAsync(rejected, WebSocketMessageType.Text, true, _stop.Token);
                             continue;
                         }
                         Interlocked.Increment(ref Clicks);
+                        ComposerText = string.Empty;
                         Clicked.TrySetResult();
                         if (LoseClickReply) { socket.Abort(); return; }
                         value = true;
                     }
-                    else if (expression.Contains("const text =", StringComparison.Ordinal))
+                    else if (expression.Contains("range.selectNodeContents(editor)", StringComparison.Ordinal))
                     {
                         if (FailPreparation)
                         {
@@ -216,10 +260,15 @@ public sealed class TypedDeliveryOutcomeTests
                         }
                         value = true;
                     }
+                    else if (expression.Contains("return (text || '').trim() === expected", StringComparison.Ordinal))
+                        value = string.Equals(ComposerText.Trim(), "test", StringComparison.Ordinal);
                     else if (expression.Contains("return { count:", StringComparison.Ordinal))
                         value = new { count = ShowReceipt ? 1 : 0, lastText = ShowReceipt ? "test" : "" };
                     else
-                        value = new { isGenerating = GenerateAfterClick && Clicks > 0, editorPresent = true, editorEnabled = true, sendButtonPresent = true, sendButtonEnabled = true, assistantCount = 0, lastAssistantText = "", errorText = "" };
+                    {
+                        var sendReady = string.Equals(ComposerText, "test", StringComparison.Ordinal);
+                        value = new { isGenerating = GenerateAfterClick && Clicks > 0, editorPresent = true, editorEnabled = true, sendButtonPresent = sendReady, sendButtonEnabled = sendReady, assistantCount = 0, lastAssistantText = "", errorText = "" };
+                    }
                     var response = JsonSerializer.SerializeToUtf8Bytes(new { id, result = new { result = new { type = value is bool ? "boolean" : "object", value } } });
                     await socket.SendAsync(response, WebSocketMessageType.Text, true, _stop.Token);
                 }
