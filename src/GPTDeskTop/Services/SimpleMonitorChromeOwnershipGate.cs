@@ -97,9 +97,11 @@ internal static class SimpleMonitorChromeOwnershipGate
         ArgumentNullException.ThrowIfNull(requestedTab);
         _ = GetRegistration(selectedChrome);
 
-        status?.Invoke("SINGLE CHROME GATE — verifying one GPTDeskTop Chrome before physical send...");
-        await CloseOtherManagedSessionsAsync(selectedChrome, status, cancellationToken).ConfigureAwait(false);
-
+        // Start/recovery already owns full managed-process reconciliation. Never run synchronous
+        // Win32_Process/WMI inventory in the physical-send hot path: a slow WMI provider can otherwise
+        // hold the message forever at SendGate with no CDP error. The final send gate is intentionally
+        // bounded to the selected, already-authorized CDP endpoint and its controllable page targets.
+        status?.Invoke("SINGLE CHROME GATE — verifying selected CDP target before physical send...");
         var tabs = await selectedChrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
         var keeper = ResolveKeeper(tabs, requestedTab)
             ?? throw new InvalidOperationException("The selected Monitor Only Chrome target disappeared before send. Physical send is blocked.");
