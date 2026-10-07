@@ -120,7 +120,6 @@ internal sealed class SimpleMonitorSafetyGate
 
     private readonly LocalDatabase? _database;
     private readonly object _sync = new();
-    private readonly DateTimeOffset _startupQuietUntilUtc = DateTimeOffset.UtcNow + MinimumSendGap;
     private DurableState _state = DurableState.Empty;
     private bool _initialized;
 
@@ -317,7 +316,7 @@ internal sealed class SimpleMonitorSafetyGate
             DateTimeOffset? microBreakUntil;
             lock (_sync)
             {
-                notBefore = _startupQuietUntilUtc;
+                notBefore = DateTimeOffset.MinValue;
                 if (_state.LastPhysicalAttemptUtc is { } physical)
                     notBefore = Max(notBefore, physical + MinimumSendGap);
                 if (_state.LastResponseCompletedUtc is { } completed)
