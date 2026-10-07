@@ -21,10 +21,28 @@ internal static class SimpleMonitorVerifiedSender
 
     private const string UserTurnSnapshotExpression = """
 (() => {
-  const messages = [...document.querySelectorAll('[data-message-author-role="user"]')];
-  const last = messages.length
-    ? (messages[messages.length - 1].innerText || messages[messages.length - 1].textContent || '').trim()
-    : '';
+  const selectors = [
+    '[data-message-author-role="user"]',
+    '[data-turn="user"]',
+    '[data-author="user"]',
+    '[data-author-role="user"]',
+    '[data-message-role="user"]',
+    '[data-testid*="user-message"]',
+    '.user-message-bubble-color',
+    '[class*="user-message-bubble"]'
+  ];
+  const seen = new Set();
+  const messages = [];
+  for (const selector of selectors) {
+    for (const node of document.querySelectorAll(selector)) {
+      const turn = node.closest('[data-testid^="conversation-turn-"],article') || node;
+      if (seen.has(turn)) continue;
+      seen.add(turn);
+      messages.push(node);
+    }
+  }
+  const lastNode = messages.length ? messages[messages.length - 1] : null;
+  const last = lastNode ? (lastNode.innerText || lastNode.textContent || '').trim() : '';
   return { count: messages.length, lastText: last };
 })()
 """;
@@ -82,6 +100,8 @@ internal static class SimpleMonitorVerifiedSender
                     tab,
                     expected,
                     attempt.Before,
+                    attempt.BeforeExactCount,
+                    attempt.BeforeAssistantCount,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (SimpleMonitorSendUncertainException)
@@ -198,6 +218,53 @@ internal static class SimpleMonitorVerifiedSender
   const readEditor = editor => editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
     ? editor.value
     : (editor.innerText || editor.textContent || '');
+  const semanticUserSelectors = [
+    '[data-message-author-role="user"]',
+    '[data-turn="user"]',
+    '[data-author="user"]',
+    '[data-author-role="user"]',
+    '[data-message-role="user"]',
+    '[data-testid*="user-message"]',
+    '.user-message-bubble-color',
+    '[class*="user-message-bubble"]'
+  ];
+  const semanticAssistantSelector = [
+    '[data-message-author-role="assistant"]',
+    '[data-turn="assistant"]',
+    '[data-author="assistant"]',
+    '[data-author-role="assistant"]',
+    '[data-message-role="assistant"]',
+    '[data-testid*="assistant-message"]'
+  ].join(',');
+  const readSemanticUserTurns = () => {
+    const seen = new Set();
+    const nodes = [];
+    for (const selector of semanticUserSelectors) {
+      for (const node of document.querySelectorAll(selector)) {
+        const turn = node.closest('[data-testid^="conversation-turn-"],article') || node;
+        if (seen.has(turn)) continue;
+        seen.add(turn);
+        nodes.push(node);
+      }
+    }
+    return nodes;
+  };
+  const countExactTranscriptText = text => {
+    const wanted = normalize(text);
+    if (!wanted) return 0;
+    const root = document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
+    if (!root) return 0;
+    const excluded = node => !!node.closest(
+      'form[data-chatgpt-composer],form[data-thread-find-composer="true"],nav,aside,header,[contenteditable="true"],[role="textbox"],textarea,input,button');
+    return [...root.querySelectorAll('article,[data-testid^="conversation-turn-"],[data-testid*="conversation-turn"] div,[data-testid*="conversation-turn"] p,div,p')]
+      .filter(node => {
+        if (excluded(node)) return false;
+        if (normalize(node.innerText || node.textContent || '') !== wanted) return false;
+        return ![...node.children].some(child =>
+          !excluded(child) && normalize(child.innerText || child.textContent || '') === wanted);
+      }).length;
+  };
+  const countAssistantTurns = () => document.querySelectorAll(semanticAssistantSelector).length;
   const rateLimitPattern = /too many requests|making requests too quickly|temporarily limited access|temporarily limited access to your conversations|please wait a few minutes before trying again|rate[ -]?limit|http\s*429|error\s*429|status\s*429/i;
   const transcriptSelector = '[data-message-author-role="user"],[data-message-author-role="assistant"]';
   const rateLimitVisible = () => {
@@ -247,26 +314,28 @@ internal static class SimpleMonitorVerifiedSender
   if (normalize(readEditor(editor)) !== normalize(expected)) return empty('draft-mismatch');
   if (rateLimitVisible()) return { ...empty('rate-limited'), rateLimited: true };
 
-  const userTurns = [...document.querySelectorAll('[data-message-author-role="user"]')];
+  const userTurns = readSemanticUserTurns();
   const beforeCount = userTurns.length;
   const beforeLastText = beforeCount
     ? (userTurns[beforeCount - 1].innerText || userTurns[beforeCount - 1].textContent || '').trim()
     : '';
+  const beforeExactCount = countExactTranscriptText(expected);
+  const beforeAssistantCount = countAssistantTurns();
   const target = findSendButton(editor);
 
   if (target.button) {
     target.button.click();
     try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch { }
-    return { submitted: true, rateLimited: false, reason: '', beforeCount, beforeLastText, path: 'button' };
+    return { submitted: true, rateLimited: false, reason: '', beforeCount, beforeLastText, beforeExactCount, beforeAssistantCount, path: 'button' };
   }
 
   if (target.form && typeof target.form.requestSubmit === 'function') {
     target.form.requestSubmit();
     try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch { }
-    return { submitted: true, rateLimited: false, reason: '', beforeCount, beforeLastText, path: 'form' };
+    return { submitted: true, rateLimited: false, reason: '', beforeCount, beforeLastText, beforeExactCount, beforeAssistantCount, path: 'form' };
   }
 
-  return { submitted: false, rateLimited: false, reason: 'submit-control-not-ready', beforeCount, beforeLastText, path: '' };
+  return { submitted: false, rateLimited: false, reason: 'submit-control-not-ready', beforeCount, beforeLastText, beforeExactCount, beforeAssistantCount, path: '' };
 })()
 """;
 
@@ -290,7 +359,7 @@ internal static class SimpleMonitorVerifiedSender
         }
 
         if (value.ValueKind != JsonValueKind.Object)
-            return new AtomicSubmitResult(false, false, new UserTurnSnapshot(0, string.Empty));
+            return new AtomicSubmitResult(false, false, new UserTurnSnapshot(0, string.Empty), 0, 0);
 
         var submitted = value.TryGetProperty("submitted", out var submittedElement)
             && submittedElement.ValueKind == JsonValueKind.True;
@@ -302,11 +371,21 @@ internal static class SimpleMonitorVerifiedSender
         var beforeLastText = value.TryGetProperty("beforeLastText", out var textElement)
             ? textElement.GetString() ?? string.Empty
             : string.Empty;
+        var beforeExactCount = value.TryGetProperty("beforeExactCount", out var exactElement)
+            && exactElement.TryGetInt32(out var exactCount)
+            ? exactCount
+            : 0;
+        var beforeAssistantCount = value.TryGetProperty("beforeAssistantCount", out var assistantElement)
+            && assistantElement.TryGetInt32(out var assistantCount)
+            ? assistantCount
+            : 0;
 
         return new AtomicSubmitResult(
             submitted,
             rateLimited,
-            new UserTurnSnapshot(beforeCount, beforeLastText.Trim()));
+            new UserTurnSnapshot(beforeCount, NormalizeReceiptText(beforeLastText)),
+            beforeExactCount,
+            beforeAssistantCount);
     }
 
     private static async Task<bool> VerifyReceiptReadOnlyAsync(
@@ -314,23 +393,42 @@ internal static class SimpleMonitorVerifiedSender
         ChromeTab tab,
         string expected,
         UserTurnSnapshot before,
+        int beforeExactCount,
+        int beforeAssistantCount,
         CancellationToken cancellationToken)
     {
+        var normalizedExpected = NormalizeReceiptText(expected);
         var deadline = DateTimeOffset.UtcNow + ReceiptTimeout;
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var current = await ReadUserTurnSnapshotAsync(chrome, tab, cancellationToken).ConfigureAwait(false);
-                if (current.Count > before.Count)
+                var evidence = await ReadReceiptEvidenceAsync(chrome, tab, normalizedExpected, cancellationToken)
+                    .ConfigureAwait(false);
+
+                // Strongest receipt: the exact visible transcript text appeared after the atomic
+                // submit baseline. This survives ChatGPT changing/removing data-message-author-role.
+                if (evidence.ExactCount > beforeExactCount)
+                    return true;
+
+                if (evidence.User.Count > before.Count)
                 {
-                    if (string.Equals(current.LastText, expected, StringComparison.Ordinal))
+                    if (string.Equals(
+                            NormalizeReceiptText(evidence.User.LastText),
+                            normalizedExpected,
+                            StringComparison.Ordinal))
                         return true;
 
                     throw new SimpleMonitorSendUncertainException(
                         "A different user turn appeared after the physical submit. Automatic retry is blocked.");
                 }
+
+                // If ChatGPT is already generating or a new assistant turn appeared, the server
+                // necessarily accepted the preceding user submit. Treat that as a confirmed receipt
+                // rather than blocking merely because the user-bubble DOM changed.
+                if (evidence.IsGenerating || evidence.AssistantCount > beforeAssistantCount)
+                    return true;
             }
             catch (SimpleMonitorSendUncertainException)
             {
@@ -350,19 +448,125 @@ internal static class SimpleMonitorVerifiedSender
         }
 
         throw new SimpleMonitorSendUncertainException(
-            "The physical submit was issued, but its exact user-turn receipt was not confirmed within 15 seconds. Automatic retry is blocked.");
+            "The physical submit was issued, but neither the exact user-turn receipt nor response evidence was confirmed within 15 seconds. Automatic retry is blocked.");
     }
 
-    private static async Task<UserTurnSnapshot> ReadUserTurnSnapshotAsync(
+    private static async Task<ReceiptEvidence> ReadReceiptEvidenceAsync(
         ChromeDevToolsService chrome,
         ChromeTab tab,
+        string expected,
         CancellationToken cancellationToken)
     {
-        var value = await EvaluateAsync(chrome, tab, UserTurnSnapshotExpression, cancellationToken).ConfigureAwait(false);
-        var count = value.TryGetProperty("count", out var countElement) ? countElement.GetInt32() : 0;
-        var lastText = value.TryGetProperty("lastText", out var textElement) ? textElement.GetString() ?? string.Empty : string.Empty;
-        return new UserTurnSnapshot(count, lastText.Trim());
+        var expectedLiteral = JsonSerializer.Serialize(expected);
+        var expression = $$"""
+(() => {
+  const expected = {{expectedLiteral}};
+  const normalize = value => (value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[\u200b-\u200d\ufeff]/gi, '')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+  const visible = element => {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+  const userSelectors = [
+    '[data-message-author-role="user"]',
+    '[data-turn="user"]',
+    '[data-author="user"]',
+    '[data-author-role="user"]',
+    '[data-message-role="user"]',
+    '[data-testid*="user-message"]',
+    '.user-message-bubble-color',
+    '[class*="user-message-bubble"]'
+  ];
+  const seen = new Set();
+  const users = [];
+  for (const selector of userSelectors) {
+    for (const node of document.querySelectorAll(selector)) {
+      const turn = node.closest('[data-testid^="conversation-turn-"],article') || node;
+      if (seen.has(turn)) continue;
+      seen.add(turn);
+      users.push(node);
     }
+  }
+
+  const root = document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
+  const excluded = node => !!node.closest(
+    'form[data-chatgpt-composer],form[data-thread-find-composer="true"],nav,aside,header,[contenteditable="true"],[role="textbox"],textarea,input,button');
+  const wanted = normalize(expected);
+  const exactCount = root && wanted
+    ? [...root.querySelectorAll('article,[data-testid^="conversation-turn-"],[data-testid*="conversation-turn"] div,[data-testid*="conversation-turn"] p,div,p')]
+        .filter(node => {
+          if (!visible(node) || excluded(node)) return false;
+          if (normalize(node.innerText || node.textContent || '') !== wanted) return false;
+          return ![...node.children].some(child =>
+            !excluded(child) && normalize(child.innerText || child.textContent || '') === wanted);
+        }).length
+    : 0;
+
+  const assistantSelector = [
+    '[data-message-author-role="assistant"]',
+    '[data-turn="assistant"]',
+    '[data-author="assistant"]',
+    '[data-author-role="assistant"]',
+    '[data-message-role="assistant"]',
+    '[data-testid*="assistant-message"]'
+  ].join(',');
+  const assistantCount = document.querySelectorAll(assistantSelector).length;
+  const stop = document.querySelector('button[data-testid="stop-button"]') ||
+    [...document.querySelectorAll('button')].find(button => {
+      if (!visible(button)) return false;
+      const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`.trim();
+      return /stop generating|stop responding|إيقاف الإنشاء|إيقاف الرد/i.test(label);
+    });
+  const lastNode = users.length ? users[users.length - 1] : null;
+  return {
+    userCount: users.length,
+    lastUserText: lastNode ? normalize(lastNode.innerText || lastNode.textContent || '') : '',
+    exactCount,
+    assistantCount,
+    isGenerating: !!stop
+  };
+})()
+""";
+
+        var value = await EvaluateAsync(chrome, tab, expression, cancellationToken).ConfigureAwait(false);
+        var userCount = value.TryGetProperty("userCount", out var countElement) && countElement.TryGetInt32(out var count)
+            ? count
+            : 0;
+        var lastUserText = value.TryGetProperty("lastUserText", out var textElement)
+            ? textElement.GetString() ?? string.Empty
+            : string.Empty;
+        var exactCount = value.TryGetProperty("exactCount", out var exactElement) && exactElement.TryGetInt32(out var exact)
+            ? exact
+            : 0;
+        var assistantCount = value.TryGetProperty("assistantCount", out var assistantElement) && assistantElement.TryGetInt32(out var assistants)
+            ? assistants
+            : 0;
+        var isGenerating = value.TryGetProperty("isGenerating", out var generatingElement)
+            && generatingElement.ValueKind == JsonValueKind.True;
+
+        return new ReceiptEvidence(
+            new UserTurnSnapshot(userCount, NormalizeReceiptText(lastUserText)),
+            exactCount,
+            assistantCount,
+            isGenerating);
+    }
+
+    private static string NormalizeReceiptText(string? value)
+        => (value ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Replace('\u00a0', ' ')
+            .Replace("\u200b", string.Empty, StringComparison.Ordinal)
+            .Replace("\u200c", string.Empty, StringComparison.Ordinal)
+            .Replace("\u200d", string.Empty, StringComparison.Ordinal)
+            .Replace("\ufeff", string.Empty, StringComparison.Ordinal)
+            .Trim();
 
     private static async Task<JsonElement> EvaluateAsync(
         ChromeDevToolsService chrome,
@@ -385,7 +589,17 @@ internal static class SimpleMonitorVerifiedSender
     }
 
     private readonly record struct UserTurnSnapshot(int Count, string LastText);
-    private readonly record struct AtomicSubmitResult(bool Submitted, bool RateLimited, UserTurnSnapshot Before);
+    private readonly record struct ReceiptEvidence(
+        UserTurnSnapshot User,
+        int ExactCount,
+        int AssistantCount,
+        bool IsGenerating);
+    private readonly record struct AtomicSubmitResult(
+        bool Submitted,
+        bool RateLimited,
+        UserTurnSnapshot Before,
+        int BeforeExactCount,
+        int BeforeAssistantCount);
 }
 
 internal sealed class SimpleMonitorSendUncertainException : Exception

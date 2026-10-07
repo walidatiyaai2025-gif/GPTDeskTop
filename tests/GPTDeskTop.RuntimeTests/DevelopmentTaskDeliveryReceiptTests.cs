@@ -27,6 +27,20 @@ public sealed class DevelopmentTaskDeliveryReceiptTests
     }
 
     [Fact]
+    public void SimpleMonitorReceiptSurvivesCurrentChatGptDomAndAssistantResponseEvidence()
+    {
+        var source = File.ReadAllText(RepositoryPath("Services", "SimpleMonitorVerifiedSender.cs"));
+
+        Assert.Contains("[data-turn=\"user\"]", source, StringComparison.Ordinal);
+        Assert.Contains("[data-testid*=\"user-message\"]", source, StringComparison.Ordinal);
+        Assert.Contains("user-message-bubble-color", source, StringComparison.Ordinal);
+        Assert.Contains("countExactTranscriptText", source, StringComparison.Ordinal);
+        Assert.Contains("evidence.ExactCount > beforeExactCount", source, StringComparison.Ordinal);
+        Assert.Contains("evidence.IsGenerating || evidence.AssistantCount > beforeAssistantCount", source, StringComparison.Ordinal);
+        Assert.Contains("neither the exact user-turn receipt nor response evidence", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ChromeVerifiedSendUsesTurnStateForRepeatedTextReceipt()
     {
         var source = File.ReadAllText(RepositoryPath("Services", "ChromeDevToolsService.cs"));
