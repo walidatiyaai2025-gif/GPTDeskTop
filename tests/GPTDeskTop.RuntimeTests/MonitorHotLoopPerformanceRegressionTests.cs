@@ -48,7 +48,7 @@ public sealed class MonitorHotLoopPerformanceRegressionTests
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
 
         Assert.Contains(
-            "private const string ChatStateReadExpression = \"window.__gptDesktopChatStateCache?.version === 6 ? window.__gptDesktopChatStateCache.read() : null\";",
+            "private const string ChatStateReadExpression = \"window.__gptDesktopChatStateCache?.version === 7 ? window.__gptDesktopChatStateCache.read() : null\";",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
