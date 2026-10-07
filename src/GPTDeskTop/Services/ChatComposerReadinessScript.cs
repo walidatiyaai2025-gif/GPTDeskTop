@@ -15,19 +15,23 @@ public static class ChatComposerReadinessScript
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
 
-  const editor = document.querySelector('#prompt-textarea') ||
+  const composerForm = document.querySelector('form[data-chatgpt-composer]') ||
+    document.querySelector('form[data-thread-find-composer="true"]') ||
+    null;
+  const editor = composerForm?.querySelector(
+      '.ProseMirror[contenteditable="true"][role="textbox"],[contenteditable="true"][data-composer-markdown],[contenteditable="true"][role="textbox"],#prompt-textarea,[data-testid="prompt-textarea"],textarea[placeholder]') ||
+    document.querySelector('#prompt-textarea') ||
     document.querySelector('[data-testid="prompt-textarea"]') ||
     document.querySelector('textarea[placeholder]');
-  const composerForm = editor?.closest('form') || null;
-  const send = document.querySelector('button[data-testid="send-button"]') ||
+  const send = composerForm?.querySelector(
+      'button[type="submit"][aria-label="Send"],button[type="submit"][aria-label="إرسال"],button[data-testid="send-button"],button[data-testid="composer-submit-button"],button[type="submit"],input[type="submit"]') ||
+    document.querySelector('button[data-testid="send-button"]') ||
     document.querySelector('button[data-testid="composer-submit-button"]') ||
     [...document.querySelectorAll('button')].find(button => {
       if (!visible(button)) return false;
       const label = (button.getAttribute('aria-label') || '').trim();
       return /^(send|send message|send prompt|submit prompt|إرسال|إرسال الرسالة|إرسال المطالبة)$/i.test(label);
-    }) ||
-    [...(composerForm?.querySelectorAll('button[type="submit"],input[type="submit"]') || [])]
-      .find(control => visible(control) && !control.matches(':disabled,[aria-disabled="true"]'));
+    });
   const stop = document.querySelector('button[data-testid="stop-button"]');
 
   const editorDisabled = !editor || editor.matches(':disabled,[aria-disabled="true"]');
