@@ -792,7 +792,12 @@ public sealed class ChromeDevToolsService
         var expression = $$"""
         (() => {
           const expected = {{expectedLiteral}};
-          const editor = document.querySelector('#prompt-textarea') ||
+          const composerForm = document.querySelector('form[data-chatgpt-composer]') ||
+            document.querySelector('form[data-thread-find-composer="true"]') ||
+            null;
+          const editor = composerForm?.querySelector(
+              '.ProseMirror[contenteditable="true"][role="textbox"],[contenteditable="true"][data-composer-markdown],[contenteditable="true"][role="textbox"],#prompt-textarea,[data-testid="prompt-textarea"],textarea[placeholder]') ||
+            document.querySelector('#prompt-textarea') ||
             document.querySelector('[data-testid="prompt-textarea"]') ||
             document.querySelector('textarea[placeholder]');
           if (!editor) return false;
@@ -896,7 +901,12 @@ public sealed class ChromeDevToolsService
           };
           const stop = document.querySelector('button[data-testid="stop-button"]');
           if (visible(stop)) return false;
-          const editor = document.querySelector('#prompt-textarea') ||
+          const composerForm = document.querySelector('form[data-chatgpt-composer]') ||
+            document.querySelector('form[data-thread-find-composer="true"]') ||
+            null;
+          const editor = composerForm?.querySelector(
+              '.ProseMirror[contenteditable="true"][role="textbox"],[contenteditable="true"][data-composer-markdown],[contenteditable="true"][role="textbox"],#prompt-textarea,[data-testid="prompt-textarea"],textarea[placeholder]') ||
+            document.querySelector('#prompt-textarea') ||
             document.querySelector('[data-testid="prompt-textarea"]') ||
             document.querySelector('textarea[placeholder]');
           if (!editor || !visible(editor) || editor.matches(':disabled,[aria-disabled="true"]')) return false;
@@ -962,8 +972,9 @@ public sealed class ChromeDevToolsService
             await Task.Delay(150, cancellationToken);
         }
 
-        const string submitExpression = """
+        const string submitTargetExpression = """
         (() => {
+          const marker = 'gptdesktop-native-send-point-v1';
           const visible = element => {
             if (!element) return false;
             const rect = element.getBoundingClientRect();
@@ -971,46 +982,81 @@ public sealed class ChromeDevToolsService
             return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
           };
           const stop = document.querySelector('button[data-testid="stop-button"]');
-          if (visible(stop)) return false;
-          const editor = document.querySelector('#prompt-textarea') ||
+          if (visible(stop)) return { x: -1, y: -1, marker };
+
+          const composerForm = document.querySelector('form[data-chatgpt-composer]') ||
+            document.querySelector('form[data-thread-find-composer="true"]') ||
+            null;
+          const editor = composerForm?.querySelector(
+              '.ProseMirror[contenteditable="true"][role="textbox"],[contenteditable="true"][data-composer-markdown],[contenteditable="true"][role="textbox"],#prompt-textarea,[data-testid="prompt-textarea"],textarea[placeholder]') ||
+            document.querySelector('#prompt-textarea') ||
             document.querySelector('[data-testid="prompt-textarea"]') ||
             document.querySelector('textarea[placeholder]');
-          const composerForm = editor?.closest('form') || null;
-          const sendButton = document.querySelector('button[data-testid="send-button"]') ||
+          const scopedForm = composerForm || editor?.closest('form') || null;
+
+          const sendButton = scopedForm?.querySelector(
+              'button[type="submit"][aria-label="Send"],button[type="submit"][aria-label="إرسال"],button[data-testid="send-button"],button[data-testid="composer-submit-button"],button[type="submit"]') ||
+            document.querySelector('button[data-testid="send-button"]') ||
             document.querySelector('button[data-testid="composer-submit-button"]') ||
             [...document.querySelectorAll('button')].find(button => {
               if (!visible(button)) return false;
-              const label = button.getAttribute('aria-label') || '';
-              return /^(send|send message|send prompt|submit prompt|إرسال|إرسال الرسالة|إرسال المطالبة)$/i.test(label.trim());
-            }) ||
-            [...(composerForm?.querySelectorAll('button[type="submit"],input[type="submit"]') || [])]
-              .find(control => visible(control) && !control.matches(':disabled,[aria-disabled="true"]'));
-          if (!sendButton || sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true' || !visible(sendButton)) return false;
+              const label = (button.getAttribute('aria-label') || '').trim();
+              return /^(send|send message|send prompt|submit prompt|إرسال|إرسال الرسالة|إرسال المطالبة)$/i.test(label);
+            });
 
-          // Use the form's native submit boundary when ChatGPT exposes a real submit control.
-          // Do not click and then requestSubmit: exactly one physical submit mutation is allowed.
-          const submitForm = sendButton.form || sendButton.closest('form') || composerForm;
-          if (submitForm && typeof submitForm.requestSubmit === 'function' &&
-              sendButton instanceof HTMLButtonElement && sendButton.type === 'submit') {
-            submitForm.requestSubmit(sendButton);
-          } else {
-            sendButton.click();
-          }
-          try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch { }
-          return true;
+          if (!sendButton || sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true' || !visible(sendButton))
+            return { x: -1, y: -1, marker };
+
+          const rect = sendButton.getBoundingClientRect();
+          return {
+            x: rect.left + (rect.width / 2),
+            y: rect.top + (rect.height / 2),
+            marker
+          };
         })()
         """;
 
-        // Only this command can submit the prepared composer. Preparation/read failures are definitely unsent.
-        // Mark BEFORE dispatch: a lost reply cannot prove the click did not happen.
+        // Resolve the exact visible Send control without mutating the page.
+        var submitTarget = await SendCommandAsync(tab, "Runtime.evaluate",
+            new { expression = submitTargetExpression, returnByValue = true, awaitPromise = false },
+            cancellationToken, extractRuntimeValue: true);
+        if (submitTarget.ValueKind != JsonValueKind.Object
+            || !submitTarget.TryGetProperty("x", out var xElement)
+            || !submitTarget.TryGetProperty("y", out var yElement)
+            || !xElement.TryGetDouble(out var submitX)
+            || !yElement.TryGetDouble(out var submitY)
+            || submitX < 0
+            || submitY < 0)
+        {
+            physicalSubmitState?.Invoke(false);
+            return false;
+        }
+
+        // Physical submit boundary: dispatch one native browser mouse click at the exact center
+        // of the current composer Send button. Do not mix this with JS click/requestSubmit or Enter.
+        // Mark BEFORE mousePressed: if either CDP reply is lost, retry is forbidden and receipt
+        // reconciliation remains read-only.
         cancellationToken.ThrowIfCancellationRequested();
         physicalSubmitState?.Invoke(true);
-        var submitted = await SendCommandAsync(tab, "Runtime.evaluate",
-            new { expression = submitExpression, returnByValue = true, awaitPromise = false, userGesture = true },
-            cancellationToken, extractRuntimeValue: true);
-        if (submitted.ValueKind == JsonValueKind.False)
-            physicalSubmitState?.Invoke(false); // Explicit JS acknowledgement: no click occurred.
-        return submitted.ValueKind == JsonValueKind.True;
+        await SendCommandAsync(tab, "Input.dispatchMouseEvent",
+            new { type = "mousePressed", x = submitX, y = submitY, button = "left", buttons = 1, clickCount = 1 },
+            cancellationToken).ConfigureAwait(false);
+        await SendCommandAsync(tab, "Input.dispatchMouseEvent",
+            new { type = "mouseReleased", x = submitX, y = submitY, button = "left", buttons = 0, clickCount = 1 },
+            cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            await EvaluateAsync(tab,
+                "(() => { try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch {} return true; })()",
+                cancellationToken, false).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ExceptionLogService.Log(ex, "ChromeDevToolsService.AutoFollowAfterNativeSend", null, tab.Id, tab.Title);
+        }
+
+        return true;
     }
 
     public async Task<bool> SendChatMessageVerifiedAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default, bool requireNewTurn = false)
