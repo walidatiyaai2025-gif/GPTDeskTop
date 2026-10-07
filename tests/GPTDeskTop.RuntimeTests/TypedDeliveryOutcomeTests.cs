@@ -50,12 +50,14 @@ public sealed class TypedDeliveryOutcomeTests
     }
 
     [Fact]
-    public async Task ExplicitNoClickReplyRemainsDefinitelyUnsent()
+    public async Task MissingNativeSendTargetRemainsDefinitelyUnsent()
     {
         await using var endpoint = new FakeCdp { RejectClick = true };
-        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        var outcome = await endpoint.Chrome.SendChatMessageWithOutcomeAsync(endpoint.Tab, "test", stop.Token, requireNewTurn: true);
-        Assert.Equal(VerifiedDeliveryOutcome.NotSubmitted, outcome);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var submitted = await endpoint.Chrome.SendChatMessageAsync(endpoint.Tab, "test", stop.Token);
+
+        Assert.False(submitted);
         Assert.Equal(0, endpoint.Clicks);
         Assert.Equal(0, endpoint.MousePresses);
         Assert.Equal(0, endpoint.MouseReleases);
