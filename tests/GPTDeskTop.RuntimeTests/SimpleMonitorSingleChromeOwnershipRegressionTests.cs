@@ -31,6 +31,17 @@ public sealed class SimpleMonitorSingleChromeOwnershipRegressionTests
         Assert.Contains("CloseTabAsync", ownership, StringComparison.Ordinal);
         Assert.Contains("tabs.Count == 1", ownership, StringComparison.Ordinal);
         Assert.Contains("Physical send is blocked", ownership, StringComparison.Ordinal);
+
+        var hotGateStart = ownership.IndexOf("internal static async Task<ChromeTab> EnsureExclusiveBeforeSendAsync", StringComparison.Ordinal);
+        var hotGateEnd = ownership.IndexOf("internal static int ResolveStablePort", hotGateStart, StringComparison.Ordinal);
+        Assert.True(hotGateStart >= 0 && hotGateEnd > hotGateStart);
+        var hotGate = ownership[hotGateStart..hotGateEnd];
+        Assert.Contains("selected CDP target", hotGate, StringComparison.Ordinal);
+        Assert.Contains("GetTabsAsync", hotGate, StringComparison.Ordinal);
+        Assert.DoesNotContain("CloseOtherManagedSessionsAsync", hotGate, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReconcileManagedChromeProcessesAsync", hotGate, StringComparison.Ordinal);
+        Assert.DoesNotContain("ManagementObjectSearcher", hotGate, StringComparison.Ordinal);
+
         Assert.Contains("SimpleMonitorChromeOwnershipGate.Register", session, StringComparison.Ordinal);
         Assert.Contains("SimpleMonitorChromeOwnershipGate.Unregister", session, StringComparison.Ordinal);
     }
