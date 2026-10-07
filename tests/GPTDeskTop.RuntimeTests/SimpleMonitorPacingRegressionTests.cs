@@ -55,4 +55,18 @@ public sealed class SimpleMonitorPacingRegressionTests
         Assert.Contains("MicroBreakUntilUtc", safety, StringComparison.Ordinal);
         Assert.Contains("PersistAsync(next, CancellationToken.None)", safety, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void FirstPhysicalSendIsNotDelayedByProcessStartup()
+    {
+        var source = File.ReadAllText(Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..",
+            "src", "GPTDeskTop", "Services", "SimpleMonitorSafetyGate.cs")));
+
+        Assert.DoesNotContain("_startupQuietUntilUtc", source, StringComparison.Ordinal);
+        Assert.Contains("notBefore = DateTimeOffset.MinValue", source, StringComparison.Ordinal);
+        Assert.Contains("physical + MinimumSendGap", source, StringComparison.Ordinal);
+        Assert.Contains("completed + MinimumSendGap", source, StringComparison.Ordinal);
+    }
 }

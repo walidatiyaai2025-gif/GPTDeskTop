@@ -36,9 +36,12 @@ public sealed class SimpleMonitorRateLimitSafetyRegressionTests
         var footer = ReadSource("src", "GPTDeskTop", "UI", "MonitorOnlyExperienceController.cs");
 
         Assert.Contains("MinimumSendGap = TimeSpan.FromSeconds(30)", safety, StringComparison.Ordinal);
-        Assert.Contains("_startupQuietUntilUtc", safety, StringComparison.Ordinal);
+        Assert.DoesNotContain("_startupQuietUntilUtc", safety, StringComparison.Ordinal);
+        Assert.Contains("notBefore = DateTimeOffset.MinValue", safety, StringComparison.Ordinal);
         Assert.Contains("LastPhysicalAttemptUtc", safety, StringComparison.Ordinal);
         Assert.Contains("LastResponseCompletedUtc", safety, StringComparison.Ordinal);
+        Assert.Contains("Preparing stored message", runner, StringComparison.Ordinal);
+        Assert.Contains("MessageChanged?.Invoke(_currentMessage", runner, StringComparison.Ordinal);
         Assert.Contains("AcquireSendPermitAsync", runner, StringComparison.Ordinal);
         Assert.Contains("RecordPhysicalAttemptAsync", runner, StringComparison.Ordinal);
         Assert.Contains("RecordResponseCompletedAsync", runner, StringComparison.Ordinal);
