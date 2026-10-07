@@ -41,6 +41,26 @@ public sealed class RuntimeEvaluateTimeoutAutoRestartRegressionTests
     }
 
     [Fact]
+    public void PassiveReadRecoversKnownTargetLifecycleFailuresInsteadOfBlockingMonitor()
+    {
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
+        var start = runner.IndexOf("private async Task<ChatPageState> ReadPassiveStateResilientAsync", StringComparison.Ordinal);
+        var end = runner.IndexOf("private static Task<ChatPageState> InvokePassiveStateReaderAsync", start, StringComparison.Ordinal);
+
+        Assert.True(start >= 0);
+        Assert.True(end > start);
+        var passiveRead = runner[start..end];
+
+        Assert.Contains("ChromeTransportFailureClassifier.IsTransient(ex)", passiveRead, StringComparison.Ordinal);
+        Assert.Contains("RefreshLiveTabAsync(tab", passiveRead, StringComparison.Ordinal);
+        Assert.Contains("Transient CDP target/context change", passiveRead, StringComparison.Ordinal);
+        Assert.Contains("RecoveringCdpTarget", passiveRead, StringComparison.Ordinal);
+        Assert.Contains("throw new ConversationTargetException", passiveRead, StringComparison.Ordinal);
+        Assert.DoesNotContain("SetStatus($\"BLOCKED", passiveRead, StringComparison.Ordinal);
+        Assert.DoesNotContain("RuntimeEvaluateTimeoutRecoveryService", passiveRead, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FreshTargetEndpointLossWaitsForSameSessionBeforeFifteenMinuteFallback()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
