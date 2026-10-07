@@ -972,21 +972,36 @@ public sealed class ChromeDevToolsService
           };
           const stop = document.querySelector('button[data-testid="stop-button"]');
           if (visible(stop)) return false;
+          const editor = document.querySelector('#prompt-textarea') ||
+            document.querySelector('[data-testid="prompt-textarea"]') ||
+            document.querySelector('textarea[placeholder]');
+          const composerForm = editor?.closest('form') || null;
           const sendButton = document.querySelector('button[data-testid="send-button"]') ||
             document.querySelector('button[data-testid="composer-submit-button"]') ||
             [...document.querySelectorAll('button')].find(button => {
               if (!visible(button)) return false;
               const label = button.getAttribute('aria-label') || '';
               return /^(send|send message|send prompt|submit prompt|إرسال|إرسال الرسالة|إرسال المطالبة)$/i.test(label.trim());
-            });
+            }) ||
+            [...(composerForm?.querySelectorAll('button[type="submit"],input[type="submit"]') || [])]
+              .find(control => visible(control) && !control.matches(':disabled,[aria-disabled="true"]'));
           if (!sendButton || sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true' || !visible(sendButton)) return false;
-          sendButton.click();
+
+          // Use the form's native submit boundary when ChatGPT exposes a real submit control.
+          // Do not click and then requestSubmit: exactly one physical submit mutation is allowed.
+          const submitForm = sendButton.form || sendButton.closest('form') || composerForm;
+          if (submitForm && typeof submitForm.requestSubmit === 'function' &&
+              sendButton instanceof HTMLButtonElement && sendButton.type === 'submit') {
+            submitForm.requestSubmit(sendButton);
+          } else {
+            sendButton.click();
+          }
           try { window.__gptDesktopChatStateCache?.autoFollow?.rearm?.('automation-send'); } catch { }
           return true;
         })()
         """;
 
-        // Only this command can click Send. Preparation/read failures are definitely unsent.
+        // Only this command can submit the prepared composer. Preparation/read failures are definitely unsent.
         // Mark BEFORE dispatch: a lost reply cannot prove the click did not happen.
         cancellationToken.ThrowIfCancellationRequested();
         physicalSubmitState?.Invoke(true);
