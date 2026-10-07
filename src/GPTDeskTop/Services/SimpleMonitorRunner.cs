@@ -213,6 +213,10 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 var isLastStep = messageIndex + 1 >= messages.Count;
                 var nextMessageIndex = isLastStep ? (loop ? 0 : -1) : messageIndex + 1;
 
+                _currentMessage = runtimeMessage.OriginalIndex + 1;
+                MessageChanged?.Invoke(_currentMessage, _totalMessages, message);
+                SetStatus($"Preparing stored message {_currentMessage}/{_totalMessages} for the send gate...", "PreparingMessage");
+
                 ChatPageState before;
                 try
                 {
@@ -256,8 +260,6 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                         continue;
                     }
 
-                    _currentMessage = runtimeMessage.OriginalIndex + 1;
-                    MessageChanged?.Invoke(_currentMessage, _totalMessages, message);
                     SetStatus($"Sending stored message {_currentMessage}/{_totalMessages} in the fresh chat...", "Sending");
                     _lastCdpEvent = "ChromeDevToolsService.SendChatMessageVerifiedAsync (stable path)";
                     PublishInspector("Sending");
