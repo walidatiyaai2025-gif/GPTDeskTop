@@ -795,6 +795,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                         new AggregateException(ex, recoveryException));
                 }
             }
+        }
 
         throw new InvalidOperationException("Passive state retry loop exited unexpectedly.");
     }
