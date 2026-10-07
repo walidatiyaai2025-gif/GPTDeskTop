@@ -507,10 +507,9 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
 
             recoveryCycle++;
 
-            // If every bounded fresh-target attempt failed because the selected GPTDeskTop-managed
-            // CDP endpoint itself disappeared, this is a confirmed pre-submit liveness failure.
-            // Reuse the existing owner-authorized managed-Chrome restart boundary instead of parking
-            // the pending message for 15 minutes. This path is reachable only before physical send.
+            // Endpoint loss after Start Monitor must never kill or relaunch Chrome. The selected
+            // managed browser identity is sticky for the lifetime of this monitor run. Recover only
+            // by waiting for the exact same CDP endpoint and reattaching to that same session.
             var endpointAvailable = false;
             try
             {
@@ -529,25 +528,24 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             {
                 _lastTransientError = last?.Message ?? "The selected managed Chrome automation session is unavailable.";
                 _lastError = string.Empty;
-                _lastRecovery = $"Managed Chrome restart scheduled for clean retry {recoveryCycle}";
-                _lastCdpEvent = "Selected managed Chrome endpoint unavailable before physical submit; guarded restart scheduled";
+                _lastRecovery = $"Waiting for same managed Chrome session {recoveryCycle}";
+                _lastCdpEvent = "Selected managed Chrome endpoint unavailable before physical submit; passive same-session recovery";
                 SetStatus(
-                    $"SESSION RECOVERY — selected GPTDeskTop-managed Chrome disappeared before any physical submit. The pending message is still unsent. Waiting for the guarded managed-Chrome restart, then retrying the same message automatically.",
-                    "WaitingSessionRestart");
+                    "SESSION RECOVERY — selected GPTDeskTop-managed Chrome endpoint is unavailable before physical submit. The pending message is still unsent. Waiting for the exact same managed Chrome session; no browser will be closed or relaunched.",
+                    "WaitingSameSession");
 
                 try
                 {
-                    await RuntimeEvaluateTimeoutRecoveryService.RestartAfterDelayAsync(
-                        session,
+                    await session.RecoverAfterAuthorizedStartAsync(
                         status => SetStatus(status, "RecoveringSession"),
                         cancellationToken).ConfigureAwait(false);
 
-                    _lastRecovery = $"Managed Chrome restarted after endpoint loss {recoveryCycle}";
-                    _lastCdpEvent = "Selected managed Chrome endpoint restored before physical submit";
+                    _lastRecovery = $"Same managed Chrome session recovered {recoveryCycle}";
+                    _lastCdpEvent = "Selected managed Chrome endpoint restored without browser relaunch";
                     _lastTransientError = string.Empty;
                     _lastError = string.Empty;
                     SetStatus(
-                        "SESSION RECOVERY — selected managed Chrome is ready again. Retrying fresh-chat creation with the same pending message; no sent checkpoint changed.",
+                        "SESSION RECOVERY — the same managed Chrome session is available again. Retrying fresh-chat creation with the same pending message; no Chrome relaunch occurred.",
                         "RecoveringSession");
                     continue;
                 }
@@ -559,8 +557,8 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 {
                     last = ex;
                     _lastTransientError = ex.Message;
-                    _lastRecovery = $"Managed Chrome restart failed for clean retry {recoveryCycle}";
-                    _lastCdpEvent = "Guarded managed Chrome restart failed; falling back to clean retry wait";
+                    _lastRecovery = $"Same-session recovery not ready {recoveryCycle}";
+                    _lastCdpEvent = "Passive same-session recovery not ready; falling back to clean retry wait";
                     _lastError = string.Empty;
                 }
             }
@@ -754,28 +752,27 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
             catch (Exception ex) when (IsTransientRuntimeEvaluateTimeout(ex))
             {
                 _consecutivePassiveReadFailures++;
-                _lastRecovery = "Waiting 60s for managed Chrome restart";
+                _lastRecovery = "Passive same-session recovery";
                 _lastTransientError = ex.Message;
                 _lastError = string.Empty;
-                _lastCdpEvent = "Runtime.evaluate timeout exhausted; managed restart scheduled";
+                _lastCdpEvent = "Runtime.evaluate timeout exhausted; passive same-session recovery";
                 SetStatus(
-                    "Runtime.evaluate timeout persisted after safe passive retries. Start Monitor stays active; waiting 60 seconds before restarting GPTDeskTop-managed Chrome only.",
-                    "WaitingRuntimeEvaluateRestart");
+                    "Runtime.evaluate timeout persisted after safe passive retries. Start Monitor stays active and will recover only against the exact same managed Chrome session; Chrome will not be killed or relaunched.",
+                    "WaitingSameSession");
 
                 try
                 {
-                    await RuntimeEvaluateTimeoutRecoveryService.RestartAfterDelayAsync(
-                        session,
+                    await session.RecoverAfterAuthorizedStartAsync(
                         status => SetStatus(status, "RecoveringRuntimeEvaluate"),
                         cancellationToken).ConfigureAwait(false);
                     _consecutivePassiveReadFailures = 0;
-                    _lastRecovery = "Managed Chrome restarted; monitor resuming";
+                    _lastRecovery = "Same managed Chrome session recovered; monitor resuming";
                     _lastTransientError = ex.Message;
                     _lastError = string.Empty;
-                    _lastCdpEvent = "Runtime.evaluate managed Chrome recovery complete";
+                    _lastCdpEvent = "Runtime.evaluate passive same-session recovery complete";
                     PublishInspector("RuntimeEvaluateRecovered");
                     throw new ConversationTargetException(
-                        "Runtime.evaluate timeout recovery restarted managed Chrome. Rebuilding a fresh target and resuming from the existing pending/checkpoint state.",
+                        "Runtime.evaluate timeout recovery reattached to the same managed Chrome session. Rebuilding a fresh target and resuming from the existing pending/checkpoint state.",
                         ex);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -788,17 +785,16 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 }
                 catch (Exception recoveryException)
                 {
-                    _lastRecovery = "Managed Chrome restart failed safely";
+                    _lastRecovery = "Same-session recovery not ready";
                     _lastTransientError = ex.Message;
                     _lastError = recoveryException.Message;
-                    _lastCdpEvent = "Runtime.evaluate managed restart failed; no send mutation";
+                    _lastCdpEvent = "Runtime.evaluate passive same-session recovery failed; no browser mutation";
                     PublishInspector("RuntimeEvaluateRecoveryFailed");
                     throw new ConversationTargetException(
-                        $"Runtime.evaluate timeout recovery could not restart the managed Chrome safely ({recoveryException.Message}). Pending/checkpoint state was preserved.",
+                        $"Runtime.evaluate timeout recovery could not reattach to the same managed Chrome session ({recoveryException.Message}). Pending/checkpoint state was preserved and no Chrome process was restarted.",
                         new AggregateException(ex, recoveryException));
                 }
             }
-        }
 
         throw new InvalidOperationException("Passive state retry loop exited unexpectedly.");
     }
