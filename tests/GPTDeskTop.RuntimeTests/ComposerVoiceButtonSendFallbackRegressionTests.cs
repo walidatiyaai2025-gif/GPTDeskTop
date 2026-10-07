@@ -28,7 +28,9 @@ public sealed class ComposerVoiceButtonSendFallbackRegressionTests
 
         Assert.Contains("button[data-testid=\"send-button\"]", source, StringComparison.Ordinal);
         Assert.Contains("DecideBeforeSubmit", source, StringComparison.Ordinal);
+        Assert.Contains("submitForm.requestSubmit(sendButton);", sendMethod, StringComparison.Ordinal);
         Assert.Contains("sendButton.click();", sendMethod, StringComparison.Ordinal);
+        Assert.Contains("button[type=\"submit\"]", sendMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("fallbackReady", sendMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("Input.dispatchKeyEvent", sendMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("windowsVirtualKeyCode = 13", sendMethod, StringComparison.Ordinal);
@@ -52,10 +54,11 @@ public sealed class ComposerVoiceButtonSendFallbackRegressionTests
     {
         var sendMethod = ReadSendMethod();
         var gate = sendMethod.IndexOf("ReadComposerDecisionAsync(tab, requireSendReady: false", StringComparison.Ordinal);
-        var click = sendMethod.IndexOf("sendButton.click();", StringComparison.Ordinal);
+        var submit = sendMethod.IndexOf("submitForm.requestSubmit(sendButton);", StringComparison.Ordinal);
 
         Assert.True(gate >= 0);
-        Assert.True(click > gate);
+        Assert.True(submit > gate);
+        Assert.Contains("Do not click and then requestSubmit", sendMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("Input.dispatchKeyEvent", sendMethod, StringComparison.Ordinal);
     }
 }

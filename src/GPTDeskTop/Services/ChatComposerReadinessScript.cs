@@ -18,13 +18,16 @@ public static class ChatComposerReadinessScript
   const editor = document.querySelector('#prompt-textarea') ||
     document.querySelector('[data-testid="prompt-textarea"]') ||
     document.querySelector('textarea[placeholder]');
+  const composerForm = editor?.closest('form') || null;
   const send = document.querySelector('button[data-testid="send-button"]') ||
     document.querySelector('button[data-testid="composer-submit-button"]') ||
     [...document.querySelectorAll('button')].find(button => {
       if (!visible(button)) return false;
       const label = (button.getAttribute('aria-label') || '').trim();
       return /^(send|send message|send prompt|submit prompt|إرسال|إرسال الرسالة|إرسال المطالبة)$/i.test(label);
-    });
+    }) ||
+    [...(composerForm?.querySelectorAll('button[type="submit"],input[type="submit"]') || [])]
+      .find(control => visible(control) && !control.matches(':disabled,[aria-disabled="true"]'));
   const stop = document.querySelector('button[data-testid="stop-button"]');
 
   const editorDisabled = !editor || editor.matches(':disabled,[aria-disabled="true"]');

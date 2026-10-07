@@ -41,11 +41,11 @@ public sealed class SmartChatAutoFollowTests
     public void AutomationSendRearmsFollowWithoutChangingDeliveryReceiptLogic()
     {
         var source = RepoFile("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
-        var click = source.IndexOf("sendButton.click();", StringComparison.Ordinal);
-        var rearm = source.IndexOf("autoFollow?.rearm?.('automation-send')", click, StringComparison.Ordinal);
+        var submit = source.IndexOf("submitForm.requestSubmit(sendButton);", StringComparison.Ordinal);
+        var rearm = source.IndexOf("autoFollow?.rearm?.('automation-send')", submit, StringComparison.Ordinal);
         var submitted = source.IndexOf("var submitted = await SendCommandAsync", rearm, StringComparison.Ordinal);
-        Assert.True(click >= 0);
-        Assert.True(rearm > click);
+        Assert.True(submit >= 0);
+        Assert.True(rearm > submit);
         Assert.True(submitted > rearm);
         Assert.Contains("VerifiedSendDiagnostics.Record", source, StringComparison.Ordinal);
     }
