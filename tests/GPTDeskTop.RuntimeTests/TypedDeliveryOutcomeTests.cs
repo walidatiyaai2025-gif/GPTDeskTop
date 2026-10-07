@@ -32,6 +32,8 @@ public sealed class TypedDeliveryOutcomeTests
         Assert.Equal(VerifiedDeliveryOutcome.Delivered, outcome);
         Assert.Equal(1, endpoint.InputInsertions);
         Assert.Equal(1, endpoint.Clicks);
+        Assert.Equal(1, endpoint.MousePresses);
+        Assert.Equal(1, endpoint.MouseReleases);
     }
 
     [Fact]
@@ -55,6 +57,8 @@ public sealed class TypedDeliveryOutcomeTests
         var outcome = await endpoint.Chrome.SendChatMessageWithOutcomeAsync(endpoint.Tab, "test", stop.Token, requireNewTurn: true);
         Assert.Equal(VerifiedDeliveryOutcome.NotSubmitted, outcome);
         Assert.Equal(0, endpoint.Clicks);
+        Assert.Equal(0, endpoint.MousePresses);
+        Assert.Equal(0, endpoint.MouseReleases);
     }
 
     [Theory]
@@ -71,6 +75,8 @@ public sealed class TypedDeliveryOutcomeTests
         await Task.Delay(1800, stop.Token);
         Assert.False(send.IsCompleted);
         Assert.Equal(1, endpoint.Clicks);
+        Assert.Equal(1, endpoint.MousePresses);
+        Assert.Equal(1, endpoint.MouseReleases);
         Assert.Equal(0, endpoint.Reloads);
         endpoint.ShowReceipt = true;
         Assert.Equal(VerifiedDeliveryOutcome.Delivered, await send.WaitAsync(stop.Token));
@@ -156,6 +162,8 @@ public sealed class TypedDeliveryOutcomeTests
         public volatile bool ShowReceipt;
         public int InputInsertions;
         public int Clicks;
+        public int MousePresses;
+        public int MouseReleases;
         public int Reloads;
         public string ComposerText = string.Empty;
         public TaskCompletionSource Clicked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -233,23 +241,40 @@ public sealed class TypedDeliveryOutcomeTests
                         continue;
                     }
 
+                    if (method == "Input.dispatchMouseEvent")
+                    {
+                        var parameters = command.GetProperty("params");
+                        var type = parameters.TryGetProperty("type", out var typeElement)
+                            ? typeElement.GetString() ?? string.Empty
+                            : string.Empty;
+
+                        if (string.Equals(type, "mousePressed", StringComparison.Ordinal))
+                            Interlocked.Increment(ref MousePresses);
+
+                        if (string.Equals(type, "mouseReleased", StringComparison.Ordinal))
+                        {
+                            Interlocked.Increment(ref MouseReleases);
+                            if (!string.Equals(ComposerText, "test", StringComparison.Ordinal))
+                                throw new InvalidOperationException("Native click was dispatched without the expected prepared composer text.");
+
+                            Interlocked.Increment(ref Clicks);
+                            ComposerText = string.Empty;
+                            Clicked.TrySetResult();
+                            if (LoseClickReply) { socket.Abort(); return; }
+                        }
+
+                        var mouseResponse = JsonSerializer.SerializeToUtf8Bytes(new { id, result = new { } });
+                        await socket.SendAsync(mouseResponse, WebSocketMessageType.Text, true, _stop.Token);
+                        continue;
+                    }
+
                     var expression = command.GetProperty("params").TryGetProperty("expression", out var e) ? e.GetString() ?? "" : "";
                     object value;
-                    if (expression.Contains("submitForm.requestSubmit(sendButton)", StringComparison.Ordinal) ||
-                        expression.Contains("sendButton.click()", StringComparison.Ordinal))
+                    if (expression.Contains("gptdesktop-native-send-point-v1", StringComparison.Ordinal))
                     {
-                        if (RejectClick || !string.Equals(ComposerText, "test", StringComparison.Ordinal))
-                        {
-                            FailPreparation = RejectClick;
-                            var rejected = JsonSerializer.SerializeToUtf8Bytes(new { id, result = new { result = new { type = "boolean", value = false } } });
-                            await socket.SendAsync(rejected, WebSocketMessageType.Text, true, _stop.Token);
-                            continue;
-                        }
-                        Interlocked.Increment(ref Clicks);
-                        ComposerText = string.Empty;
-                        Clicked.TrySetResult();
-                        if (LoseClickReply) { socket.Abort(); return; }
-                        value = true;
+                        value = RejectClick
+                            ? new { x = -1.0, y = -1.0, marker = "gptdesktop-native-send-point-v1" }
+                            : new { x = 100.0, y = 80.0, marker = "gptdesktop-native-send-point-v1" };
                     }
                     else if (expression.Contains("range.selectNodeContents(editor)", StringComparison.Ordinal))
                     {
