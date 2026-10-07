@@ -235,7 +235,8 @@ public sealed class TypedDeliveryOutcomeTests
 
                     var expression = command.GetProperty("params").TryGetProperty("expression", out var e) ? e.GetString() ?? "" : "";
                     object value;
-                    if (expression.Contains("sendButton.click()", StringComparison.Ordinal))
+                    if (expression.Contains("submitForm.requestSubmit(sendButton)", StringComparison.Ordinal) ||
+                        expression.Contains("sendButton.click()", StringComparison.Ordinal))
                     {
                         if (RejectClick || !string.Equals(ComposerText, "test", StringComparison.Ordinal))
                         {
