@@ -70,18 +70,21 @@ public sealed class ChatComposerInterlockEnduranceTests
     }
 
     [Fact]
-    public void AutomationTargetsOnlyCanonicalPromptEditorAndNeverGenericContentEditable()
+    public void AutomationTargetsOnlyTheScopedChatGptComposerIncludingCurrentProseMirror()
     {
         var source = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs"));
         var readiness = File.ReadAllText(RepositoryPath(
             "src", "GPTDeskTop", "Services", "ChatComposerReadinessScript.cs"));
 
+        Assert.Contains("form[data-chatgpt-composer]", source, StringComparison.Ordinal);
+        Assert.Contains(".ProseMirror[contenteditable=\"true\"][role=\"textbox\"]", source, StringComparison.Ordinal);
+        Assert.Contains("form[data-chatgpt-composer]", readiness, StringComparison.Ordinal);
+        Assert.Contains(".ProseMirror[contenteditable=\"true\"][role=\"textbox\"]", readiness, StringComparison.Ordinal);
         Assert.Contains("#prompt-textarea", source, StringComparison.Ordinal);
         Assert.Contains("textarea[placeholder]", source, StringComparison.Ordinal);
         Assert.DoesNotContain("document.querySelector('[contenteditable=\"true\"]')", source, StringComparison.Ordinal);
         Assert.DoesNotContain("querySelectorAll('textarea,[contenteditable=\"true\"]')", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("[contenteditable=\"true\"]", readiness, StringComparison.Ordinal);
         Assert.DoesNotContain("Input.dispatchKeyEvent", source, StringComparison.Ordinal);
     }
 }
