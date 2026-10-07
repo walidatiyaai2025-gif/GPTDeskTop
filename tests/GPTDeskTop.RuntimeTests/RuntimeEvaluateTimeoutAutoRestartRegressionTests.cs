@@ -12,37 +12,17 @@ public sealed class RuntimeEvaluateTimeoutAutoRestartRegressionTests
     }
 
     [Fact]
-    public void RuntimeEvaluateRecoveryWaitsExactlyOneMinuteBeforeRestart()
+    public void MonitorRunnerNeverInvokesManagedChromeKillRelaunchRecovery()
     {
-        var source = ReadSource("src", "GPTDeskTop", "Services", "RuntimeEvaluateTimeoutRecoveryService.cs");
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
 
-        Assert.Contains("RestartDelay = TimeSpan.FromMinutes(1)", source, StringComparison.Ordinal);
-        var wait = source.IndexOf("await Task.Delay(RestartDelay", StringComparison.Ordinal);
-        var kill = source.IndexOf("await KillAllManagedChromeProcessesAsync", StringComparison.Ordinal);
-        var launch = source.IndexOf("Process.Start", StringComparison.Ordinal);
-
-        Assert.True(wait >= 0);
-        Assert.True(kill > wait, "Managed Chrome must not be killed before the one-minute recovery delay completes.");
-        Assert.True(launch > kill, "Replacement Chrome must start only after managed-process cleanup completes.");
+        Assert.DoesNotContain("RuntimeEvaluateTimeoutRecoveryService.RestartAfterDelayAsync", runner, StringComparison.Ordinal);
+        Assert.DoesNotContain("KillAllManagedChromeProcessesAsync", runner, StringComparison.Ordinal);
+        Assert.DoesNotContain("Process.Start", runner, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void RecoveryRequiresExplicitStartMonitorAuthorizationAndNeverUsesGlobalChromeKill()
-    {
-        var source = ReadSource("src", "GPTDeskTop", "Services", "RuntimeEvaluateTimeoutRecoveryService.cs");
-
-        Assert.Contains("MonitorOnlyManagedChromeGuard.HasExplicitStartAuthorization", source, StringComparison.Ordinal);
-        Assert.Contains("--user-data-dir=", source, StringComparison.Ordinal);
-        Assert.Contains("ChromeProfileCatalog.Discover()", source, StringComparison.Ordinal);
-        Assert.Contains("CommandLineReferencesUserDataDirectory", source, StringComparison.Ordinal);
-        Assert.Contains("Kill(entireProcessTree: true)", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("GetProcessesByName", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("taskkill", source, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("Process.GetProcesses()", source, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void PassiveRuntimeEvaluateTimeoutExhaustionRestartsAndResumesInsteadOfStoppingMonitor()
+    public void PassiveRuntimeEvaluateTimeoutExhaustionUsesSameSessionRecovery()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
         var start = runner.IndexOf("private async Task<ChatPageState> ReadPassiveStateResilientAsync", StringComparison.Ordinal);
@@ -53,14 +33,15 @@ public sealed class RuntimeEvaluateTimeoutAutoRestartRegressionTests
         var passiveRead = runner[start..end];
 
         Assert.Contains("const int maxAttempts = 4", passiveRead, StringComparison.Ordinal);
-        Assert.Contains("RuntimeEvaluateTimeoutRecoveryService.RestartAfterDelayAsync", passiveRead, StringComparison.Ordinal);
-        Assert.Contains("WaitingRuntimeEvaluateRestart", passiveRead, StringComparison.Ordinal);
-        Assert.Contains("existing pending/checkpoint state", passiveRead, StringComparison.Ordinal);
+        Assert.Contains("RecoverAfterAuthorizedStartAsync", passiveRead, StringComparison.Ordinal);
+        Assert.Contains("passive same-session recovery", passiveRead, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("no Chrome process was restarted", passiveRead, StringComparison.Ordinal);
         Assert.Contains("throw new ConversationTargetException", passiveRead, StringComparison.Ordinal);
+        Assert.DoesNotContain("RuntimeEvaluateTimeoutRecoveryService", passiveRead, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void FreshTargetEndpointLossUsesGuardedManagedRestartBeforeFifteenMinuteWait()
+    public void FreshTargetEndpointLossWaitsForSameSessionBeforeFifteenMinuteFallback()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
         var start = runner.IndexOf("private async Task<ChromeTab> CreateFreshTargetAsync", StringComparison.Ordinal);
@@ -71,20 +52,21 @@ public sealed class RuntimeEvaluateTimeoutAutoRestartRegressionTests
         var freshTarget = runner[start..end];
 
         Assert.Contains("IsAutomationSessionAvailableAsync", freshTarget, StringComparison.Ordinal);
-        Assert.Contains("RuntimeEvaluateTimeoutRecoveryService.RestartAfterDelayAsync", freshTarget, StringComparison.Ordinal);
-        Assert.Contains("Selected managed Chrome endpoint unavailable before physical submit", freshTarget, StringComparison.Ordinal);
+        Assert.Contains("RecoverAfterAuthorizedStartAsync", freshTarget, StringComparison.Ordinal);
+        Assert.Contains("no browser will be closed or relaunched", freshTarget, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("CleanFreshTargetRecoveryDelay", freshTarget, StringComparison.Ordinal);
+        Assert.DoesNotContain("RuntimeEvaluateTimeoutRecoveryService", freshTarget, StringComparison.Ordinal);
 
         var endpointProbe = freshTarget.IndexOf("IsAutomationSessionAvailableAsync", StringComparison.Ordinal);
-        var guardedRestart = freshTarget.IndexOf("RuntimeEvaluateTimeoutRecoveryService.RestartAfterDelayAsync", StringComparison.Ordinal);
+        var sameSessionRecovery = freshTarget.IndexOf("RecoverAfterAuthorizedStartAsync", StringComparison.Ordinal);
         var fifteenMinuteFallback = freshTarget.IndexOf("CleanFreshTargetRecoveryDelay", StringComparison.Ordinal);
 
-        Assert.True(guardedRestart > endpointProbe, "Managed restart must require a failed endpoint probe.");
-        Assert.True(fifteenMinuteFallback > guardedRestart, "The 15-minute wait is fallback only after guarded endpoint-loss recovery.");
+        Assert.True(sameSessionRecovery > endpointProbe, "Same-session recovery must follow a failed endpoint probe.");
+        Assert.True(fifteenMinuteFallback > sameSessionRecovery, "The 15-minute wait is fallback only after bounded passive same-session recovery.");
     }
 
     [Fact]
-    public void PhysicalSendPathRemainsFailClosedAndCannotInvokeManagedRestart()
+    public void PhysicalSendPathRemainsFailClosedAndCannotInvokeBrowserRecovery()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
         var sendStart = runner.IndexOf("VerifiedDeliveryOutcome delivery;", StringComparison.Ordinal);
@@ -98,6 +80,17 @@ public sealed class RuntimeEvaluateTimeoutAutoRestartRegressionTests
         Assert.Contains("physical send outcome is uncertain", physicalSend, StringComparison.Ordinal);
         Assert.Contains("Automatic New Chat/resend is blocked", physicalSend, StringComparison.Ordinal);
         Assert.DoesNotContain("RuntimeEvaluateTimeoutRecoveryService", physicalSend, StringComparison.Ordinal);
+        Assert.DoesNotContain("RecoverAfterAuthorizedStartAsync", physicalSend, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProfileSessionDocumentsStickyRuntimeBrowserIdentity()
+    {
+        var session = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
+
+        Assert.Contains("Runtime recovery also remains passive once this selected", session, StringComparison.Ordinal);
+        Assert.Contains("Runtime recovery can never reach Process.Start after a successful attachment.", session, StringComparison.Ordinal);
+        Assert.Contains("Runtime Chrome auto-launch is disabled.", session, StringComparison.Ordinal);
     }
 
     [Fact]
