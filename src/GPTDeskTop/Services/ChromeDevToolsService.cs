@@ -17,11 +17,11 @@ public sealed class ChromeDevToolsService
     private const int MonitorRecoveryEndpointGraceAttempts = 8;
     private const int MonitorRecoveryEndpointGraceDelayMs = 250;
     private const string BrowserSessionId = "__gptdesktop_monitor_browser__";
-    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 6 ? window.__gptDesktopChatStateCache.read() : null";
+    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 7 ? window.__gptDesktopChatStateCache.read() : null";
     private const string ChatStateInstallExpressionTemplate = """
 (() => {
   const key = '__gptDesktopChatStateCache';
-  const version = 6;
+  const version = 7;
   const smartFollowEnabled = __SMART_ENABLED__;
   const smartFollowThrottleMs = __SMART_THROTTLE_MS__;
   const smartFollowNearBottomPx = __SMART_NEAR_BOTTOM_PX__;
@@ -220,7 +220,24 @@ public sealed class ChromeDevToolsService
   state.read = () => {
     if (!state.dirty) return state.snapshot;
     state.dirty = false;
-    const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
+    const assistantSelectors = [
+      '[data-message-author-role="assistant"]',
+      '[data-turn="assistant"]',
+      '[data-author="assistant"]',
+      '[data-author-role="assistant"]',
+      '[data-message-role="assistant"]',
+      '[data-testid*="assistant-message"]'
+    ];
+    const seenAssistantTurns = new Set();
+    const messages = [];
+    for (const selector of assistantSelectors) {
+      for (const node of document.querySelectorAll(selector)) {
+        const turn = node.closest('[data-testid^="conversation-turn-"],article') || node;
+        if (seenAssistantTurns.has(turn)) continue;
+        seenAssistantTurns.add(turn);
+        messages.push(node);
+      }
+    }
     const lastAssistant = messages.length ? messages[messages.length - 1] : null;
     const stopButton = findStopButton();
     // A visible Stop control is the authoritative generation signal. Streaming CSS/data
@@ -1619,7 +1636,46 @@ public sealed class ChromeDevToolsService
             RuntimeFlightRecorder.Record("Browser", "BindingRefreshCompleted", "failed", ex.GetType().Name, tabId: tab.Id, conversationRef: tab.Url);
         }
     }
-    private async Task<(int Count, string LastText)> GetUserMessageSnapshotAsync(ChromeTab tab, CancellationToken cancellationToken) { const string expression = """ (() => { const messages = [...document.querySelectorAll('[data-message-author-role="user"]')]; const last = messages.length ? (messages[messages.length - 1].innerText || messages[messages.length - 1].textContent || '').trim() : ''; return { count: messages.length, lastText: last }; })() """; var value = await EvaluateAsync(tab, expression, cancellationToken, false); var count = value.TryGetProperty("count", out var c) ? c.GetInt32() : 0; var last = value.TryGetProperty("lastText", out var t) ? t.GetString() ?? string.Empty : string.Empty; return (count, last); }
+    private async Task<(int Count, string LastText)> GetUserMessageSnapshotAsync(ChromeTab tab, CancellationToken cancellationToken)
+    {
+        const string expression = """
+(() => {
+  const normalize = value => (value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[\u200b-\u200d\ufeff]/gi, '')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+  const selectors = [
+    '[data-message-author-role="user"]',
+    '[data-turn="user"]',
+    '[data-author="user"]',
+    '[data-author-role="user"]',
+    '[data-message-role="user"]',
+    '[data-testid*="user-message"]',
+    '.user-message-bubble-color',
+    '[class*="user-message-bubble"]'
+  ];
+  const seen = new Set();
+  const messages = [];
+  for (const selector of selectors) {
+    for (const node of document.querySelectorAll(selector)) {
+      const turn = node.closest('[data-testid^="conversation-turn-"],article') || node;
+      if (seen.has(turn)) continue;
+      seen.add(turn);
+      messages.push(node);
+    }
+  }
+  const lastNode = messages.length ? messages[messages.length - 1] : null;
+  const last = lastNode ? normalize(lastNode.innerText || lastNode.textContent || '') : '';
+  return { count: messages.length, lastText: last };
+})()
+""";
+        var value = await EvaluateAsync(tab, expression, cancellationToken, false);
+        var count = value.TryGetProperty("count", out var c) ? c.GetInt32() : 0;
+        var last = value.TryGetProperty("lastText", out var t) ? t.GetString() ?? string.Empty : string.Empty;
+        return (count, last);
+    }
     public async Task ReloadTabAsync(ChromeTab tab, CancellationToken cancellationToken = default) => await SendCommandAsync(tab, "Page.reload", new { ignoreCache = false }, cancellationToken);
     private async Task<ChromeTab?> TryGetBrowserTargetAsync(CancellationToken cancellationToken)
     {

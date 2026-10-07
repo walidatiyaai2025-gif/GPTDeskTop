@@ -88,6 +88,19 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
+    public void ActiveMonitorOnlyPathRecognizesCurrentChatGptUserAndAssistantTurns()
+    {
+        var chrome = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
+
+        Assert.Contains("[data-turn=\"user\"]", chrome, StringComparison.Ordinal);
+        Assert.Contains("[data-testid*=\"user-message\"]", chrome, StringComparison.Ordinal);
+        Assert.Contains("user-message-bubble-color", chrome, StringComparison.Ordinal);
+        Assert.Contains("[data-turn=\"assistant\"]", chrome, StringComparison.Ordinal);
+        Assert.Contains("[data-testid*=\"assistant-message\"]", chrome, StringComparison.Ordinal);
+        Assert.Contains("__gptDesktopChatStateCache?.version === 7", chrome, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ConversationFailuresRollOnlyAtSafeBoundaries()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
@@ -256,6 +269,6 @@ public sealed class SimpleMonitorModeRegressionTests
     public void ProductVersionIsBumpedToTwoPointZeroPointFiftyOne()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.58</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.59</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
