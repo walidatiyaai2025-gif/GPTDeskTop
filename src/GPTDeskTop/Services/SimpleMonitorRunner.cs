@@ -732,6 +732,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 var state = await InvokePassiveStateReaderAsync(chrome, tab, cancellationToken).ConfigureAwait(false);
                 _consecutivePassiveReadFailures = 0;
                 _lastRecovery = attempt > 1 ? "Recovered" : "Healthy";
+                _lastTransientError = string.Empty;
                 _lastError = string.Empty;
                 if (attempt > 1) _lastCdpEvent = "Runtime.evaluate recovered";
                 PublishInspector("ReadingChatState");
@@ -743,11 +744,41 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 _consecutivePassiveReadFailures++;
                 _lastRecovery = "Retrying";
                 _lastTransientError = ex.Message;
-                _lastError = ex.Message;
+                _lastError = string.Empty;
                 _lastCdpEvent = $"Runtime.evaluate timeout; safe passive retry {attempt}/{maxAttempts - 1}";
                 StatusChanged?.Invoke($"Chrome state read timed out. Retrying safely ({attempt}/{maxAttempts - 1}) before any message mutation...");
                 PublishInspector("RecoveringCdpRead");
                 await Task.Delay(TimeSpan.FromMilliseconds(750 * attempt), cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!IsTransientRuntimeEvaluateTimeout(ex)
+                                       && ChromeTransportFailureClassifier.IsTransient(ex)
+                                       && attempt < maxAttempts)
+            {
+                _passiveReadRetries++;
+                _consecutivePassiveReadFailures++;
+                _lastRecovery = "Refreshing transient target/context";
+                _lastTransientError = ex.Message;
+                _lastError = string.Empty;
+                _lastCdpEvent = $"Transient CDP target/context change; passive rebind retry {attempt}/{maxAttempts - 1}";
+                StatusChanged?.Invoke(
+                    $"Chrome target/context changed while reading state. Refreshing the same managed session and retrying safely ({attempt}/{maxAttempts - 1}); no browser relaunch and no message mutation.");
+                PublishInspector("RecoveringCdpTarget");
+
+                try
+                {
+                    _ = await session.RefreshLiveTabAsync(tab, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch
+                {
+                    // The same selected endpoint may still be navigating or briefly unavailable.
+                    // The next bounded retry remains passive and will not launch or restart Chrome.
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(250 * attempt), cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (IsTransientRuntimeEvaluateTimeout(ex))
             {
@@ -794,6 +825,21 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                         $"Runtime.evaluate timeout recovery could not reattach to the same managed Chrome session ({recoveryException.Message}). Pending/checkpoint state was preserved and no Chrome process was restarted.",
                         new AggregateException(ex, recoveryException));
                 }
+            }
+            catch (Exception ex) when (ChromeTransportFailureClassifier.IsTransient(ex))
+            {
+                _consecutivePassiveReadFailures++;
+                _lastRecovery = "Transient target/context retries exhausted";
+                _lastTransientError = ex.Message;
+                _lastError = string.Empty;
+                _lastCdpEvent = "Transient CDP target/context failure exhausted; fresh-target recovery requested";
+                SetStatus(
+                    "Chrome target/context kept changing during passive reads. Rebuilding the conversation target on the same managed Chrome session; no Chrome relaunch and no message resend is authorized by this recovery.",
+                    "RecoveringCdpTarget");
+
+                throw new ConversationTargetException(
+                    "Transient Chrome target/execution-context churn persisted after bounded passive retries. Rebuild the conversation target on the same managed Chrome session.",
+                    ex);
             }
         }
 
