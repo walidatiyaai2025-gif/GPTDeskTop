@@ -299,9 +299,20 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     if (delivery == VerifiedDeliveryOutcome.NotSubmitted)
                     {
                         // The click command was never dispatched (or explicitly acknowledged no click).
-                        // Retry only through the outer safety gate, which also enforces 429/pacing.
-                        SetStatus("Not submitted — recovering the same target before another send gate check.", "PreSendRecovery");
-                        await Task.Delay(1500, cancellationToken).ConfigureAwait(false);
+                        // The composer may already contain the exact pending draft. Preserve that draft
+                        // and rebind the SAME fresh target/session before another send gate check.
+                        // Do not close the tab or create another chat merely because CDP/target identity
+                        // changed between Input.insertText and the physical mouse click.
+                        SetStatus("Not submitted — preserving the prepared draft and rebinding the same fresh target before another send gate check.", "PreSendRecovery");
+                        _lastCdpEvent = "No physical submit; preserve prepared draft and rebind same fresh target";
+                        var rebound = await TryRecoverPreSubmitTargetAsync(
+                            session,
+                            activeTab,
+                            "The send command did not reach the physical click boundary",
+                            cancellationToken).ConfigureAwait(false);
+                        if (rebound is not null)
+                            activeTab = rebound;
+                        await Task.Delay(500, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
 
@@ -319,8 +330,21 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                 }
                 catch (ConversationTargetException ex)
                 {
-                    // No sender has been entered for this iteration, so the pending message remains
-                    // definitely unsent and a fresh conversation is safe.
+                    // No physical submit has been accepted in this path. First recover/rebind the
+                    // same fresh target without closing tabs so a prepared draft survives transient
+                    // CDP endpoint/target churn. Only if that exact fresh target cannot be recovered
+                    // do we create another fresh chat.
+                    var recovered = await TryRecoverPreSubmitTargetAsync(
+                        session,
+                        activeTab,
+                        ex.Message,
+                        cancellationToken).ConfigureAwait(false);
+                    if (recovered is not null)
+                    {
+                        activeTab = recovered;
+                        continue;
+                    }
+
                     activeTab = await RollOverBeforeSendAsync(session, activeTab, ex.Message, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -538,7 +562,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
 
                 try
                 {
-                    await session.RecoverAfterAuthorizedStartAsync(
+                    await session.WaitForSameManagedSessionAsync(
                         status => SetStatus(status, "RecoveringSession"),
                         cancellationToken).ConfigureAwait(false);
 
@@ -605,6 +629,74 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     "RecoveringSession");
             }
         }
+    }
+
+    private async Task<ChromeTab?> TryRecoverPreSubmitTargetAsync(
+        SimpleMonitorProfileSession session,
+        ChromeTab activeTab,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        _lastRecovery = "Preserving unsent fresh target";
+        _lastTransientError = reason;
+        _lastError = string.Empty;
+        _lastCdpEvent = "Pre-submit recovery: wait for same managed session and rebind fresh target";
+        SetStatus(
+            "PRE-SUBMIT RECOVERY — no physical click was dispatched. Preserving the current ChatGPT tab/draft and waiting for the exact same managed Chrome session before any New Chat.",
+            "PreSendRecovery");
+
+        try
+        {
+            await session.WaitForSameManagedSessionAsync(
+                status => SetStatus(status, "RecoveringSession"),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _lastTransientError = ex.Message;
+            _lastRecovery = "Same-session pre-submit recovery not ready";
+            _lastCdpEvent = "Pre-submit recovery could not reattach same managed session";
+            return null;
+        }
+
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(12);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var live = await session.RefreshLiveTabAsync(activeTab, cancellationToken).ConfigureAwait(false);
+                if (live is not null)
+                {
+                    _lastRecovery = "Same fresh target recovered";
+                    _lastTransientError = string.Empty;
+                    _lastError = string.Empty;
+                    _lastCdpEvent = "Pre-submit fresh target rebound; prepared draft preserved";
+                    SetStatus(
+                        "PRE-SUBMIT RECOVERY — same fresh ChatGPT target recovered. The pending message remains unsent and will re-enter the send gate without creating another chat.",
+                        "PreSendRecovered");
+                    return live;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ChromeTransportFailureClassifier.IsTransient(ex))
+            {
+                _lastTransientError = ex.Message;
+            }
+
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+        }
+
+        _lastRecovery = "Same fresh target not recoverable";
+        _lastCdpEvent = "Pre-submit same-target recovery exhausted; clean fresh-chat rollover allowed";
+        return null;
     }
 
     private async Task<ChromeTab> RollOverBeforeSendAsync(
@@ -795,7 +887,7 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
 
                 try
                 {
-                    await session.RecoverAfterAuthorizedStartAsync(
+                    await session.WaitForSameManagedSessionAsync(
                         status => SetStatus(status, "RecoveringRuntimeEvaluate"),
                         cancellationToken).ConfigureAwait(false);
                     _consecutivePassiveReadFailures = 0;
