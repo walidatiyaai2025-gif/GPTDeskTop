@@ -56,9 +56,16 @@ public sealed class ChromeDevToolsService
     return false;
   };
   const findErrorText = () => {
+    // Error UI must belong to the active conversation. Current ChatGPT can show unrelated
+    // sidebar/history failures ("Unable to load history / Retry") while the chat itself is
+    // perfectly healthy. Never let those global controls trigger a conversation rollover.
+    const conversationRoot =
+      document.querySelector('[role="region"][aria-label="Conversation"]') ||
+      document.querySelector('main') ||
+      document;
     const selectors = ['[role="alert"]', '[aria-live="assertive"]', '[data-testid*="error"]', '[data-testid*="retry"]'];
     for (const selector of selectors) {
-      for (const element of document.querySelectorAll(selector)) {
+      for (const element of conversationRoot.querySelectorAll(selector)) {
         if (!visible(element)) continue;
         const text = (element.innerText || element.textContent || '').trim();
         if (text && errorPattern.test(text)) return text;
@@ -67,8 +74,8 @@ public sealed class ChromeDevToolsService
 
     // ChatGPT sometimes renders the delivery-timeout card without an alert/testid on its
     // outer container. Inspect only a small ancestor chain around a visible native Retry
-    // control; never scan document.body or conversation text globally.
-    for (const button of document.querySelectorAll('button,[role="button"]')) {
+    // control inside the active conversation; never scan document.body or sidebar/history UI.
+    for (const button of conversationRoot.querySelectorAll('button,[role="button"]')) {
       if (!visible(button)) continue;
       const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''} ${button.innerText || button.textContent || ''}`.trim();
       if (!/\bretry\b|try again|إعادة المحاولة|حاول مرة أخرى/i.test(label)) continue;
