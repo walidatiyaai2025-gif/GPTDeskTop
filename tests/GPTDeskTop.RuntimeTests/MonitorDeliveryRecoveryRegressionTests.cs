@@ -38,6 +38,29 @@ public sealed class MonitorDeliveryRecoveryRegressionTests
                 baselineAssistantCount,
                 observedAssistantCount));
 
+    [Theory]
+    [InlineData(-1, 2, "", "", "test", false)]
+    [InlineData(0, 0, "", "", "test", false)]
+    [InlineData(0, 1, "", "test", "test", true)]
+    [InlineData(2, 3, "test", "assistant", "test", true)]
+    [InlineData(2, 3, "other", "assistant", "test", false)]
+    [InlineData(2, 4, "other", "assistant", "test", true)]
+    public void ConversationTurnDeltaProvidesRoleAgnosticReceipt(
+        int baselineCount,
+        int observedCount,
+        string previousText,
+        string lastText,
+        string expectedText,
+        bool expected)
+        => Assert.Equal(
+            expected,
+            MonitorDeliveryRecoveryPolicy.ConversationTurnDeltaConfirmsDelivery(
+                baselineCount,
+                observedCount,
+                previousText,
+                lastText,
+                expectedText));
+
     [Fact]
     public void TransportRebindCanFallBackToStableConversationIdentity()
     {
