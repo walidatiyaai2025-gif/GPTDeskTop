@@ -115,6 +115,26 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
+    public void DefinitelyNotSubmittedDraftIsReboundBeforeAnyFreshChatRollover()
+    {
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
+
+        Assert.Contains("delivery == VerifiedDeliveryOutcome.NotSubmitted", runner, StringComparison.Ordinal);
+        Assert.Contains("preserving the prepared draft", runner, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("TryRecoverPreSubmitTargetAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("WaitForSameManagedSessionAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("RefreshLiveTabAsync(activeTab", runner, StringComparison.Ordinal);
+        Assert.Contains("same fresh ChatGPT target recovered", runner, StringComparison.OrdinalIgnoreCase);
+
+        var recoverStart = runner.IndexOf("private async Task<ChromeTab?> TryRecoverPreSubmitTargetAsync", StringComparison.Ordinal);
+        var rolloverStart = runner.IndexOf("private async Task<ChromeTab> RollOverBeforeSendAsync", StringComparison.Ordinal);
+        Assert.True(recoverStart >= 0 && rolloverStart > recoverStart);
+        var recoverRegion = runner[recoverStart..rolloverStart];
+        Assert.DoesNotContain("CloseTabAsync", recoverRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateFreshTargetAsync", recoverRegion, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FreshTargetFailureWaitsFifteenMinutesAndKeepsTheWorkerAlive()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
@@ -123,6 +143,7 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("CleanFreshTargetRecoveryDelay = TimeSpan.FromMinutes(15)", runner, StringComparison.Ordinal);
         Assert.Contains("RECOVERY WAIT", runner, StringComparison.Ordinal);
         Assert.Contains("Start Monitor remains running", runner, StringComparison.Ordinal);
+        Assert.Contains("WaitForSameManagedSessionAsync", runner, StringComparison.Ordinal);
         Assert.Contains("RecoverAfterAuthorizedStartAsync", runner, StringComparison.Ordinal);
         Assert.Contains("same pending message", runner, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("CloseAutomationOwnedChatTabsAsync", session, StringComparison.Ordinal);
