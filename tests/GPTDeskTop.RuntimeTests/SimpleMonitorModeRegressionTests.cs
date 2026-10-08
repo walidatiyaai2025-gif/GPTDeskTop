@@ -158,8 +158,8 @@ public sealed class SimpleMonitorModeRegressionTests
         var nextHelper = runner.IndexOf("private async Task<ChromeTab?> TryRecoverPreSubmitTargetAsync", helperStart, StringComparison.Ordinal);
         Assert.True(helperStart >= 0 && nextHelper > helperStart);
         var helper = runner[helperStart..nextHelper];
-        Assert.Contains("WaitForStableConversationAsync(activeTab", helper, StringComparison.Ordinal);
-        Assert.Contains("ConfirmExpectedMessageOnStableConversationAsync", helper, StringComparison.Ordinal);
+        Assert.Contains("ResolveFreshConversationContainingExpectedMessageAsync", helper, StringComparison.Ordinal);
+        Assert.Contains("ResolveFreshConversationContainingExpectedMessageAsync", helper, StringComparison.Ordinal);
         Assert.Contains("no resend", helper, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("SendChatMessage", helper, StringComparison.Ordinal);
         Assert.DoesNotContain("CloseTabAsync", helper, StringComparison.Ordinal);
@@ -174,6 +174,25 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.DoesNotContain("Input.dispatchMouseEvent", receipt, StringComparison.Ordinal);
         Assert.DoesNotContain("Input.insertText", receipt, StringComparison.Ordinal);
         Assert.DoesNotContain("Page.reload", receipt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ContentBoundStableReconciliationCanDisambiguateMultipleNewTargets()
+    {
+        var session = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
+
+        var start = session.IndexOf("public async Task<ChromeTab?> ResolveFreshConversationContainingExpectedMessageAsync", StringComparison.Ordinal);
+        var end = session.IndexOf("public async Task<ChromeTab?> WaitForStableConversationAsync", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+
+        var region = session[start..end];
+        Assert.Contains("!baseline.Contains(candidate.Id)", region, StringComparison.Ordinal);
+        Assert.Contains("ConfirmExpectedMessageOnStableConversationAsync", region, StringComparison.Ordinal);
+        Assert.Contains("if (matches.Count == 1)", region, StringComparison.Ordinal);
+        Assert.Contains("if (matches.Count > 1)", region, StringComparison.Ordinal);
+        Assert.Contains("return null", region, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateFreshConversationTabAsync", region, StringComparison.Ordinal);
+        Assert.DoesNotContain("CloseTabAsync", region, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -332,6 +351,6 @@ public sealed class SimpleMonitorModeRegressionTests
     public void ProductVersionIsBumpedToTwoPointZeroPointFiftyOne()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.64</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.65</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }

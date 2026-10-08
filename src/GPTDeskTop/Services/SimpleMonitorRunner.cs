@@ -666,36 +666,8 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         ChromeTab? stableTab;
         try
         {
-            stableTab = await session.WaitForStableConversationAsync(activeTab, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _lastTransientError = ex.Message;
-            _lastRecovery = "Stable post-submit target not resolved";
-            _lastCdpEvent = "Post-submit stable target resolution failed; resend remains forbidden";
-            return null;
-        }
-
-        if (stableTab is null || !SimpleMonitorProfileSession.TryGetConversationId(stableTab.Url, out _))
-        {
-            _lastRecovery = "Stable post-submit target not found";
-            _lastCdpEvent = "No attributable stable conversation after ambiguous submit";
-            return null;
-        }
-
-        SetStatus(
-            "DELIVERY RECONCILIATION — stable fresh conversation found. Verifying the expected user turn read-only; no resend.",
-            "Reconciling");
-
-        bool confirmed;
-        try
-        {
-            confirmed = await session.Chrome.ConfirmExpectedMessageOnStableConversationAsync(
-                stableTab,
+            stableTab = await session.ResolveFreshConversationContainingExpectedMessageAsync(
+                activeTab,
                 expectedMessage,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -706,17 +678,21 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
         catch (Exception ex)
         {
             _lastTransientError = ex.Message;
-            _lastRecovery = "Stable receipt verification failed";
-            _lastCdpEvent = "Stable conversation resolved but receipt verification failed";
+            _lastRecovery = "Stable post-submit target not resolved";
+            _lastCdpEvent = "Post-submit content-bound stable target resolution failed; resend remains forbidden";
             return null;
         }
 
-        if (!confirmed)
+        if (stableTab is null || !SimpleMonitorProfileSession.TryGetConversationId(stableTab.Url, out _))
         {
-            _lastRecovery = "Stable conversation found without matching receipt";
-            _lastCdpEvent = "Stable conversation did not expose expected user turn; resend remains forbidden";
+            _lastRecovery = "Stable post-submit target not found";
+            _lastCdpEvent = "No unique attributable stable conversation contained the expected user turn";
             return null;
         }
+
+        SetStatus(
+            "DELIVERY RECONCILIATION — the expected user turn was found in one attributable stable fresh conversation. No resend.",
+            "Reconciling");
 
         _lastRecovery = "Ambiguous submit reconciled as delivered";
         _lastTransientError = string.Empty;

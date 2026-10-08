@@ -248,6 +248,117 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
     }
 
     /// <summary>
+    /// Resolves an ambiguous first-submit fresh chat by combining the pre-create target baseline
+    /// with read-only content evidence. Unlike WaitForStableConversationAsync, this path does not
+    /// require exactly one new stable target up front: it verifies every eligible new /c/{id}
+    /// candidate and accepts only a single conversation containing the exact expected user turn.
+    /// No typing, clicking, reload, navigation, or resend occurs here.
+    /// </summary>
+    public async Task<ChromeTab?> ResolveFreshConversationContainingExpectedMessageAsync(
+        ChromeTab tab,
+        string expectedMessage,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tab);
+        var expected = expectedMessage?.Trim() ?? string.Empty;
+        if (expected.Length == 0) return null;
+
+        HashSet<string>? baseline = null;
+        lock (_freshTargetSync)
+        {
+            if (_freshTargetBaselines.TryGetValue(tab.Id, out var stored))
+                baseline = new HashSet<string>(stored, StringComparer.Ordinal);
+        }
+
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var tabs = await Chrome.GetTabsAsync(cancellationToken).ConfigureAwait(false);
+                var candidates = new List<ChromeTab>();
+
+                // If the mutable tab snapshot already points at a stable conversation, verify only
+                // that exact conversation. This remains safe even if its original baseline alias
+                // was lost during target replacement.
+                var exactStable = tabs.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Id, tab.Id, StringComparison.Ordinal)
+                    && TryGetConversationId(candidate.Url, out _));
+                if (exactStable is not null)
+                {
+                    candidates.Add(exactStable);
+                }
+                else if (TryGetConversationId(tab.Url, out var trackedConversationId))
+                {
+                    var sameConversation = tabs.FirstOrDefault(candidate =>
+                        TryGetConversationId(candidate.Url, out var candidateConversationId)
+                        && string.Equals(trackedConversationId, candidateConversationId, StringComparison.Ordinal));
+                    if (sameConversation is not null)
+                        candidates.Add(sameConversation);
+                }
+                else if (baseline is not null)
+                {
+                    // The fresh root may have been replaced by multiple transient/new CDP targets.
+                    // Ownership comes from absence in the pre-create baseline; content decides which
+                    // one is the actual submitted conversation.
+                    candidates.AddRange(tabs.Where(candidate =>
+                        TryGetConversationId(candidate.Url, out _)
+                        && !baseline.Contains(candidate.Id)));
+                }
+                else
+                {
+                    // Without either stable identity or a preserved fresh-target baseline, do not
+                    // guess among unrelated conversations.
+                    return null;
+                }
+
+                var matches = new List<ChromeTab>();
+                foreach (var candidate in candidates
+                             .GroupBy(candidate => candidate.Id, StringComparer.Ordinal)
+                             .Select(group => group.First()))
+                {
+                    if (await Chrome.ConfirmExpectedMessageOnStableConversationAsync(
+                            candidate,
+                            expected,
+                            cancellationToken).ConfigureAwait(false))
+                    {
+                        matches.Add(candidate);
+                        if (matches.Count > 1)
+                            break;
+                    }
+                }
+
+                if (matches.Count == 1)
+                {
+                    var originalId = tab.Id;
+                    CopyTab(tab, matches[0]);
+                    lock (_freshTargetSync)
+                    {
+                        _freshTargetBaselines.Remove(originalId);
+                        _freshTargetBaselines.Remove(tab.Id);
+                    }
+                    return tab;
+                }
+
+                if (matches.Count > 1)
+                    return null;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ChromeTransportFailureClassifier.IsTransient(ex))
+            {
+                // Target promotion and CDP replacement are expected to be briefly unstable.
+            }
+
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Waits for a newly-created root ChatGPT target to acquire its stable conversation URL after
     /// the first confirmed send. Uses the repository's existing new-chat stable-target selector so
     /// CDP target replacement during navigation is handled without binding to an older chat.
