@@ -95,11 +95,13 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("[data-turn=\"user\"]", chrome, StringComparison.Ordinal);
         Assert.Contains("[data-testid*=\"user-message\"]", chrome, StringComparison.Ordinal);
         Assert.Contains("user-message-bubble-color", chrome, StringComparison.Ordinal);
-        Assert.Contains("[class~=\"group/user-message\"]", chrome, StringComparison.Ordinal);
+        Assert.Contains("[data-chatgpt-search-unit-key$=\":user\"]", chrome, StringComparison.Ordinal);
         Assert.Contains("[role=\"region\"][aria-label=\"Conversation\"]", chrome, StringComparison.Ordinal);
         Assert.Contains("You said:", chrome, StringComparison.Ordinal);
         Assert.Contains("[data-turn=\"assistant\"]", chrome, StringComparison.Ordinal);
         Assert.Contains("[data-testid*=\"assistant-message\"]", chrome, StringComparison.Ordinal);
+        Assert.Contains("[data-chatgpt-search-unit-key$=\":assistant\"]", chrome, StringComparison.Ordinal);
+        Assert.Contains("[data-markdown-text-style=\"assistant-message\"]", chrome, StringComparison.Ordinal);
         Assert.Contains("ChatGPT said:", chrome, StringComparison.Ordinal);
         Assert.Contains("__gptDesktopChatStateCache?.version === 8", chrome, StringComparison.Ordinal);
         Assert.Contains("const version = 8;", chrome, StringComparison.Ordinal);
