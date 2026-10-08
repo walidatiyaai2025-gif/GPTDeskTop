@@ -106,7 +106,7 @@ public sealed class SimpleMonitorModeRegressionTests
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
 
         Assert.Contains("RollOverBeforeSendAsync", runner, StringComparison.Ordinal);
-        Assert.Contains("No sender has been entered for this iteration", runner, StringComparison.Ordinal);
+        Assert.Contains("No physical submit has been accepted in this path", runner, StringComparison.Ordinal);
         Assert.Contains("RollOverAfterCheckpointAsync", runner, StringComparison.Ordinal);
         Assert.Contains("Confirmed delivery is durable before any later read or rollover", runner, StringComparison.Ordinal);
         Assert.Contains("The submit command was dispatched without a confirmed receipt", runner, StringComparison.Ordinal);
