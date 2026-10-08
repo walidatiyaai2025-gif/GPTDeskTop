@@ -140,6 +140,32 @@ public sealed class TypedDeliveryOutcomeTests
         Assert.False(endpoint.CompleteAssistantAfterClick);
     }
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task StableFreshConversationReceiptVerifierConfirmsVisibleExpectedTurn(
+        bool roleAwareReceipt,
+        bool roleAgnosticTurns)
+    {
+        await using var endpoint = new FakeCdp
+        {
+            ShowReceipt = roleAwareReceipt,
+            CompleteConversationTurnsAfterClick = roleAgnosticTurns
+        };
+        endpoint.Clicks = 1;
+        endpoint.Tab.Url = "https://chatgpt.com/c/new";
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var confirmed = await endpoint.Chrome.ConfirmExpectedMessageOnStableConversationAsync(
+            endpoint.Tab,
+            "test",
+            stop.Token);
+
+        Assert.True(confirmed);
+        Assert.Equal(1, endpoint.Clicks);
+        Assert.Equal(0, endpoint.Reloads);
+    }
+
     [Fact]
     public async Task NoReceiptOrGenerationTerminatesAmbiguousWithoutSecondClick()
     {
