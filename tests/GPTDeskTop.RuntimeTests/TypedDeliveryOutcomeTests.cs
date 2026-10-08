@@ -119,6 +119,28 @@ public sealed class TypedDeliveryOutcomeTests
     }
 
     [Fact]
+    public async Task RoleSelectorsCanDisappearAndConversationTurnDeltaStillConfirmsDelivered()
+    {
+        await using var endpoint = new FakeCdp { CompleteConversationTurnsAfterClick = true };
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var outcome = await endpoint.Chrome.SendChatMessageWithOutcomeAsync(
+            endpoint.Tab,
+            "test",
+            stop.Token,
+            requireNewTurn: true,
+            readOnlyReconciliation: true,
+            readOnlyReconciliationTimeout: TimeSpan.FromSeconds(4));
+
+        Assert.Equal(VerifiedDeliveryOutcome.Delivered, outcome);
+        Assert.Equal(1, endpoint.Clicks);
+        Assert.Equal(0, endpoint.Reloads);
+        Assert.False(endpoint.ShowReceipt);
+        Assert.False(endpoint.GenerateAfterClick);
+        Assert.False(endpoint.CompleteAssistantAfterClick);
+    }
+
+    [Fact]
     public async Task NoReceiptOrGenerationTerminatesAmbiguousWithoutSecondClick()
     {
         await using var endpoint = new FakeCdp();
@@ -181,6 +203,7 @@ public sealed class TypedDeliveryOutcomeTests
         public bool PromoteTarget = true;
         public bool GenerateAfterClick;
         public bool CompleteAssistantAfterClick;
+        public bool CompleteConversationTurnsAfterClick;
         public bool DropInsertedText;
         public volatile bool ShowReceipt;
         public int InputInsertions;
@@ -311,6 +334,17 @@ public sealed class TypedDeliveryOutcomeTests
                     }
                     else if (expression.Contains("return (text || '').trim() === expected", StringComparison.Ordinal))
                         value = string.Equals(ComposerText.Trim(), "test", StringComparison.Ordinal);
+                    else if (expression.Contains("gptdesktop-conversation-turn-snapshot-v1", StringComparison.Ordinal))
+                    {
+                        var completedExchange = CompleteConversationTurnsAfterClick && Clicks > 0;
+                        value = new
+                        {
+                            marker = "gptdesktop-conversation-turn-snapshot-v1",
+                            count = completedExchange ? 2 : 0,
+                            previousText = completedExchange ? "test" : "",
+                            lastText = completedExchange ? "fast completed assistant reply" : ""
+                        };
+                    }
                     else if (expression.Contains("return { count:", StringComparison.Ordinal))
                         value = new { count = ShowReceipt ? 1 : 0, lastText = ShowReceipt ? "test" : "" };
                     else
