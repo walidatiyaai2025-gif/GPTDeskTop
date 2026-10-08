@@ -243,45 +243,32 @@ public sealed class ChromeDevToolsService
     ];
     const seenAssistantTurns = new Set();
     const messages = [];
-    const messageTexts = [];
     for (const selector of assistantSelectors) {
       for (const node of conversationRoot.querySelectorAll(selector)) {
         const turn = node.closest('[data-testid^="conversation-turn-"],article') || node;
         if (seenAssistantTurns.has(turn)) continue;
         seenAssistantTurns.add(turn);
         messages.push(node);
-        let messageText = normalizeMessageText(node.innerText || node.textContent || '');
-        if (messageText.startsWith('ChatGPT said:'))
-          messageText = normalizeMessageText(messageText.slice('ChatGPT said:'.length));
-        messageTexts.push(messageText);
       }
     }
 
     // Current ChatGPT exposes the rendered assistant body with a semantic markdown style.
-    // Prefer that if the per-turn role key is ever absent, then fall back to screen-reader headings.
+    // Keep the node only here; do NOT serialize its growing innerText while generation is active.
     if (messages.length === 0) {
       for (const node of conversationRoot.querySelectorAll('[data-markdown-text-style="assistant-message"]')) {
-        const text = normalizeMessageText(node.innerText || node.textContent || '');
-        if (!text) continue;
         messages.push(node);
-        messageTexts.push(text);
       }
     }
 
-    // ChatGPT's current browser transcript also keeps stable screen-reader headings
-    // ("ChatGPT said:") inside the conversation region.
+    // ChatGPT also keeps stable screen-reader headings ("ChatGPT said:"). Reading the tiny
+    // heading label is safe during streaming; defer reading its parent response body until idle.
     if (messages.length === 0) {
       for (const heading of conversationRoot.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
         if (normalizeMessageText(heading.innerText || heading.textContent || '') !== 'ChatGPT said:') continue;
         const block = heading.parentElement;
         if (!block || seenAssistantTurns.has(block)) continue;
-        let text = normalizeMessageText(block.innerText || block.textContent || '');
-        if (text.startsWith('ChatGPT said:'))
-          text = normalizeMessageText(text.slice('ChatGPT said:'.length));
-        if (!text) continue;
         seenAssistantTurns.add(block);
         messages.push(block);
-        messageTexts.push(text);
       }
     }
 
@@ -291,7 +278,14 @@ public sealed class ChromeDevToolsService
     // markers can survive hydration/reconciliation after the response has actually completed.
     const isGenerating = !!stopButton;
     const errorText = findErrorText();
-    const last = !isGenerating && messageTexts.length ? messageTexts[messageTexts.length - 1] : '';
+    const last = !isGenerating && lastAssistant
+      ? (() => {
+          let text = normalizeMessageText(lastAssistant.innerText || lastAssistant.textContent || '');
+          if (text.startsWith('ChatGPT said:'))
+            text = normalizeMessageText(text.slice('ChatGPT said:'.length));
+          return text;
+        })()
+      : '';
     state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, autoFollow: state.autoFollow?.snapshot?.() || { mode: 'disabled', sequence: 0, event: 'disabled' } };
     if (isGenerating) state.autoFollow?.onMutation?.();
     return state.snapshot;
