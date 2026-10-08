@@ -130,6 +130,23 @@ public sealed class SimpleMonitorProfileSession : IAsyncDisposable
     }
 
     /// <summary>
+    /// Non-destructive runtime reattach for a monitor that already owns the selected managed
+    /// Chrome session. This path NEVER closes ChatGPT tabs, never clears a prepared composer
+    /// draft, and never launches/relaunches Chrome. It only waits for the exact same CDP endpoint
+    /// to become readable again.
+    /// </summary>
+    public async Task WaitForSameManagedSessionAsync(
+        Action<string>? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_startLaunchAuthorized)
+            throw new InvalidOperationException("Chrome recovery is not authorized until Start Monitor is explicitly pressed for this selected profile.");
+
+        status?.Invoke($"SESSION RECOVERY — waiting for the same selected profile '{Profile.DisplayLabel}' on CDP {DebuggingPort}. Existing ChatGPT tabs and prepared drafts are preserved.");
+        await EnsureRuntimeSelectedBrowserAvailableAsync(cancellationToken, status).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Clean recovery for a monitor worker that was already started explicitly. It never touches
     /// normal Chrome and it never starts/restarts a Chrome process. Only other GPTDeskTop-managed
     /// automation sessions are closed, then ChatGPT tabs on this exact selected managed endpoint
