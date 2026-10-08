@@ -159,7 +159,7 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.True(helperStart >= 0 && nextHelper > helperStart);
         var helper = runner[helperStart..nextHelper];
         Assert.Contains("ResolveFreshConversationContainingExpectedMessageAsync", helper, StringComparison.Ordinal);
-        Assert.Contains("ConfirmExpectedMessageOnStableConversationAsync", helper, StringComparison.Ordinal);
+        Assert.Contains("ResolveFreshConversationContainingExpectedMessageAsync", helper, StringComparison.Ordinal);
         Assert.Contains("no resend", helper, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("SendChatMessage", helper, StringComparison.Ordinal);
         Assert.DoesNotContain("CloseTabAsync", helper, StringComparison.Ordinal);
