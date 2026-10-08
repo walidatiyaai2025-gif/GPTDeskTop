@@ -61,7 +61,6 @@ public sealed class ChromeDevToolsService
     // perfectly healthy. Never let those global controls trigger a conversation rollover.
     const conversationRoot =
       document.querySelector('[role="region"][aria-label="Conversation"]') ||
-      document.querySelector('main') ||
       document;
     const selectors = ['[role="alert"]', '[aria-live="assertive"]', '[data-testid*="error"]', '[data-testid*="retry"]'];
     for (const selector of selectors) {
