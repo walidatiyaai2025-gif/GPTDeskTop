@@ -238,7 +238,8 @@ public sealed class ChromeDevToolsService
       '[data-author="assistant"]',
       '[data-author-role="assistant"]',
       '[data-message-role="assistant"]',
-      '[data-testid*="assistant-message"]'
+      '[data-testid*="assistant-message"]',
+      '[data-chatgpt-search-unit-key$=":assistant"]'
     ];
     const seenAssistantTurns = new Set();
     const messages = [];
@@ -249,13 +250,26 @@ public sealed class ChromeDevToolsService
         if (seenAssistantTurns.has(turn)) continue;
         seenAssistantTurns.add(turn);
         messages.push(node);
-        messageTexts.push(normalizeMessageText(node.innerText || node.textContent || ''));
+        let messageText = normalizeMessageText(node.innerText || node.textContent || '');
+        if (messageText.startsWith('ChatGPT said:'))
+          messageText = normalizeMessageText(messageText.slice('ChatGPT said:'.length));
+        messageTexts.push(messageText);
       }
     }
 
-    // ChatGPT's current browser transcript no longer exposes role/data-turn attributes.
-    // It does keep stable screen-reader headings ("ChatGPT said:") inside the conversation
-    // region. Use those headings only as a fallback so older markup keeps its existing path.
+    // Current ChatGPT exposes the rendered assistant body with a semantic markdown style.
+    // Prefer that if the per-turn role key is ever absent, then fall back to screen-reader headings.
+    if (messages.length === 0) {
+      for (const node of conversationRoot.querySelectorAll('[data-markdown-text-style="assistant-message"]')) {
+        const text = normalizeMessageText(node.innerText || node.textContent || '');
+        if (!text) continue;
+        messages.push(node);
+        messageTexts.push(text);
+      }
+    }
+
+    // ChatGPT's current browser transcript also keeps stable screen-reader headings
+    // ("ChatGPT said:") inside the conversation region.
     if (messages.length === 0) {
       for (const heading of conversationRoot.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
         if (normalizeMessageText(heading.innerText || heading.textContent || '') !== 'ChatGPT said:') continue;
@@ -1806,8 +1820,21 @@ public sealed class ChromeDevToolsService
     }
   }
 
-  // Current ChatGPT markup exposes each transcript role through an sr-only heading even
-  // when all former data-message/data-turn/article hooks are absent.
+  // Current ChatGPT exposes transcript units with a stable role suffix. Query user and
+  // assistant units together so document order remains user1/assistant1/user2/assistant2.
+  if (turnTexts.length === 0) {
+    for (const node of root.querySelectorAll(
+      '[data-chatgpt-search-unit-key$=":user"],[data-chatgpt-search-unit-key$=":assistant"]')) {
+      let text = normalize(node.innerText || node.textContent || '');
+      if (text.startsWith('You said:'))
+        text = normalize(text.slice('You said:'.length));
+      if (text.startsWith('ChatGPT said:'))
+        text = normalize(text.slice('ChatGPT said:'.length));
+      if (text) turnTexts.push(text);
+    }
+  }
+
+  // Screen-reader headings remain the final semantic fallback if role-key units disappear.
   if (turnTexts.length === 0) {
     for (const heading of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
       const label = normalize(heading.innerText || heading.textContent || '');
@@ -1904,13 +1931,13 @@ public sealed class ChromeDevToolsService
     '[data-testid*="user-message"]',
     '.user-message-bubble-color',
     '[class*="user-message-bubble"]',
-    '[class~="group/user-message"]'
+    '[data-chatgpt-search-unit-key$=":user"]'
   ];
   const seen = new Set();
   const messageTexts = [];
   for (const selector of selectors) {
     for (const node of root.querySelectorAll(selector)) {
-      const turn = node.closest('[data-testid^="conversation-turn-"],article,[class~="group/user-message"]') || node;
+      const turn = node.closest('[data-testid^="conversation-turn-"],article,[data-chatgpt-search-unit-key$=":user"]') || node;
       if (seen.has(turn)) continue;
       seen.add(turn);
       const text = normalize(node.innerText || node.textContent || '');
