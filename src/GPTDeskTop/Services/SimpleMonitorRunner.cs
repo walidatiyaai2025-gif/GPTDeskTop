@@ -318,14 +318,32 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
 
                     if (delivery == VerifiedDeliveryOutcome.Ambiguous)
                     {
-                        if (await TryObserveRateLimitAsync(session, activeTab, cancellationToken).ConfigureAwait(false))
-                        {
-                            throw new SimpleMonitorBlockedException(
-                                "ChatGPT rate limited the profile while the stable sender could not confirm delivery. New Chat and automatic resend are blocked until the message disposition is reconciled.");
-                        }
+                        // A fresh-root submit can be accepted at the exact moment ChatGPT promotes
+                        // the page to /c/{id} and replaces the CDP target. The low-level sender must
+                        // fail closed because it does not own the fresh-target baseline. The Monitor
+                        // Only session DOES own that baseline, so resolve the attributable stable
+                        // conversation and perform one read-only receipt check there. Never resend.
+                        var reconciledStableTab = await TryReconcileAmbiguousFreshDeliveryAsync(
+                            session,
+                            activeTab,
+                            message,
+                            cancellationToken).ConfigureAwait(false);
 
-                        throw new SimpleMonitorBlockedException(
-                            "The submit command was dispatched without a confirmed receipt. Automatic New Chat/resend is blocked for this message.");
+                        if (reconciledStableTab is not null)
+                        {
+                            activeTab = reconciledStableTab;
+                        }
+                        else
+                        {
+                            if (await TryObserveRateLimitAsync(session, activeTab, cancellationToken).ConfigureAwait(false))
+                            {
+                                throw new SimpleMonitorBlockedException(
+                                    "ChatGPT rate limited the profile while the stable sender could not confirm delivery. New Chat and automatic resend are blocked until the message disposition is reconciled.");
+                            }
+
+                            throw new SimpleMonitorBlockedException(
+                                "The submit command was dispatched without a confirmed receipt. Automatic New Chat/resend is blocked for this message.");
+                        }
                     }
                 }
                 catch (ConversationTargetException ex)
@@ -629,6 +647,85 @@ public sealed class SimpleMonitorRunner : IAsyncDisposable
                     "RecoveringSession");
             }
         }
+    }
+
+    private async Task<ChromeTab?> TryReconcileAmbiguousFreshDeliveryAsync(
+        SimpleMonitorProfileSession session,
+        ChromeTab activeTab,
+        string expectedMessage,
+        CancellationToken cancellationToken)
+    {
+        _lastRecovery = "Resolving post-submit stable receipt";
+        _lastTransientError = string.Empty;
+        _lastError = string.Empty;
+        _lastCdpEvent = "Ambiguous physical submit; resolve fresh target to stable conversation read-only";
+        SetStatus(
+            "DELIVERY RECONCILIATION — submit was dispatched but the original CDP target lost the receipt. Resolving the same fresh chat to its stable conversation without resending.",
+            "Reconciling");
+
+        ChromeTab? stableTab;
+        try
+        {
+            stableTab = await session.WaitForStableConversationAsync(activeTab, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _lastTransientError = ex.Message;
+            _lastRecovery = "Stable post-submit target not resolved";
+            _lastCdpEvent = "Post-submit stable target resolution failed; resend remains forbidden";
+            return null;
+        }
+
+        if (stableTab is null || !SimpleMonitorProfileSession.TryGetConversationId(stableTab.Url, out _))
+        {
+            _lastRecovery = "Stable post-submit target not found";
+            _lastCdpEvent = "No attributable stable conversation after ambiguous submit";
+            return null;
+        }
+
+        SetStatus(
+            "DELIVERY RECONCILIATION — stable fresh conversation found. Verifying the expected user turn read-only; no resend.",
+            "Reconciling");
+
+        bool confirmed;
+        try
+        {
+            confirmed = await session.Chrome.ConfirmExpectedMessageOnStableConversationAsync(
+                stableTab,
+                expectedMessage,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _lastTransientError = ex.Message;
+            _lastRecovery = "Stable receipt verification failed";
+            _lastCdpEvent = "Stable conversation resolved but receipt verification failed";
+            return null;
+        }
+
+        if (!confirmed)
+        {
+            _lastRecovery = "Stable conversation found without matching receipt";
+            _lastCdpEvent = "Stable conversation did not expose expected user turn; resend remains forbidden";
+            return null;
+        }
+
+        _lastRecovery = "Ambiguous submit reconciled as delivered";
+        _lastTransientError = string.Empty;
+        _lastError = string.Empty;
+        _lastCdpEvent = "Stable fresh conversation contains expected user turn; delivery confirmed";
+        SetStatus(
+            "DELIVERY CONFIRMED — the expected user message is visible in the attributable stable fresh conversation. Continuing from the confirmed checkpoint; no resend occurred.",
+            "ReceiptConfirmed");
+        return stableTab;
     }
 
     private async Task<ChromeTab?> TryRecoverPreSubmitTargetAsync(
