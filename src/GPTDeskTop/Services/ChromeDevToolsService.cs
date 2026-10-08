@@ -278,14 +278,12 @@ public sealed class ChromeDevToolsService
     // markers can survive hydration/reconciliation after the response has actually completed.
     const isGenerating = !!stopButton;
     const errorText = findErrorText();
-    const last = !isGenerating && lastAssistant
-      ? (() => {
-          let text = normalizeMessageText(lastAssistant.innerText || lastAssistant.textContent || '');
-          if (text.startsWith('ChatGPT said:'))
-            text = normalizeMessageText(text.slice('ChatGPT said:'.length));
-          return text;
-        })()
-      : '';
+    const last = !isGenerating && lastAssistant ? (() => {
+      let text = normalizeMessageText(lastAssistant.innerText || lastAssistant.textContent || '');
+      if (text.startsWith('ChatGPT said:'))
+        text = normalizeMessageText(text.slice('ChatGPT said:'.length));
+      return text;
+    })() : '';
     state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, autoFollow: state.autoFollow?.snapshot?.() || { mode: 'disabled', sequence: 0, event: 'disabled' } };
     if (isGenerating) state.autoFollow?.onMutation?.();
     return state.snapshot;
