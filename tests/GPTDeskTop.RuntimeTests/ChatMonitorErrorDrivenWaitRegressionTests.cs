@@ -51,6 +51,10 @@ public sealed class ChatMonitorErrorDrivenWaitRegressionTests
         Assert.Contains("[role=\"alert\"]", source, StringComparison.Ordinal);
         Assert.Contains("[aria-live=\"assertive\"]", source, StringComparison.Ordinal);
         Assert.Contains("[data-testid*=\"error\"]", source, StringComparison.Ordinal);
+        Assert.Contains("[role=\"region\"][aria-label=\"Conversation\"]", source, StringComparison.Ordinal);
+        Assert.Contains("conversationRoot.querySelectorAll(selector)", source, StringComparison.Ordinal);
+        Assert.Contains("conversationRoot.querySelectorAll('button,[role=\"button\"]')", source, StringComparison.Ordinal);
+        Assert.Contains("sidebar/history", source, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("if (!visible(element)) continue;", source, StringComparison.Ordinal);
         Assert.Contains("const isGenerating = !!stopButton;", source, StringComparison.Ordinal);
         Assert.DoesNotContain("const isGenerating = !!stopButton || streamingSignal;", source, StringComparison.Ordinal);
