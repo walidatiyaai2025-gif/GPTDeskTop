@@ -97,7 +97,7 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("user-message-bubble-color", chrome, StringComparison.Ordinal);
         Assert.Contains("[data-turn=\"assistant\"]", chrome, StringComparison.Ordinal);
         Assert.Contains("[data-testid*=\"assistant-message\"]", chrome, StringComparison.Ordinal);
-        Assert.Contains("__gptDesktopChatStateCache?.version === 7", chrome, StringComparison.Ordinal);
+        Assert.Contains("__gptDesktopChatStateCache?.version === 8", chrome, StringComparison.Ordinal);
     }
 
     [Fact]
