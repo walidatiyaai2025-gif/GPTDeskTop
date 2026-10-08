@@ -106,12 +106,32 @@ public sealed class SimpleMonitorModeRegressionTests
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
 
         Assert.Contains("RollOverBeforeSendAsync", runner, StringComparison.Ordinal);
-        Assert.Contains("No sender has been entered for this iteration", runner, StringComparison.Ordinal);
+        Assert.Contains("No physical submit has been accepted in this path", runner, StringComparison.Ordinal);
         Assert.Contains("RollOverAfterCheckpointAsync", runner, StringComparison.Ordinal);
         Assert.Contains("Confirmed delivery is durable before any later read or rollover", runner, StringComparison.Ordinal);
         Assert.Contains("The submit command was dispatched without a confirmed receipt", runner, StringComparison.Ordinal);
         Assert.Contains("automatic New Chat/resend is blocked", runner, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Fresh-chat rollover is blocked for this message", runner, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DefinitelyNotSubmittedDraftIsReboundBeforeAnyFreshChatRollover()
+    {
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
+
+        Assert.Contains("delivery == VerifiedDeliveryOutcome.NotSubmitted", runner, StringComparison.Ordinal);
+        Assert.Contains("preserving the prepared draft", runner, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("TryRecoverPreSubmitTargetAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("WaitForSameManagedSessionAsync", runner, StringComparison.Ordinal);
+        Assert.Contains("RefreshLiveTabAsync(activeTab", runner, StringComparison.Ordinal);
+        Assert.Contains("same fresh ChatGPT target recovered", runner, StringComparison.OrdinalIgnoreCase);
+
+        var recoverStart = runner.IndexOf("private async Task<ChromeTab?> TryRecoverPreSubmitTargetAsync", StringComparison.Ordinal);
+        var rolloverStart = runner.IndexOf("private async Task<ChromeTab> RollOverBeforeSendAsync", StringComparison.Ordinal);
+        Assert.True(recoverStart >= 0 && rolloverStart > recoverStart);
+        var recoverRegion = runner[recoverStart..rolloverStart];
+        Assert.DoesNotContain("CloseTabAsync", recoverRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateFreshTargetAsync", recoverRegion, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -123,6 +143,7 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("CleanFreshTargetRecoveryDelay = TimeSpan.FromMinutes(15)", runner, StringComparison.Ordinal);
         Assert.Contains("RECOVERY WAIT", runner, StringComparison.Ordinal);
         Assert.Contains("Start Monitor remains running", runner, StringComparison.Ordinal);
+        Assert.Contains("WaitForSameManagedSessionAsync", runner, StringComparison.Ordinal);
         Assert.Contains("RecoverAfterAuthorizedStartAsync", runner, StringComparison.Ordinal);
         Assert.Contains("same pending message", runner, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("CloseAutomationOwnedChatTabsAsync", session, StringComparison.Ordinal);
@@ -269,6 +290,6 @@ public sealed class SimpleMonitorModeRegressionTests
     public void ProductVersionIsBumpedToTwoPointZeroPointFiftyOne()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.61</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.62</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }

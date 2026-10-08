@@ -53,6 +53,24 @@ public sealed class MonitorConnectedChromeReuseRegressionTests
     }
 
     [Fact]
+    public void ImmediateSameSessionRecoveryPreservesOpenChatTabsAndPreparedDrafts()
+    {
+        var source = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");
+        var waitStart = source.IndexOf("public async Task WaitForSameManagedSessionAsync", StringComparison.Ordinal);
+        var cleanStart = source.IndexOf("public async Task RecoverAfterAuthorizedStartAsync", StringComparison.Ordinal);
+
+        Assert.True(waitStart >= 0);
+        Assert.True(cleanStart > waitStart);
+        var waitRegion = source[waitStart..cleanStart];
+
+        Assert.Contains("EnsureRuntimeSelectedBrowserAvailableAsync", waitRegion, StringComparison.Ordinal);
+        Assert.Contains("prepared drafts are preserved", waitRegion, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("CloseAutomationOwnedChatTabsAsync", waitRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("Process.Start(", waitRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateNewChatTabAsync", waitRegion, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RuntimeRecoveryCannotReachTheProcessLaunchBoundary()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorProfileSession.cs");

@@ -33,7 +33,7 @@ public sealed class RuntimeEvaluateTimeoutAutoRestartRegressionTests
         var passiveRead = runner[start..end];
 
         Assert.Contains("const int maxAttempts = 4", passiveRead, StringComparison.Ordinal);
-        Assert.Contains("RecoverAfterAuthorizedStartAsync", passiveRead, StringComparison.Ordinal);
+        Assert.Contains("WaitForSameManagedSessionAsync", passiveRead, StringComparison.Ordinal);
         Assert.Contains("passive same-session recovery", passiveRead, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("no Chrome process was restarted", passiveRead, StringComparison.Ordinal);
         Assert.Contains("throw new ConversationTargetException", passiveRead, StringComparison.Ordinal);
@@ -72,17 +72,20 @@ public sealed class RuntimeEvaluateTimeoutAutoRestartRegressionTests
         var freshTarget = runner[start..end];
 
         Assert.Contains("IsAutomationSessionAvailableAsync", freshTarget, StringComparison.Ordinal);
+        Assert.Contains("WaitForSameManagedSessionAsync", freshTarget, StringComparison.Ordinal);
         Assert.Contains("RecoverAfterAuthorizedStartAsync", freshTarget, StringComparison.Ordinal);
         Assert.Contains("no browser will be closed or relaunched", freshTarget, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("CleanFreshTargetRecoveryDelay", freshTarget, StringComparison.Ordinal);
         Assert.DoesNotContain("RuntimeEvaluateTimeoutRecoveryService", freshTarget, StringComparison.Ordinal);
 
         var endpointProbe = freshTarget.IndexOf("IsAutomationSessionAvailableAsync", StringComparison.Ordinal);
-        var sameSessionRecovery = freshTarget.IndexOf("RecoverAfterAuthorizedStartAsync", StringComparison.Ordinal);
+        var sameSessionRecovery = freshTarget.IndexOf("WaitForSameManagedSessionAsync", StringComparison.Ordinal);
         var fifteenMinuteFallback = freshTarget.IndexOf("CleanFreshTargetRecoveryDelay", StringComparison.Ordinal);
+        var destructiveCleanRecovery = freshTarget.IndexOf("RecoverAfterAuthorizedStartAsync", sameSessionRecovery, StringComparison.Ordinal);
 
-        Assert.True(sameSessionRecovery > endpointProbe, "Same-session recovery must follow a failed endpoint probe.");
-        Assert.True(fifteenMinuteFallback > sameSessionRecovery, "The 15-minute wait is fallback only after bounded passive same-session recovery.");
+        Assert.True(sameSessionRecovery > endpointProbe, "Non-destructive same-session recovery must follow a failed endpoint probe.");
+        Assert.True(fifteenMinuteFallback > sameSessionRecovery, "The 15-minute wait is fallback only after bounded non-destructive same-session recovery.");
+        Assert.True(destructiveCleanRecovery > fifteenMinuteFallback, "Tab-cleaning recovery must be reserved for the explicit delayed clean-retry path.");
     }
 
     [Fact]
