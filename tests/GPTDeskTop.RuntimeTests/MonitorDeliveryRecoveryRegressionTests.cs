@@ -1,3 +1,5 @@
+using GPTDeskTop.Services;
+
 namespace GPTDeskTop.RuntimeTests;
 
 public sealed class MonitorDeliveryRecoveryRegressionTests
@@ -19,6 +21,22 @@ public sealed class MonitorDeliveryRecoveryRegressionTests
         Assert.Contains("isGenerating", policy, StringComparison.Ordinal);
         Assert.Contains("if (requireNewTurn) return false", policy, StringComparison.Ordinal);
     }
+
+    [Theory]
+    [InlineData(-1, 1, false)]
+    [InlineData(0, 0, false)]
+    [InlineData(0, 1, true)]
+    [InlineData(4, 5, true)]
+    [InlineData(5, 4, false)]
+    public void CompletedAssistantTurnDeltaIsPositiveAcceptanceEvidence(
+        int baselineAssistantCount,
+        int observedAssistantCount,
+        bool expected)
+        => Assert.Equal(
+            expected,
+            MonitorDeliveryRecoveryPolicy.HasNewAssistantTurnAfterSubmit(
+                baselineAssistantCount,
+                observedAssistantCount));
 
     [Fact]
     public void TransportRebindCanFallBackToStableConversationIdentity()

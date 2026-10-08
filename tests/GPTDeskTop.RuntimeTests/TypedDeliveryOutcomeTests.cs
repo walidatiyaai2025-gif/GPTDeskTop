@@ -99,6 +99,26 @@ public sealed class TypedDeliveryOutcomeTests
     }
 
     [Fact]
+    public async Task CompletedAssistantTurnAfterDispatchConfirmsDeliveryWhenGenerationWasTooFastToObserve()
+    {
+        await using var endpoint = new FakeCdp { CompleteAssistantAfterClick = true };
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var outcome = await endpoint.Chrome.SendChatMessageWithOutcomeAsync(
+            endpoint.Tab,
+            "test",
+            stop.Token,
+            requireNewTurn: true,
+            readOnlyReconciliation: true,
+            readOnlyReconciliationTimeout: TimeSpan.FromSeconds(4));
+
+        Assert.Equal(VerifiedDeliveryOutcome.Delivered, outcome);
+        Assert.Equal(1, endpoint.Clicks);
+        Assert.Equal(0, endpoint.Reloads);
+        Assert.False(endpoint.ShowReceipt);
+    }
+
+    [Fact]
     public async Task NoReceiptOrGenerationTerminatesAmbiguousWithoutSecondClick()
     {
         await using var endpoint = new FakeCdp();
@@ -160,6 +180,7 @@ public sealed class TypedDeliveryOutcomeTests
         public bool RejectClick;
         public bool PromoteTarget = true;
         public bool GenerateAfterClick;
+        public bool CompleteAssistantAfterClick;
         public bool DropInsertedText;
         public volatile bool ShowReceipt;
         public int InputInsertions;
@@ -295,7 +316,19 @@ public sealed class TypedDeliveryOutcomeTests
                     else
                     {
                         var sendReady = string.Equals(ComposerText, "test", StringComparison.Ordinal);
-                        value = new { isGenerating = GenerateAfterClick && Clicks > 0, editorPresent = true, editorEnabled = true, sendButtonPresent = sendReady, sendButtonEnabled = sendReady, assistantCount = 0, lastAssistantText = "", errorText = "" };
+                        var assistantCount = CompleteAssistantAfterClick && Clicks > 0 ? 1 : 0;
+                        var assistantText = assistantCount > 0 ? "completed fast response" : "";
+                        value = new
+                        {
+                            isGenerating = GenerateAfterClick && Clicks > 0,
+                            editorPresent = true,
+                            editorEnabled = true,
+                            sendButtonPresent = sendReady,
+                            sendButtonEnabled = sendReady,
+                            assistantCount,
+                            lastAssistantText = assistantText,
+                            errorText = ""
+                        };
                     }
                     var response = JsonSerializer.SerializeToUtf8Bytes(new { id, result = new { result = new { type = value is bool ? "boolean" : "object", value } } });
                     await socket.SendAsync(response, WebSocketMessageType.Text, true, _stop.Token);

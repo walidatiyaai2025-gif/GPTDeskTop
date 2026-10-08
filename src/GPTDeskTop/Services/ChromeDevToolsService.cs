@@ -1133,9 +1133,27 @@ public sealed class ChromeDevToolsService
             return false;
         }
 
+        ChatPageState? baselineDeliveryState = null;
+        try
+        {
+            // Capture the assistant-turn baseline BEFORE any physical submit. If ChatGPT accepts
+            // the message and produces a very fast response that is already complete before the
+            // first reconciliation poll, a later assistant-count increase is still conclusive
+            // read-only acceptance evidence on the same allowed target.
+            baselineDeliveryState = await GetChatStateAsync(tab, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsRecoverableMonitorTransportException(ex))
+        {
+            // Do not make the baseline state a new liveness dependency. Existing user-turn and
+            // generation receipts remain available; we simply cannot use completed-response delta
+            // evidence for this attempt if the pre-submit state read was transiently unavailable.
+            _sessionPool.Invalidate(tab.Id);
+        }
+        var baselineAssistantCount = baselineDeliveryState?.AssistantCount ?? -1;
+
         if (string.Equals(before.LastText, expected, StringComparison.Ordinal))
         {
-            var deliveryState = await GetChatStateAsync(tab, cancellationToken);
+            var deliveryState = baselineDeliveryState ?? await GetChatStateAsync(tab, cancellationToken).ConfigureAwait(false);
             if (MonitorDeliveryRecoveryPolicy.CanReuseMatchingUserTailAsReceipt(
                     requireNewTurn,
                     before.Count,
@@ -1163,8 +1181,13 @@ public sealed class ChromeDevToolsService
             if (readOnlyReconciliation && attempt.SubmitMayHaveOccurred)
             {
                 reconciling?.Invoke();
-                var receipt = await ReconcileDeliveryReadOnlyAsync(tab, expected, before.Count,
-                    unacknowledgedSubmitOriginUrl!, cancellationToken).ConfigureAwait(false);
+                var receipt = await ReconcileDeliveryReadOnlyAsync(
+                    tab,
+                    expected,
+                    before.Count,
+                    baselineAssistantCount,
+                    unacknowledgedSubmitOriginUrl!,
+                    cancellationToken).ConfigureAwait(false);
                 if (receipt == VerifiedDeliveryOutcome.Delivered) return true;
                 // Missing target, partial hydration, rendered error or transport failure never authorizes
                 // a second click, reload or new chat. Keep the observation window bounded so Monitor Only
@@ -1421,7 +1444,11 @@ public sealed class ChromeDevToolsService
     }
 
     private async Task<VerifiedDeliveryOutcome> ReconcileDeliveryReadOnlyAsync(
-        ChromeTab tab, string expected, int baselineCount, string originUrl,
+        ChromeTab tab,
+        string expected,
+        int baselineCount,
+        int baselineAssistantCount,
+        string originUrl,
         CancellationToken cancellationToken)
     {
         try
@@ -1441,9 +1468,21 @@ public sealed class ChromeDevToolsService
                 && string.Equals(snapshot.LastText, expected, StringComparison.Ordinal))
                 return VerifiedDeliveryOutcome.Delivered;
 
-            // The pre-submit gate verified this target was idle. Generation beginning on the same
-            // allowed target after dispatch is positive acceptance evidence even when the user-turn
-            // DOM receipt is temporarily late. It is read-only evidence and never authorizes another click.
+            // The pre-submit gate verified this target was idle. A NEW assistant turn on the same
+            // allowed target after dispatch proves ChatGPT accepted the user turn even if generation
+            // started and finished between polls. This closes the fast-response gap that previously
+            // left Monitor Only at Sent: 0 despite a visibly completed reply.
+            var postSubmitState = await GetChatStateAsync(tab, cancellationToken).ConfigureAwait(false);
+            if (MonitorDeliveryRecoveryPolicy.HasNewAssistantTurnAfterSubmit(
+                    baselineAssistantCount,
+                    postSubmitState.AssistantCount))
+            {
+                VerifiedSendDiagnostics.Record("ReceiptConfirmed", "completed-assistant-turn-after-submit", 1);
+                return VerifiedDeliveryOutcome.Delivered;
+            }
+
+            // Generation beginning on the same allowed target after dispatch is also positive
+            // acceptance evidence when reconciliation catches the response while it is still running.
             var readiness = await ReadComposerReadinessAsync(tab, cancellationToken).ConfigureAwait(false);
             if (readiness.IsGenerating)
             {

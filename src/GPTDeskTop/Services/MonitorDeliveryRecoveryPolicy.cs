@@ -26,6 +26,12 @@ internal static class MonitorDeliveryRecoveryPolicy
         return isGenerating || assistantMessageCount < userMessageCount;
     }
 
+    internal static bool HasNewAssistantTurnAfterSubmit(
+        int baselineAssistantMessageCount,
+        int observedAssistantMessageCount)
+        => baselineAssistantMessageCount >= 0
+            && observedAssistantMessageCount > baselineAssistantMessageCount;
+
     internal static PostRefreshUserTurnObservation ClassifyPostRefreshUserTurn(
         bool snapshotReadable,
         int baselineUserTurnCount,
