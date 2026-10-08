@@ -1904,8 +1904,7 @@ public sealed class ChromeDevToolsService
     '[data-testid*="user-message"]',
     '.user-message-bubble-color',
     '[class*="user-message-bubble"]',
-    '[class~="group/user-message"]',
-    '[class~="bg-user-message"]'
+    '[class~="group/user-message"]'
   ];
   const seen = new Set();
   const messageTexts = [];
