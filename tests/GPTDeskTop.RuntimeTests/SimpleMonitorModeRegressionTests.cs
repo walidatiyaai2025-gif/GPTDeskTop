@@ -95,9 +95,16 @@ public sealed class SimpleMonitorModeRegressionTests
         Assert.Contains("[data-turn=\"user\"]", chrome, StringComparison.Ordinal);
         Assert.Contains("[data-testid*=\"user-message\"]", chrome, StringComparison.Ordinal);
         Assert.Contains("user-message-bubble-color", chrome, StringComparison.Ordinal);
+        Assert.Contains("[data-chatgpt-search-unit-key$=\":user\"]", chrome, StringComparison.Ordinal);
+        Assert.Contains("[role=\"region\"][aria-label=\"Conversation\"]", chrome, StringComparison.Ordinal);
+        Assert.Contains("You said:", chrome, StringComparison.Ordinal);
         Assert.Contains("[data-turn=\"assistant\"]", chrome, StringComparison.Ordinal);
         Assert.Contains("[data-testid*=\"assistant-message\"]", chrome, StringComparison.Ordinal);
-        Assert.Contains("__gptDesktopChatStateCache?.version === 7", chrome, StringComparison.Ordinal);
+        Assert.Contains("[data-chatgpt-search-unit-key$=\":assistant\"]", chrome, StringComparison.Ordinal);
+        Assert.Contains("[data-markdown-text-style=\"assistant-message\"]", chrome, StringComparison.Ordinal);
+        Assert.Contains("ChatGPT said:", chrome, StringComparison.Ordinal);
+        Assert.Contains("__gptDesktopChatStateCache?.version === 8", chrome, StringComparison.Ordinal);
+        Assert.Contains("const version = 8;", chrome, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -325,6 +332,6 @@ public sealed class SimpleMonitorModeRegressionTests
     public void ProductVersionIsBumpedToTwoPointZeroPointFiftyOne()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.63</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.64</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }

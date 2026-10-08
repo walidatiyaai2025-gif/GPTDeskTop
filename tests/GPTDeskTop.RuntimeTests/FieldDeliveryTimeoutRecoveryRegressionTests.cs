@@ -50,8 +50,8 @@ public sealed class FieldDeliveryTimeoutRecoveryRegressionTests
     public void RetryCardDetectorIsTargetedAndDoesNotScanConversationBodyGlobally()
     {
         var source = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
-        Assert.Contains("version === 7", source, StringComparison.Ordinal);
-        Assert.Contains("const version = 7", source, StringComparison.Ordinal);
+        Assert.Contains("version === 8", source, StringComparison.Ordinal);
+        Assert.Contains("const version = 8", source, StringComparison.Ordinal);
         Assert.Contains("button,[role=\"button\"]", source, StringComparison.Ordinal);
         Assert.Contains("retry", source, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("depth < 5", source, StringComparison.Ordinal);

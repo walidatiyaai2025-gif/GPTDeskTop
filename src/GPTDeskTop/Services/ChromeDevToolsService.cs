@@ -17,11 +17,11 @@ public sealed class ChromeDevToolsService
     private const int MonitorRecoveryEndpointGraceAttempts = 8;
     private const int MonitorRecoveryEndpointGraceDelayMs = 250;
     private const string BrowserSessionId = "__gptdesktop_monitor_browser__";
-    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 7 ? window.__gptDesktopChatStateCache.read() : null";
+    private const string ChatStateReadExpression = "window.__gptDesktopChatStateCache?.version === 8 ? window.__gptDesktopChatStateCache.read() : null";
     private const string ChatStateInstallExpressionTemplate = """
 (() => {
   const key = '__gptDesktopChatStateCache';
-  const version = 7;
+  const version = 8;
   const smartFollowEnabled = __SMART_ENABLED__;
   const smartFollowThrottleMs = __SMART_THROTTLE_MS__;
   const smartFollowNearBottomPx = __SMART_NEAR_BOTTOM_PX__;
@@ -56,9 +56,15 @@ public sealed class ChromeDevToolsService
     return false;
   };
   const findErrorText = () => {
+    // Error UI must belong to the active conversation. Current ChatGPT can show unrelated
+    // sidebar/history failures ("Unable to load history / Retry") while the chat itself is
+    // perfectly healthy. Never let those global controls trigger a conversation rollover.
+    const conversationRoot =
+      document.querySelector('[role="region"][aria-label="Conversation"]') ||
+      document;
     const selectors = ['[role="alert"]', '[aria-live="assertive"]', '[data-testid*="error"]', '[data-testid*="retry"]'];
     for (const selector of selectors) {
-      for (const element of document.querySelectorAll(selector)) {
+      for (const element of conversationRoot.querySelectorAll(selector)) {
         if (!visible(element)) continue;
         const text = (element.innerText || element.textContent || '').trim();
         if (text && errorPattern.test(text)) return text;
@@ -67,8 +73,8 @@ public sealed class ChromeDevToolsService
 
     // ChatGPT sometimes renders the delivery-timeout card without an alert/testid on its
     // outer container. Inspect only a small ancestor chain around a visible native Retry
-    // control; never scan document.body or conversation text globally.
-    for (const button of document.querySelectorAll('button,[role="button"]')) {
+    // control inside the active conversation; never scan document.body or sidebar/history UI.
+    for (const button of conversationRoot.querySelectorAll('button,[role="button"]')) {
       if (!visible(button)) continue;
       const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''} ${button.innerText || button.textContent || ''}`.trim();
       if (!/\bretry\b|try again|إعادة المحاولة|حاول مرة أخرى/i.test(label)) continue;
@@ -113,6 +119,11 @@ public sealed class ChromeDevToolsService
     };
     const resolveContainer = () => {
       if (controller.container?.isConnected && isScrollable(controller.container)) return controller.container;
+      const conversationRegion = document.querySelector('[role="region"][aria-label="Conversation"]');
+      if (conversationRegion && isScrollable(conversationRegion)) {
+        controller.container = conversationRegion;
+        return conversationRegion;
+      }
       const messages = document.querySelectorAll('[data-message-author-role]');
       let current = messages.length ? messages[messages.length - 1].parentElement : null;
       for (let depth = 0; current && depth < 14; depth++, current = current.parentElement) {
@@ -220,31 +231,65 @@ public sealed class ChromeDevToolsService
   state.read = () => {
     if (!state.dirty) return state.snapshot;
     state.dirty = false;
+    const normalizeMessageText = value => (value || '')
+      .replace(/\r\n?/g, '\n')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[\u200b-\u200d\ufeff]/gi, '')
+      .replace(/[ \t]+/g, ' ')
+      .trim();
+    const conversationRoot = document.querySelector('[role="region"][aria-label="Conversation"]') || document;
     const assistantSelectors = [
       '[data-message-author-role="assistant"]',
       '[data-turn="assistant"]',
       '[data-author="assistant"]',
       '[data-author-role="assistant"]',
       '[data-message-role="assistant"]',
-      '[data-testid*="assistant-message"]'
+      '[data-testid*="assistant-message"]',
+      '[data-chatgpt-search-unit-key$=":assistant"]'
     ];
     const seenAssistantTurns = new Set();
     const messages = [];
     for (const selector of assistantSelectors) {
-      for (const node of document.querySelectorAll(selector)) {
+      for (const node of conversationRoot.querySelectorAll(selector)) {
         const turn = node.closest('[data-testid^="conversation-turn-"],article') || node;
         if (seenAssistantTurns.has(turn)) continue;
         seenAssistantTurns.add(turn);
         messages.push(node);
       }
     }
+
+    // Current ChatGPT exposes the rendered assistant body with a semantic markdown style.
+    // Keep the node only here; do NOT serialize its growing innerText while generation is active.
+    if (messages.length === 0) {
+      for (const node of conversationRoot.querySelectorAll('[data-markdown-text-style="assistant-message"]')) {
+        messages.push(node);
+      }
+    }
+
+    // ChatGPT also keeps stable screen-reader headings ("ChatGPT said:"). Reading the tiny
+    // heading label is safe during streaming; defer reading its parent response body until idle.
+    if (messages.length === 0) {
+      for (const heading of conversationRoot.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
+        if (normalizeMessageText(heading.innerText || heading.textContent || '') !== 'ChatGPT said:') continue;
+        const block = heading.parentElement;
+        if (!block || seenAssistantTurns.has(block)) continue;
+        seenAssistantTurns.add(block);
+        messages.push(block);
+      }
+    }
+
     const lastAssistant = messages.length ? messages[messages.length - 1] : null;
     const stopButton = findStopButton();
     // A visible Stop control is the authoritative generation signal. Streaming CSS/data
     // markers can survive hydration/reconciliation after the response has actually completed.
     const isGenerating = !!stopButton;
     const errorText = findErrorText();
-    const last = !isGenerating && lastAssistant ? (lastAssistant.innerText || '').trim() : '';
+    const last = !isGenerating && lastAssistant ? (() => {
+      let text = normalizeMessageText(lastAssistant.innerText || lastAssistant.textContent || '');
+      if (text.startsWith('ChatGPT said:'))
+        text = normalizeMessageText(text.slice('ChatGPT said:'.length));
+      return text;
+    })() : '';
     state.snapshot = { assistantCount: messages.length, lastAssistantText: last, isGenerating, errorText, autoFollow: state.autoFollow?.snapshot?.() || { mode: 'disabled', sequence: 0, event: 'disabled' } };
     if (isGenerating) state.autoFollow?.onMutation?.();
     return state.snapshot;
@@ -1749,37 +1794,66 @@ public sealed class ChromeDevToolsService
     .replace(/[\u200b-\u200d\ufeff]/gi, '')
     .replace(/[ \t]+/g, ' ')
     .trim();
-  const root = document.querySelector('main') || document;
+  const root = document.querySelector('[role="region"][aria-label="Conversation"]') || document.querySelector('main') || document;
   const selectors = [
     '[data-testid^="conversation-turn-"]',
     '[data-testid*="conversation-turn"]',
     '[data-turn-id]'
   ];
   const seen = new Set();
-  const turns = [];
+  const turnTexts = [];
   for (const selector of selectors) {
     for (const node of root.querySelectorAll(selector)) {
       const turn = node.closest('[data-testid^="conversation-turn-"],[data-testid*="conversation-turn"],[data-turn-id],article') || node;
       if (seen.has(turn)) continue;
       seen.add(turn);
-      turns.push(turn);
+      turnTexts.push(normalize(node.innerText || node.textContent || ''));
     }
   }
-  if (turns.length === 0) {
+  if (turnTexts.length === 0) {
     for (const article of root.querySelectorAll('article')) {
       if (seen.has(article)) continue;
       seen.add(article);
-      turns.push(article);
+      turnTexts.push(normalize(article.innerText || article.textContent || ''));
     }
   }
-  const textAt = index => index >= 0 && index < turns.length
-    ? normalize(turns[index].innerText || turns[index].textContent || '')
-    : '';
+
+  // Current ChatGPT exposes transcript units with a stable role suffix. Query user and
+  // assistant units together so document order remains user1/assistant1/user2/assistant2.
+  if (turnTexts.length === 0) {
+    for (const node of root.querySelectorAll(
+      '[data-chatgpt-search-unit-key$=":user"],[data-chatgpt-search-unit-key$=":assistant"]')) {
+      let text = normalize(node.innerText || node.textContent || '');
+      if (text.startsWith('You said:'))
+        text = normalize(text.slice('You said:'.length));
+      if (text.startsWith('ChatGPT said:'))
+        text = normalize(text.slice('ChatGPT said:'.length));
+      if (text) turnTexts.push(text);
+    }
+  }
+
+  // Screen-reader headings remain the final semantic fallback if role-key units disappear.
+  if (turnTexts.length === 0) {
+    for (const heading of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
+      const label = normalize(heading.innerText || heading.textContent || '');
+      if (label !== 'You said:' && label !== 'ChatGPT said:') continue;
+      const block = heading.parentElement;
+      if (!block || seen.has(block)) continue;
+      let text = normalize(block.innerText || block.textContent || '');
+      if (text.startsWith(label))
+        text = normalize(text.slice(label.length));
+      if (!text) continue;
+      seen.add(block);
+      turnTexts.push(text);
+    }
+  }
+
+  const textAt = index => index >= 0 && index < turnTexts.length ? turnTexts[index] : '';
   return {
     marker,
-    count: turns.length,
-    previousText: textAt(turns.length - 2),
-    lastText: textAt(turns.length - 1)
+    count: turnTexts.length,
+    previousText: textAt(turnTexts.length - 2),
+    lastText: textAt(turnTexts.length - 1)
   };
 })()
 """;
@@ -1845,6 +1919,7 @@ public sealed class ChromeDevToolsService
     .replace(/[\u200b-\u200d\ufeff]/gi, '')
     .replace(/[ \t]+/g, ' ')
     .trim();
+  const root = document.querySelector('[role="region"][aria-label="Conversation"]') || document;
   const selectors = [
     '[data-message-author-role="user"]',
     '[data-turn="user"]',
@@ -1853,21 +1928,39 @@ public sealed class ChromeDevToolsService
     '[data-message-role="user"]',
     '[data-testid*="user-message"]',
     '.user-message-bubble-color',
-    '[class*="user-message-bubble"]'
+    '[class*="user-message-bubble"]',
+    '[data-chatgpt-search-unit-key$=":user"]'
   ];
   const seen = new Set();
-  const messages = [];
+  const messageTexts = [];
   for (const selector of selectors) {
-    for (const node of document.querySelectorAll(selector)) {
-      const turn = node.closest('[data-testid^="conversation-turn-"],article') || node;
+    for (const node of root.querySelectorAll(selector)) {
+      const turn = node.closest('[data-testid^="conversation-turn-"],article,[data-chatgpt-search-unit-key$=":user"]') || node;
       if (seen.has(turn)) continue;
       seen.add(turn);
-      messages.push(node);
+      const text = normalize(node.innerText || node.textContent || '');
+      if (text) messageTexts.push(text);
     }
   }
-  const lastNode = messages.length ? messages[messages.length - 1] : null;
-  const last = lastNode ? normalize(lastNode.innerText || lastNode.textContent || '') : '';
-  return { count: messages.length, lastText: last };
+
+  // Current ChatGPT keeps a stable screen-reader heading for every user turn even when
+  // the historical role/data-turn attributes are absent.
+  if (messageTexts.length === 0) {
+    for (const heading of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
+      if (normalize(heading.innerText || heading.textContent || '') !== 'You said:') continue;
+      const block = heading.parentElement;
+      if (!block || seen.has(block)) continue;
+      let text = normalize(block.innerText || block.textContent || '');
+      if (text.startsWith('You said:'))
+        text = normalize(text.slice('You said:'.length));
+      if (!text) continue;
+      seen.add(block);
+      messageTexts.push(text);
+    }
+  }
+
+  const last = messageTexts.length ? messageTexts[messageTexts.length - 1] : '';
+  return { count: messageTexts.length, lastText: last };
 })()
 """;
         var value = await EvaluateAsync(tab, expression, cancellationToken, false);
