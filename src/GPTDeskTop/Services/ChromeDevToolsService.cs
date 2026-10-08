@@ -899,6 +899,70 @@ public sealed class ChromeDevToolsService
         }
     }
 
+    /// <summary>
+    /// Read-only final receipt check used only after a physical submit has an ambiguous CDP outcome
+    /// and the caller has independently resolved the fresh target to its stable /c/{id} identity.
+    /// This method never clicks, types, reloads, opens a tab, or authorizes a resend.
+    /// </summary>
+    public async Task<bool> ConfirmExpectedMessageOnStableConversationAsync(
+        ChromeTab tab,
+        string expectedMessage,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tab);
+        var expected = expectedMessage?.Trim() ?? string.Empty;
+        if (expected.Length == 0 || !RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
+            return false;
+
+        for (var attempt = 0; attempt < 16; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                // Stable conversation identity is the ownership proof. Once the caller has
+                // resolved the fresh root target to /c/{id}, normal same-conversation CDP
+                // rebinding is safe even if Chrome replaced the target during navigation.
+                await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
+                if (!RuntimeHealthPresentation.IsChatGptConversationUrl(tab.Url))
+                    return false;
+
+                var userSnapshot = await TryGetUserMessageSnapshotAsync(tab, cancellationToken).ConfigureAwait(false);
+                if (userSnapshot.Success
+                    && userSnapshot.Count > 0
+                    && string.Equals(userSnapshot.LastText.Trim(), expected, StringComparison.Ordinal))
+                {
+                    VerifiedSendDiagnostics.Record("ReceiptConfirmed", "stable-fresh-user-turn-visible", 1);
+                    return true;
+                }
+
+                // Current ChatGPT markup can temporarily omit role attributes. The role-agnostic
+                // turn reader still lets us verify that the expected user text is one of the two
+                // newest turns (user only, or user + completed assistant response).
+                var turns = await TryGetConversationTurnSnapshotAsync(tab, cancellationToken).ConfigureAwait(false);
+                if (turns.Success
+                    && (string.Equals(turns.LastText.Trim(), expected, StringComparison.Ordinal)
+                        || string.Equals(turns.PreviousText.Trim(), expected, StringComparison.Ordinal)))
+                {
+                    VerifiedSendDiagnostics.Record("ReceiptConfirmed", "stable-fresh-conversation-turn-visible", 1);
+                    return true;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+            {
+                _sessionPool.Invalidate(tab.Id);
+            }
+
+            if (attempt < 15)
+                await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+        }
+
+        return false;
+    }
+
     public async Task<bool> SendChatMessageAsync(ChromeTab tab, string message, CancellationToken cancellationToken = default, Action<bool>? physicalSubmitState = null)
     {
         var preparationDecision = await ReadComposerDecisionAsync(tab, requireSendReady: false, cancellationToken);
