@@ -135,6 +135,41 @@ public sealed class SimpleMonitorModeRegressionTests
     }
 
     [Fact]
+    public void AmbiguousFreshSubmitUsesStableReadOnlyReceiptBeforeBlocking()
+    {
+        var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
+        var chrome = ReadSource("src", "GPTDeskTop", "Services", "ChromeDevToolsService.cs");
+
+        var ambiguousStart = runner.IndexOf("if (delivery == VerifiedDeliveryOutcome.Ambiguous)", StringComparison.Ordinal);
+        var reconcileCall = runner.IndexOf("TryReconcileAmbiguousFreshDeliveryAsync", ambiguousStart, StringComparison.Ordinal);
+        var blockedMessage = runner.IndexOf("The submit command was dispatched without a confirmed receipt", ambiguousStart, StringComparison.Ordinal);
+        Assert.True(ambiguousStart >= 0);
+        Assert.True(reconcileCall > ambiguousStart, "Ambiguous submit must attempt stable fresh-chat receipt reconciliation.");
+        Assert.True(blockedMessage > reconcileCall, "Blocking is allowed only after stable receipt reconciliation fails.");
+
+        var helperStart = runner.IndexOf("private async Task<ChromeTab?> TryReconcileAmbiguousFreshDeliveryAsync", StringComparison.Ordinal);
+        var nextHelper = runner.IndexOf("private async Task<ChromeTab?> TryRecoverPreSubmitTargetAsync", helperStart, StringComparison.Ordinal);
+        Assert.True(helperStart >= 0 && nextHelper > helperStart);
+        var helper = runner[helperStart..nextHelper];
+        Assert.Contains("WaitForStableConversationAsync(activeTab", helper, StringComparison.Ordinal);
+        Assert.Contains("ConfirmExpectedMessageOnStableConversationAsync", helper, StringComparison.Ordinal);
+        Assert.Contains("no resend", helper, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SendChatMessage", helper, StringComparison.Ordinal);
+        Assert.DoesNotContain("CloseTabAsync", helper, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateFreshTargetAsync", helper, StringComparison.Ordinal);
+
+        var receiptStart = chrome.IndexOf("public async Task<bool> ConfirmExpectedMessageOnStableConversationAsync", StringComparison.Ordinal);
+        var sendStart = chrome.IndexOf("public async Task<bool> SendChatMessageAsync", receiptStart, StringComparison.Ordinal);
+        Assert.True(receiptStart >= 0 && sendStart > receiptStart);
+        var receipt = chrome[receiptStart..sendStart];
+        Assert.Contains("TryGetUserMessageSnapshotAsync", receipt, StringComparison.Ordinal);
+        Assert.Contains("TryGetConversationTurnSnapshotAsync", receipt, StringComparison.Ordinal);
+        Assert.DoesNotContain("Input.dispatchMouseEvent", receipt, StringComparison.Ordinal);
+        Assert.DoesNotContain("Input.insertText", receipt, StringComparison.Ordinal);
+        Assert.DoesNotContain("Page.reload", receipt, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FreshTargetFailureWaitsFifteenMinutesAndKeepsTheWorkerAlive()
     {
         var runner = ReadSource("src", "GPTDeskTop", "Services", "SimpleMonitorRunner.cs");
@@ -290,6 +325,6 @@ public sealed class SimpleMonitorModeRegressionTests
     public void ProductVersionIsBumpedToTwoPointZeroPointFiftyOne()
     {
         var props = ReadSource("Directory.Build.props");
-        Assert.Contains("<GPTDeskTopVersion>2.0.62</GPTDeskTopVersion>", props, StringComparison.Ordinal);
+        Assert.Contains("<GPTDeskTopVersion>2.0.63</GPTDeskTopVersion>", props, StringComparison.Ordinal);
     }
 }
