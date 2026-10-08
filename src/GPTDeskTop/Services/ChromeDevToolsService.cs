@@ -1150,6 +1150,7 @@ public sealed class ChromeDevToolsService
             _sessionPool.Invalidate(tab.Id);
         }
         var baselineAssistantCount = baselineDeliveryState?.AssistantCount ?? -1;
+        var baselineTurns = await TryGetConversationTurnSnapshotAsync(tab, cancellationToken).ConfigureAwait(false);
 
         if (string.Equals(before.LastText, expected, StringComparison.Ordinal))
         {
@@ -1186,6 +1187,7 @@ public sealed class ChromeDevToolsService
                     expected,
                     before.Count,
                     baselineAssistantCount,
+                    baselineTurns.Success ? baselineTurns.Count : -1,
                     unacknowledgedSubmitOriginUrl!,
                     cancellationToken).ConfigureAwait(false);
                 if (receipt == VerifiedDeliveryOutcome.Delivered) return true;
@@ -1448,6 +1450,7 @@ public sealed class ChromeDevToolsService
         string expected,
         int baselineCount,
         int baselineAssistantCount,
+        int baselineConversationTurnCount,
         string originUrl,
         CancellationToken cancellationToken)
     {
@@ -1467,6 +1470,24 @@ public sealed class ChromeDevToolsService
             if (snapshot.Success && snapshot.Count > baselineCount
                 && string.Equals(snapshot.LastText, expected, StringComparison.Ordinal))
                 return VerifiedDeliveryOutcome.Delivered;
+
+            // Current ChatGPT markup can remove or rename the role attributes used by the user/
+            // assistant-specific readers. Keep a second, role-agnostic receipt channel based on
+            // conversation turns inside the chat's main region. A matching new turn proves the
+            // submitted text rendered. Two or more new turns prove a user/assistant exchange even
+            // when neither role selector is available. Identity has already been verified above.
+            var turnSnapshot = await TryGetConversationTurnSnapshotAsync(tab, cancellationToken).ConfigureAwait(false);
+            if (turnSnapshot.Success
+                && MonitorDeliveryRecoveryPolicy.ConversationTurnDeltaConfirmsDelivery(
+                    baselineConversationTurnCount,
+                    turnSnapshot.Count,
+                    turnSnapshot.PreviousText,
+                    turnSnapshot.LastText,
+                    expected))
+            {
+                VerifiedSendDiagnostics.Record("ReceiptConfirmed", "conversation-turn-delta-after-submit", 1);
+                return VerifiedDeliveryOutcome.Delivered;
+            }
 
             // The pre-submit gate verified this target was idle. A NEW assistant turn on the same
             // allowed target after dispatch proves ChatGPT accepted the user turn even if generation
@@ -1628,6 +1649,81 @@ public sealed class ChromeDevToolsService
         // Exhausting hydration/transport observations without stable conflicting evidence
         // is not a user-turn conflict. Keep the original submit under reconciliation.
         return UnacknowledgedSubmitReconciliationResult.TransientInterruption;
+    }
+
+    private async Task<(bool Success, int Count, string PreviousText, string LastText)> TryGetConversationTurnSnapshotAsync(
+        ChromeTab tab,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var snapshot = await GetConversationTurnSnapshotAsync(tab, cancellationToken).ConfigureAwait(false);
+            return (true, snapshot.Count, snapshot.PreviousText, snapshot.LastText);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsRecoverableMonitorTransportException(ex))
+        {
+            _sessionPool.Invalidate(tab.Id);
+            await TryRefreshTabBindingAsync(tab, cancellationToken).ConfigureAwait(false);
+            return (false, 0, string.Empty, string.Empty);
+        }
+    }
+
+    private async Task<(int Count, string PreviousText, string LastText)> GetConversationTurnSnapshotAsync(
+        ChromeTab tab,
+        CancellationToken cancellationToken)
+    {
+        const string expression = """
+(() => {
+  const marker = 'gptdesktop-conversation-turn-snapshot-v1';
+  const normalize = value => (value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[\u200b-\u200d\ufeff]/gi, '')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+  const root = document.querySelector('main') || document;
+  const selectors = [
+    '[data-testid^="conversation-turn-"]',
+    '[data-testid*="conversation-turn"]',
+    '[data-turn-id]'
+  ];
+  const seen = new Set();
+  const turns = [];
+  for (const selector of selectors) {
+    for (const node of root.querySelectorAll(selector)) {
+      const turn = node.closest('[data-testid^="conversation-turn-"],[data-testid*="conversation-turn"],[data-turn-id],article') || node;
+      if (seen.has(turn)) continue;
+      seen.add(turn);
+      turns.push(turn);
+    }
+  }
+  if (turns.length === 0) {
+    for (const article of root.querySelectorAll('article')) {
+      if (seen.has(article)) continue;
+      seen.add(article);
+      turns.push(article);
+    }
+  }
+  const textAt = index => index >= 0 && index < turns.length
+    ? normalize(turns[index].innerText || turns[index].textContent || '')
+    : '';
+  return {
+    marker,
+    count: turns.length,
+    previousText: textAt(turns.length - 2),
+    lastText: textAt(turns.length - 1)
+  };
+})()
+""";
+        var value = await EvaluateAsync(tab, expression, cancellationToken, false).ConfigureAwait(false);
+        var count = value.TryGetProperty("count", out var c) ? c.GetInt32() : 0;
+        var previous = value.TryGetProperty("previousText", out var p) ? p.GetString() ?? string.Empty : string.Empty;
+        var last = value.TryGetProperty("lastText", out var l) ? l.GetString() ?? string.Empty : string.Empty;
+        return (count, previous, last);
     }
 
     private async Task<(bool Success, int Count, string LastText)> TryGetUserMessageSnapshotAsync(ChromeTab tab, CancellationToken cancellationToken)

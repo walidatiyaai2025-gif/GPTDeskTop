@@ -32,6 +32,25 @@ internal static class MonitorDeliveryRecoveryPolicy
         => baselineAssistantMessageCount >= 0
             && observedAssistantMessageCount > baselineAssistantMessageCount;
 
+    internal static bool ConversationTurnDeltaConfirmsDelivery(
+        int baselineTurnCount,
+        int observedTurnCount,
+        string observedPreviousText,
+        string observedLastText,
+        string expectedText)
+    {
+        if (baselineTurnCount < 0 || observedTurnCount <= baselineTurnCount)
+            return false;
+
+        if (observedTurnCount >= baselineTurnCount + 2)
+            return true;
+
+        var expected = expectedText.Trim();
+        return expected.Length > 0
+            && (string.Equals(observedLastText.Trim(), expected, StringComparison.Ordinal)
+                || string.Equals(observedPreviousText.Trim(), expected, StringComparison.Ordinal));
+    }
+
     internal static PostRefreshUserTurnObservation ClassifyPostRefreshUserTurn(
         bool snapshotReadable,
         int baselineUserTurnCount,
