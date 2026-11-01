@@ -9,6 +9,7 @@ import AppKit
     @Published private(set) var log: [String] = []
     @Published private(set) var currentPosition = "—"
     @Published private(set) var connected = false
+    @Published private(set) var connectionLabel = "Not connected"
     @Published private(set) var selectedTabURL = ""
     @Published private(set) var hold = ""
 
@@ -69,14 +70,16 @@ import AppKit
 
     func connect() async {
         guard !running else { return }
-        status = "Connecting to dedicated Chrome profile…"
+        status = "Connecting to Chrome…"
         do {
             let tabs = try await chrome.connect()
             connected = true
-            status = "Connected — sign in to ChatGPT in the opened Chrome window, then Start."
-            event("Chrome connected. \(tabs.count) CDP target(s) discovered.")
+            connectionLabel = await chrome.connectionModeDescription()
+            status = "Connected to \(connectionLabel). Start when the intended ChatGPT conversation is ready."
+            event("Chrome connected using \(connectionLabel). \(tabs.count) CDP target(s) discovered.")
         } catch {
             connected = false
+            connectionLabel = "Not connected"
             status = error.localizedDescription
             event("Connection failed: \(error.localizedDescription)")
         }

@@ -10,6 +10,8 @@ struct MonitorStore {
         fileURL = dir.appendingPathComponent("monitor-state.json")
     }
 
+    init(fileURL: URL) { self.fileURL = fileURL }
+
     func load() -> LocalSettings {
         guard let data = try? Data(contentsOf: fileURL),
               let settings = try? JSONDecoder().decode(LocalSettings.self, from: data) else {

@@ -8,19 +8,47 @@ struct ChromeTab: Decodable {
     var webSocketDebuggerUrl: String?
 }
 
-/// A dedicated Chrome profile only. Never attaches to or modifies the user's normal Chrome profile.
+/// Prefers Chrome's explicitly enabled local remote-debugging endpoint for an existing profile.
+/// Launches a separate app-owned profile only when that endpoint is unavailable.
 actor ChromeCDP {
     private var port: Int?
+    private var browserWebSocketURL: URL?
     private var ownedProcess: Process?
     private let directory: URL
     private var commandId = 0
+
+    private enum ConnectionMode: Equatable { case dedicatedHTTP, existingProfileWebSocket }
+    private var connectionMode: ConnectionMode = .dedicatedHTTP
 
     init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         directory = support.appendingPathComponent("GPTDeskTopMonitorMac/ChromeProfile", isDirectory: true)
     }
 
+    func connectionModeDescription() -> String {
+        connectionMode == .existingProfileWebSocket ? "existing Chrome profile (CDP)" : "dedicated Chrome profile (CDP)"
+    }
+
     func connect() async throws -> [ChromeTab] {
+        let existingProfile = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Google/Chrome", isDirectory: true)
+        if let endpoint = try? readBrowserWebSocketEndpoint(in: existingProfile) {
+            browserWebSocketURL = endpoint
+            port = nil
+            connectionMode = .existingProfileWebSocket
+            do {
+                _ = try await browserCommand(method: "Browser.getVersion", params: [:])
+                if let process = ownedProcess, process.isRunning { process.terminate() }
+                ownedProcess = nil
+                return try await listTabs()
+            } catch {
+                browserWebSocketURL = nil
+                throw MonitorError.browser("Could not attach to the existing Chrome profile. Check Chrome's Allow remote debugging setting and approve the connection in Chrome. \(error.localizedDescription)")
+            }
+        }
+
+        browserWebSocketURL = nil
+        connectionMode = .dedicatedHTTP
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Reattach to our own profile's active CDP endpoint on restart, if still healthy.
         if let savedPort = try? readDebuggingPort() {
@@ -64,6 +92,18 @@ actor ChromeCDP {
         return p
     }
 
+    private func readBrowserWebSocketEndpoint(in userDataDirectory: URL) throws -> URL {
+        let file = userDataDirectory.appendingPathComponent("DevToolsActivePort")
+        let lines = try String(contentsOf: file, encoding: .utf8)
+            .components(separatedBy: .newlines).filter { !$0.isEmpty }
+        guard lines.count >= 2, let p = Int(lines[0]), p > 0 && p < 65536,
+              lines[1].hasPrefix("/devtools/browser/"),
+              let url = URL(string: "ws://127.0.0.1:\(p)\(lines[1])") else {
+            throw MonitorError.browser("Invalid Chrome DevToolsActivePort")
+        }
+        return url
+    }
+
     private func endpoint(_ path: String) throws -> URL {
         guard let port else { throw MonitorError.browser("Chrome is not connected") }
         guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else {
@@ -73,6 +113,16 @@ actor ChromeCDP {
     }
 
     func listTabs() async throws -> [ChromeTab] {
+        if connectionMode == .existingProfileWebSocket {
+            let result = try await browserCommand(method: "Target.getTargets", params: [:])
+            let targets = result["targetInfos"] as? [[String: Any]] ?? []
+            return targets.compactMap { target in
+                guard let id = target["targetId"] as? String,
+                      let type = target["type"] as? String,
+                      let url = target["url"] as? String else { return nil }
+                return ChromeTab(id: id, type: type, url: url, webSocketDebuggerUrl: nil)
+            }
+        }
         let (data, _) = try await URLSession.shared.data(from: endpoint("/json/list"))
         return try JSONDecoder().decode([ChromeTab].self, from: data)
     }
@@ -88,6 +138,14 @@ actor ChromeCDP {
     }
 
     func createFreshTab() async throws -> ChromeTab {
+        if connectionMode == .existingProfileWebSocket {
+            let url = "https://chatgpt.com/"
+            let result = try await browserCommand(method: "Target.createTarget", params: ["url": url])
+            guard let id = result["targetId"] as? String else {
+                throw MonitorError.browser("Chrome did not return an ID for the new ChatGPT tab")
+            }
+            return ChromeTab(id: id, type: "page", url: url, webSocketDebuggerUrl: nil)
+        }
         var req = URLRequest(url: try endpoint("/json/new?https://chatgpt.com/"))
         req.httpMethod = "PUT"
         let (data, _) = try await URLSession.shared.data(for: req)
@@ -95,6 +153,15 @@ actor ChromeCDP {
     }
 
     private func command(tab: ChromeTab, method: String, params: [String: Any]) async throws -> [String: Any] {
+        if connectionMode == .existingProfileWebSocket {
+            let socket = try makeBrowserSocket()
+            defer { socket.cancel(with: .normalClosure, reason: nil) }
+            let attached = try await browserSocketCommand(socket, method: "Target.attachToTarget", params: ["targetId": tab.id, "flatten": true])
+            guard let sessionId = attached["sessionId"] as? String else {
+                throw MonitorError.browser("Chrome did not create a CDP session for the selected tab")
+            }
+            return try await browserSocketCommand(socket, method: method, params: params, sessionId: sessionId)
+        }
         guard let socketURL = tab.webSocketDebuggerUrl.flatMap(URL.init(string:)),
               socketURL.host == "127.0.0.1" || socketURL.host == "localhost" else {
             throw MonitorError.browser("The selected Chrome target has no local CDP WebSocket")
@@ -123,6 +190,47 @@ actor ChromeCDP {
         throw MonitorError.browser("No matching CDP response for \(method)")
     }
 
+    private func makeBrowserSocket() throws -> URLSessionWebSocketTask {
+        guard let browserWebSocketURL else { throw MonitorError.browser("Existing Chrome CDP connection is unavailable") }
+        let session = URLSession(configuration: .ephemeral)
+        let socket = session.webSocketTask(with: browserWebSocketURL)
+        socket.resume()
+        return socket
+    }
+
+    private func browserCommand(method: String, params: [String: Any]) async throws -> [String: Any] {
+        let socket = try makeBrowserSocket()
+        defer { socket.cancel(with: .normalClosure, reason: nil) }
+        return try await browserSocketCommand(socket, method: method, params: params)
+    }
+
+    private func browserSocketCommand(_ socket: URLSessionWebSocketTask, method: String,
+                                     params: [String: Any], sessionId: String? = nil) async throws -> [String: Any] {
+        commandId += 1
+        let id = commandId
+        var payload: [String: Any] = ["id": id, "method": method, "params": params]
+        if let sessionId { payload["sessionId"] = sessionId }
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        try await socket.send(.string(String(decoding: data, as: UTF8.self)))
+        for _ in 0..<64 {
+            try Task.checkCancellation()
+            let message = try await socket.receive()
+            let bytes: Data
+            switch message {
+            case .string(let text): bytes = Data(text.utf8)
+            case .data(let raw): bytes = raw
+            @unknown default: continue
+            }
+            guard let object = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                  object["id"] as? Int == id else { continue }
+            if let error = object["error"] as? [String: Any] {
+                throw MonitorError.browser("CDP \(method): \(error["message"] ?? "unknown error")")
+            }
+            return object["result"] as? [String: Any] ?? [:]
+        }
+        throw MonitorError.browser("No matching browser-level CDP response for \(method)")
+    }
+
     private func evaluate(tab: ChromeTab, script: String) async throws -> Any? {
         let result = try await command(tab: tab, method: "Runtime.evaluate", params: [
             "expression": script, "returnByValue": true, "awaitPromise": false
@@ -135,15 +243,15 @@ actor ChromeCDP {
         let script = #"""
         (() => {
           const text = e => (e?.innerText || e?.textContent || '').trim();
-          const list = role => Array.from(document.querySelectorAll('[data-message-author-role="' + role + '"]'));
-          const users = list('user'), assistants = list('assistant');
+          const users = Array.from(document.querySelectorAll('[data-user-message-bubble="true"]'));
+          const assistants = Array.from(document.querySelectorAll('[data-content-search-unit-key*="assistant"]'));
           const editor = document.querySelector('#prompt-textarea, [contenteditable="true"][data-lexical-editor="true"], [contenteditable="true"][role="textbox"]');
-          const send = document.querySelector('button[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label="Send message"]');
-          const stop = document.querySelector('button[data-testid="stop-button"], button[aria-label="Stop streaming"], button[aria-label="Stop generating"]');
+          const send = document.querySelector('button[data-testid="send-button"], [role="button"][data-testid="send-button"], button[data-testid="composer-send-button"], [role="button"][data-testid="composer-send-button"], button[aria-label="Send prompt"], [role="button"][aria-label="Send prompt"], button[aria-label="Send message"], [role="button"][aria-label="Send message"], button[aria-label="Send"], [role="button"][aria-label="Send"]');
+          const stop = document.querySelector('button[data-testid="stop-button"], [role="button"][data-testid="stop-button"], button[aria-label="Stop streaming"], [role="button"][aria-label="Stop streaming"], button[aria-label="Stop generating"], [role="button"][aria-label="Stop generating"]');
           const body = (document.body?.innerText || '').slice(-3000);
           return JSON.stringify({url:location.href,lastUser:text(users.at(-1)),userCount:users.length,
             lastAssistant:text(assistants.at(-1)),assistantCount:assistants.length,
-            generating:!!stop,composerReady:!!editor,sendEnabled:!!send && !send.disabled,
+            generating:!!stop,composerReady:!!editor,sendEnabled:!!send && !send.disabled && send.getAttribute('aria-disabled')!=='true' && send.getAttribute('data-disabled')!=='true',
             hasRateLimit:/too many requests|rate limit|usage limit|لقد وصلت.*الحد/i.test(body)});
         })()
         """#
@@ -173,9 +281,13 @@ actor ChromeCDP {
               draft.trimmingCharacters(in: .whitespacesAndNewlines) == text.trimmingCharacters(in: .whitespacesAndNewlines) else {
             throw MonitorError.browser("Composer content mismatch. No send attempted.")
         }
+        let readyToSend = try await readState(tab: tab)
+        guard readyToSend.sendEnabled && !readyToSend.generating && !readyToSend.hasRateLimit else {
+            throw MonitorError.blocked("Draft is present but ChatGPT has not enabled Send. No click attempted.")
+        }
         let click = #"""
-        (() => {const b=document.querySelector('button[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label="Send message"]');
-          if(!b || b.disabled) return false; b.click(); return true;})()
+        (() => {const b=document.querySelector('button[data-testid="send-button"], [role="button"][data-testid="send-button"], button[data-testid="composer-send-button"], [role="button"][data-testid="composer-send-button"], button[aria-label="Send prompt"], [role="button"][aria-label="Send prompt"], button[aria-label="Send message"], [role="button"][aria-label="Send message"], button[aria-label="Send"], [role="button"][aria-label="Send"]');
+          if(!b || b.disabled || b.getAttribute('aria-disabled')==='true' || b.getAttribute('data-disabled')==='true') return false; b.click(); return true;})()
         """#
         guard (try await evaluate(tab: tab, script: click) as? Bool) == true else {
             throw MonitorError.browser("Send button not ready. Draft retained; no confirmed click.")

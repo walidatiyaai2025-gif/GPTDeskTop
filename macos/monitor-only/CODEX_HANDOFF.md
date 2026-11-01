@@ -18,12 +18,14 @@ cd GPTDeskTop
 git fetch origin feature/mac-monitor-only-source-handoff
 git checkout feature/mac-monitor-only-source-handoff
 cd macos/monitor-only
-swiftc GPTDeskTopMonitor/Sources/MonitorModels.swift Tests/MonitorCoreTests.swift -o /tmp/monitor-model-tests
+swiftc GPTDeskTopMonitor/Sources/MonitorModels.swift GPTDeskTopMonitor/Sources/MonitorStore.swift Tests/MonitorCoreTests.swift -o /tmp/monitor-model-tests
 /tmp/monitor-model-tests
 xcodebuild -project GPTDeskTopMonitor.xcodeproj -scheme 'GPTDeskTop Monitor Only' -configuration Debug -destination 'platform=macOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
 ```
 
-Then run the scheme in Xcode, connect the app to dedicated Chrome, sign in to ChatGPT, and perform an end-to-end **controlled** delivery test with short, non-destructive messages.
+Then run the scheme in Xcode. For an existing signed-in Chrome profile, enable **Allow remote debugging for this browser instance** at `chrome://inspect/#remote-debugging`; the app discovers the approved browser endpoint from Chrome's `DevToolsActivePort`. This exposes the active Chrome session to CDP, including its cookies and site data. The app creates a new ChatGPT conversation tab and sends only the user-authored plan there. If remote debugging is unavailable, it falls back to a separate Chrome profile.
+
+Perform an end-to-end **controlled** delivery test with short, non-destructive messages.
 
 ## Required Codex acceptance
 
@@ -36,4 +38,4 @@ Then run the scheme in Xcode, connect the app to dedicated Chrome, sign in to Ch
 
 ## Known limits
 
-This source drop is a **prototype**; source-level model tests and Swift parsing have been checked outside macOS, but the full Xcode build and live Chrome/CDP runtime have **not** been verified yet. Do not announce a release-ready .app, DMG or deployed automation without evidence.
+Live ordered send, response completion, 30-second delay, Loop, Run Once, and restart reconciliation without duplicate delivery have passed on macOS 15.8.1 / Xcode 26.3 with Chrome's existing signed-in profile and CDP enabled. The test `.app` ZIP is unsigned and unnotarized. This remains a prototype; do not announce a signed/notarized release or deployed automation.

@@ -23,7 +23,7 @@ struct MonitorOnlyView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Monitor Only").font(.largeTitle.bold())
-                    Text("Message plan • confirmed sends • durable resume • dedicated Chrome")
+                    Text("Message plan • confirmed sends • durable resume • current Chrome profile")
                         .foregroundStyle(.secondary).font(.subheadline)
                 }
                 Spacer()
@@ -38,12 +38,12 @@ struct MonitorOnlyView: View {
                         Button { Task { await engine.connect() } } label: {
                             Label("Connect / Open Chrome", systemImage: "globe")
                         }.disabled(engine.running)
-                        Text(engine.connected ? "Dedicated profile connected" : "Not connected")
+                        Text(engine.connectionLabel)
                             .foregroundColor(engine.connected ? .green : .secondary)
                         Spacer()
                         if engine.running { ProgressView().controlSize(.small) }
                     }
-                    Text("Sign in manually in the Chrome window opened by the app. Your normal Chrome profile is never touched.")
+                    Text("To reuse your current Chrome profile, enable Allow remote debugging in chrome://inspect/#remote-debugging. This grants CDP access to that browser session. If unavailable, the app opens its separate profile.")
                         .font(.caption).foregroundStyle(.secondary)
                     if !engine.selectedTabURL.isEmpty {
                         Text(engine.selectedTabURL).font(.caption.monospaced()).lineLimit(1).textSelection(.enabled)
