@@ -11,6 +11,8 @@ DB3D5A79920BFAD15738EA15 /* MonitorModels.swift */ = {isa = PBXFileReference; la
 A946F9ECD9AFE2809E97BB24 /* ChromeCDP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChromeCDP.swift; sourceTree = "<group>"; };
 EDD9BD9BA2DAA32FC7CB3459 /* MonitorEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitorEngine.swift; sourceTree = "<group>"; };
 06271BAF49532C879AA3C58B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+B3A2E40A56B9BA292DE851FC /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
+755E843A2582CD97CA90DB77 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = B3A2E40A56B9BA292DE851FC /* AppIcon.icns */; };
 1733082D8EB8A79EFF1DA60E /* GPTDeskTop Monitor Only.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "GPTDeskTop Monitor Only.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 E2AA269EB967A8853A258BFA /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 878A52FC5FF6A57D50B7B870 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
@@ -20,7 +22,7 @@ F7E70C52D657872155DBA991 /* MonitorApp.swift in Sources */,
 1B184B67BDFC5FA8B11A5C6E /* ChromeCDP.swift in Sources */,
 17C01E71489B3DEB431DCAEE /* MonitorEngine.swift in Sources */,
 ); runOnlyForDeploymentPostprocessing = 0; };
-41D311A605520FC7B8B9A980 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+41D311A605520FC7B8B9A980 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (755E843A2582CD97CA90DB77 /* AppIcon.icns in Resources */,); runOnlyForDeploymentPostprocessing = 0; };
 B994ECFD96172EADA04E1A51 = {isa = PBXGroup; children = (868275135A8203C14E291F91, 8D9F97C675507102CE15615B); sourceTree = "<group>"; };
 868275135A8203C14E291F91 = {isa = PBXGroup; children = (4701D294069C7855F83E3515, 16851FE1F2843D4B636FDBC3); path = GPTDeskTopMonitor; sourceTree = "<group>"; };
 4701D294069C7855F83E3515 = {isa = PBXGroup; children = (
@@ -30,7 +32,7 @@ DB3D5A79920BFAD15738EA15,
 A946F9ECD9AFE2809E97BB24,
 EDD9BD9BA2DAA32FC7CB3459,
 ); path = Sources; sourceTree = "<group>"; };
-16851FE1F2843D4B636FDBC3 = {isa = PBXGroup; children = (06271BAF49532C879AA3C58B); path = Resources; sourceTree = "<group>"; };
+16851FE1F2843D4B636FDBC3 = {isa = PBXGroup; children = (06271BAF49532C879AA3C58B, B3A2E40A56B9BA292DE851FC); path = Resources; sourceTree = "<group>"; };
 8D9F97C675507102CE15615B = {isa = PBXGroup; children = (1733082D8EB8A79EFF1DA60E); name = Products; sourceTree = "<group>"; };
 34A04005BCAF206EEC990BD9 = {isa = PBXNativeTarget; buildConfigurationList = 1B672BF3DA427763BF644BE3; buildPhases = (878A52FC5FF6A57D50B7B870, E2AA269EB967A8853A258BFA, 41D311A605520FC7B8B9A980); buildRules = (); dependencies = (); name = "GPTDeskTop Monitor Only"; productName = "GPTDeskTop Monitor Only"; productReference = 1733082D8EB8A79EFF1DA60E; productType = "com.apple.product-type.application"; };
 244210E48437B6556980A702 = {isa = PBXProject; attributes = { LastUpgradeCheck = 1600; TargetAttributes = { 34A04005BCAF206EEC990BD9 = { CreatedOnToolsVersion = 16.0; }; }; }; buildConfigurationList = 76F8DEC3DFE0BDB465198890; compatibilityVersion = "Xcode 15.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = B994ECFD96172EADA04E1A51; productRefGroup = 8D9F97C675507102CE15615B; projectDirPath = ""; projectRoot = ""; targets = (34A04005BCAF206EEC990BD9); };

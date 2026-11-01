@@ -16,6 +16,7 @@ Independent **SwiftUI macOS** implementation of the **Monitor Only** part of the
 ## Requirements and build on a Mac
 
 - **macOS 13+**, Xcode 15+ (Xcode 26 is suitable), Google Chrome installed in `/Applications`.
+- Custom app icon uses the provided portrait image (`GPTDeskTopMonitor/Resources/AppIcon.png`); the compiled `.icns` is bundled in the app.
 - Open **`GPTDeskTopMonitor.xcodeproj`** in Xcode, select scheme **GPTDeskTop Monitor Only**, destination **My Mac**, press **Run**.
 - Or double-click **`build-on-mac.command`**. The compiled .app will be under `build/Build/Products/Release` and its ZIP under `dist/`.
 - To use an existing signed-in Chrome profile, open `chrome://inspect/#remote-debugging`, enable **Allow remote debugging for this browser instance**, and approve the connection prompt if Chrome shows one. This gives CDP access to the active browser session, including its tabs, cookies, and site data; only enable it for trusted local apps. The app creates a new ChatGPT tab for a plan and resumes only its saved tab.
