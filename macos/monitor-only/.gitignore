@@ -1,0 +1,7 @@
+build/
+dist/
+.DS_Store
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+Tests/monitor-core-tests
