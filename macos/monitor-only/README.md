@@ -20,6 +20,7 @@ Independent **SwiftUI macOS** implementation of the **Monitor Only** part of the
 - Open **`GPTDeskTopMonitor.xcodeproj`** in Xcode, select scheme **GPTDeskTop Monitor Only**, destination **My Mac**, press **Run**.
 - Or double-click **`build-on-mac.command`**. The compiled .app will be under `build/Build/Products/Release` and its ZIP under `dist/`.
 - To use an existing signed-in Chrome profile, open `chrome://inspect/#remote-debugging`, enable **Allow remote debugging for this browser instance**, and approve the connection prompt if Chrome shows one. This gives CDP access to the active browser session, including its tabs, cookies, and site data; only enable it for trusted local apps. The app creates a new ChatGPT tab for a plan and resumes only its saved tab.
+- The app keeps one browser-level CDP connection and its selected page session open for the lifetime of the app. Chrome may ask again after the app or browser restarts; routine page reads reuse the same approved connection.
 - Click **Connect / Open Chrome** and **Start Monitor** only after choosing the intended profile and editing/importing the message sequence.
 - For Run Once: confirmed sends are marked `sent=true` in local `monitor-state.json`. On restart the app resumes pending messages, without blindly resending an ambiguous attempt.
 

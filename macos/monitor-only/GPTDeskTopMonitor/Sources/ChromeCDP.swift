@@ -13,9 +13,14 @@ struct ChromeTab: Decodable {
 actor ChromeCDP {
     private var port: Int?
     private var browserWebSocketURL: URL?
+    private var browserURLSession: URLSession?
+    private var browserSocket: URLSessionWebSocketTask?
     private var ownedProcess: Process?
     private let directory: URL
     private var commandId = 0
+    private var targetSessions: [String: String] = [:]
+    private var browserCommandInFlight = false
+    private var browserCommandWaiters: [CheckedContinuation<Void, Never>] = []
 
     private enum ConnectionMode: Equatable { case dedicatedHTTP, existingProfileWebSocket }
     private var connectionMode: ConnectionMode = .dedicatedHTTP
@@ -33,6 +38,10 @@ actor ChromeCDP {
         let existingProfile = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Google/Chrome", isDirectory: true)
         if let endpoint = try? readBrowserWebSocketEndpoint(in: existingProfile) {
+            if browserWebSocketURL != endpoint {
+                closeBrowserConnection()
+                targetSessions.removeAll()
+            }
             browserWebSocketURL = endpoint
             port = nil
             connectionMode = .existingProfileWebSocket
@@ -42,12 +51,15 @@ actor ChromeCDP {
                 ownedProcess = nil
                 return try await listTabs()
             } catch {
+                closeBrowserConnection()
+                targetSessions.removeAll()
                 browserWebSocketURL = nil
                 throw MonitorError.browser("Could not attach to the existing Chrome profile. Check Chrome's Allow remote debugging setting and approve the connection in Chrome. \(error.localizedDescription)")
             }
         }
 
         browserWebSocketURL = nil
+        closeBrowserConnection()
         connectionMode = .dedicatedHTTP
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Reattach to our own profile's active CDP endpoint on restart, if still healthy.
@@ -154,13 +166,23 @@ actor ChromeCDP {
 
     private func command(tab: ChromeTab, method: String, params: [String: Any]) async throws -> [String: Any] {
         if connectionMode == .existingProfileWebSocket {
-            let socket = try makeBrowserSocket()
-            defer { socket.cancel(with: .normalClosure, reason: nil) }
-            let attached = try await browserSocketCommand(socket, method: "Target.attachToTarget", params: ["targetId": tab.id, "flatten": true])
-            guard let sessionId = attached["sessionId"] as? String else {
-                throw MonitorError.browser("Chrome did not create a CDP session for the selected tab")
+            let sessionId: String
+            if let attached = targetSessions[tab.id] {
+                sessionId = attached
+            } else {
+                let attached = try await browserSocketCommand(method: "Target.attachToTarget", params: ["targetId": tab.id, "flatten": true])
+                guard let created = attached["sessionId"] as? String else {
+                    throw MonitorError.browser("Chrome did not create a CDP session for the selected tab")
+                }
+                targetSessions[tab.id] = created
+                sessionId = created
             }
-            return try await browserSocketCommand(socket, method: method, params: params, sessionId: sessionId)
+            do {
+                return try await browserSocketCommand(method: method, params: params, sessionId: sessionId)
+            } catch {
+                targetSessions.removeValue(forKey: tab.id)
+                throw error
+            }
         }
         guard let socketURL = tab.webSocketDebuggerUrl.flatMap(URL.init(string:)),
               socketURL.host == "127.0.0.1" || socketURL.host == "localhost" else {
@@ -191,21 +213,30 @@ actor ChromeCDP {
     }
 
     private func makeBrowserSocket() throws -> URLSessionWebSocketTask {
+        if let browserSocket {
+            if browserSocket.closeCode == .invalid { return browserSocket }
+            closeBrowserConnection()
+            targetSessions.removeAll()
+        }
         guard let browserWebSocketURL else { throw MonitorError.browser("Existing Chrome CDP connection is unavailable") }
         let session = URLSession(configuration: .ephemeral)
         let socket = session.webSocketTask(with: browserWebSocketURL)
         socket.resume()
+        browserURLSession = session
+        browserSocket = socket
         return socket
     }
 
     private func browserCommand(method: String, params: [String: Any]) async throws -> [String: Any] {
-        let socket = try makeBrowserSocket()
-        defer { socket.cancel(with: .normalClosure, reason: nil) }
-        return try await browserSocketCommand(socket, method: method, params: params)
+        try await browserSocketCommand(method: method, params: params)
     }
 
-    private func browserSocketCommand(_ socket: URLSessionWebSocketTask, method: String,
+    private func browserSocketCommand(method: String,
                                      params: [String: Any], sessionId: String? = nil) async throws -> [String: Any] {
+        await acquireBrowserCommandPermit()
+        defer { releaseBrowserCommandPermit() }
+        try Task.checkCancellation()
+        let socket = try makeBrowserSocket()
         commandId += 1
         let id = commandId
         var payload: [String: Any] = ["id": id, "method": method, "params": params]
@@ -229,6 +260,31 @@ actor ChromeCDP {
             return object["result"] as? [String: Any] ?? [:]
         }
         throw MonitorError.browser("No matching browser-level CDP response for \(method)")
+    }
+
+    private func acquireBrowserCommandPermit() async {
+        if !browserCommandInFlight {
+            browserCommandInFlight = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            browserCommandWaiters.append(continuation)
+        }
+    }
+
+    private func releaseBrowserCommandPermit() {
+        if browserCommandWaiters.isEmpty {
+            browserCommandInFlight = false
+        } else {
+            browserCommandWaiters.removeFirst().resume()
+        }
+    }
+
+    private func closeBrowserConnection() {
+        browserSocket?.cancel(with: .normalClosure, reason: nil)
+        browserSocket = nil
+        browserURLSession?.invalidateAndCancel()
+        browserURLSession = nil
     }
 
     private func evaluate(tab: ChromeTab, script: String) async throws -> Any? {
