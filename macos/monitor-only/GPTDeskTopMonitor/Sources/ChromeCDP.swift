@@ -88,7 +88,7 @@ actor ChromeCDP {
     }
 
     func createFreshTab() async throws -> ChromeTab {
-        var req = URLRequest(url: endpoint("/json/new?https://chatgpt.com/"))
+        var req = URLRequest(url: try endpoint("/json/new?https://chatgpt.com/"))
         req.httpMethod = "PUT"
         let (data, _) = try await URLSession.shared.data(for: req)
         return try JSONDecoder().decode(ChromeTab.self, from: data)
