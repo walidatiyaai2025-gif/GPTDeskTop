@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "name": "Walid Monitor Only Mac",
+  "loop": false,
+  "defaultDelaySeconds": 30,
+  "messages": [
+    { "label": "Continue", "text": "كمل من آخر نقطة مؤكدة بدون تكرار العمل المنجز.", "enabled": true, "delaySeconds": 30, "sent": false },
+    { "label": "Verify", "text": "راجع التغييرات والاختبارات ثم أكمل المهمة التالية الممكنة.", "enabled": true, "delaySeconds": 45, "sent": false }
+  ]
+}

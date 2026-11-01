@@ -1,0 +1,19 @@
+name: macOS Monitor Only prototype
+on:
+  pull_request:
+    paths:
+      - 'macos/monitor-only/**'
+      - '.github/workflows/mac-monitor-only.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-build-and-model-tests:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile model tests and build macOS app
+        run: bash macos/monitor-only/ci/verify-mac.sh
