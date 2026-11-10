@@ -23,7 +23,7 @@ swiftc GPTDeskTopMonitor/Sources/MonitorModels.swift GPTDeskTopMonitor/Sources/M
 xcodebuild -project GPTDeskTopMonitor.xcodeproj -scheme 'GPTDeskTop Monitor Only' -configuration Debug -destination 'platform=macOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
 ```
 
-Then run the scheme in Xcode. For an existing signed-in Chrome profile, enable **Allow remote debugging for this browser instance** at `chrome://inspect/#remote-debugging`; the app discovers the approved browser endpoint from Chrome's `DevToolsActivePort`. This exposes the active Chrome session to CDP, including its cookies and site data. The app creates a new ChatGPT conversation tab and sends only the user-authored plan there. If remote debugging is unavailable, it falls back to a separate Chrome profile.
+Then run the scheme in Xcode. The app attaches only to the Chrome profile already open on the Mac. The operator must enable **Allow remote debugging for this browser instance** at `chrome://inspect/#remote-debugging` and approve the app if prompted. If Chrome has no live endpoint, the app reports the issue and stops; it must never launch another profile or window. The app creates a new ChatGPT tab inside the current profile and sends only the user-authored plan there.
 
 Perform an end-to-end **controlled** delivery test with short, non-destructive messages.
 

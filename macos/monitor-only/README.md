@@ -7,7 +7,7 @@ Independent **SwiftUI macOS** implementation of the **Monitor Only** part of the
 - Ordered message sequence with Add / Remove / Move Up / Move Down / label / editor / enabled flags.
 - Import and export JSON compatible with the Windows `SimpleMonitorMessagePlan` (`schemaVersion=1`, `name`, `loop`, `defaultDelaySeconds`, `messages[{label,text,enabled,delaySeconds,sent}]`). Imported sent flags are intentionally reset; local runtime checkpoints are authoritative.
 - Run Once and Loop, default/per-message **30–3600s** post-response delays.
-- Controlled Chrome via **localhost Chrome DevTools Protocol**. The app first uses the existing Chrome profile when Chrome's **Allow remote debugging** option is enabled; otherwise it launches an isolated profile under `~/Library/Application Support/GPTDeskTopMonitorMac/ChromeProfile`.
+- Controlled Chrome via **localhost Chrome DevTools Protocol** in the profile already open in Google Chrome. The app never launches a separate profile or Chrome window.
 - First Start creates a fresh ChatGPT tab. Subsequent steps stay in that conversation. The same saved CDP tab is required for resume.
 - Physical-send safety marker persisted *before* click; no automated resend after ambiguous delivery.
 - Read-only user-message receipt verification; confirmation is checkpointed atomically before waiting for assistant response.
@@ -19,8 +19,8 @@ Independent **SwiftUI macOS** implementation of the **Monitor Only** part of the
 - Custom app icon uses the provided portrait image (`GPTDeskTopMonitor/Resources/AppIcon.png`); the compiled `.icns` is bundled in the app.
 - Open **`GPTDeskTopMonitor.xcodeproj`** in Xcode, select scheme **GPTDeskTop Monitor Only**, destination **My Mac**, press **Run**.
 - Or double-click **`build-on-mac.command`**. The compiled .app will be under `build/Build/Products/Release` and its ZIP under `dist/`.
-- To use an existing signed-in Chrome profile, open `chrome://inspect/#remote-debugging`, enable **Allow remote debugging for this browser instance**, and approve the connection prompt if Chrome shows one. This gives CDP access to the active browser session, including its tabs, cookies, and site data; only enable it for trusted local apps. The app creates a new ChatGPT tab for a plan and resumes only its saved tab.
-- The app keeps one browser-level CDP connection and its selected page session open for the lifetime of the app. Chrome may ask again after the app or browser restarts; routine page reads reuse the same approved connection.
+- In the Chrome window you already use, enable **Allow remote debugging for this browser instance** at `chrome://inspect/#remote-debugging` and approve GPTDeskTop Monitor Only when Chrome asks. This permission gives the app access to your active Chrome tabs, cookies, and site data. The app reuses one persistent CDP connection and does not ask again during routine page checks.
+- The app discovers Chrome's `DevToolsActivePort` for the current profile and attaches to its browser endpoint. If that endpoint is missing or stale, it stops with instructions; it never starts another Chrome profile or window.
 - Click **Connect / Open Chrome** and **Start Monitor** only after choosing the intended profile and editing/importing the message sequence.
 - For Run Once: confirmed sends are marked `sent=true` in local `monitor-state.json`. On restart the app resumes pending messages, without blindly resending an ambiguous attempt.
 

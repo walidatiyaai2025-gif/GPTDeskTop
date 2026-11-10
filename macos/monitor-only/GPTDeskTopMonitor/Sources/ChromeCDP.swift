@@ -8,100 +8,40 @@ struct ChromeTab: Decodable {
     var webSocketDebuggerUrl: String?
 }
 
-/// Prefers Chrome's explicitly enabled local remote-debugging endpoint for an existing profile.
-/// Launches a separate app-owned profile only when that endpoint is unavailable.
+/// Connects only to the already-running, explicitly approved Chrome profile.
 actor ChromeCDP {
-    private var port: Int?
     private var browserWebSocketURL: URL?
     private var browserURLSession: URLSession?
     private var browserSocket: URLSessionWebSocketTask?
-    private var ownedProcess: Process?
-    private let directory: URL
     private var commandId = 0
     private var targetSessions: [String: String] = [:]
     private var browserCommandInFlight = false
     private var browserCommandWaiters: [CheckedContinuation<Void, Never>] = []
 
-    private enum ConnectionMode: Equatable { case dedicatedHTTP, existingProfileWebSocket }
-    private var connectionMode: ConnectionMode = .dedicatedHTTP
-
-    init() {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        directory = support.appendingPathComponent("GPTDeskTopMonitorMac/ChromeProfile", isDirectory: true)
-    }
-
     func connectionModeDescription() -> String {
-        connectionMode == .existingProfileWebSocket ? "existing Chrome profile (CDP)" : "dedicated Chrome profile (CDP)"
+        "the currently open Chrome profile"
     }
 
     func connect() async throws -> [ChromeTab] {
         let existingProfile = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Google/Chrome", isDirectory: true)
-        if let endpoint = try? readBrowserWebSocketEndpoint(in: existingProfile) {
-            if browserWebSocketURL != endpoint {
-                closeBrowserConnection()
-                targetSessions.removeAll()
-            }
-            browserWebSocketURL = endpoint
-            port = nil
-            connectionMode = .existingProfileWebSocket
-            do {
-                _ = try await browserCommand(method: "Browser.getVersion", params: [:])
-                if let process = ownedProcess, process.isRunning { process.terminate() }
-                ownedProcess = nil
-                return try await listTabs()
-            } catch {
-                closeBrowserConnection()
-                targetSessions.removeAll()
-                browserWebSocketURL = nil
-                throw MonitorError.browser("Could not attach to the existing Chrome profile. Check Chrome's Allow remote debugging setting and approve the connection in Chrome. \(error.localizedDescription)")
-            }
+        guard let endpoint = try? readBrowserWebSocketEndpoint(in: existingProfile) else {
+            throw MonitorError.browser("No remote-debugging connection is active for your open Chrome profile. In the Chrome window you already use, enable Allow remote debugging at chrome://inspect/#remote-debugging, approve GPTDeskTop Monitor Only, then click Connect again. The app will not open another profile or window.")
         }
-
-        browserWebSocketURL = nil
-        closeBrowserConnection()
-        connectionMode = .dedicatedHTTP
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        // Reattach to our own profile's active CDP endpoint on restart, if still healthy.
-        if let savedPort = try? readDebuggingPort() {
-            port = savedPort
-            if let tabs = try? await listTabs() { return tabs }
+        if browserWebSocketURL != endpoint {
+            closeBrowserConnection()
+            targetSessions.removeAll()
         }
-        let candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            NSHomeDirectory() + "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-        ]
-        guard let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            throw MonitorError.browser("Install Google Chrome in /Applications before connecting")
+        browserWebSocketURL = endpoint
+        do {
+            _ = try await browserCommand(method: "Browser.getVersion", params: [:])
+            return try await listTabs()
+        } catch {
+            closeBrowserConnection()
+            targetSessions.removeAll()
+            browserWebSocketURL = nil
+            throw MonitorError.browser("Could not connect to the already-open Chrome profile. Check that Allow remote debugging is enabled and approve GPTDeskTop Monitor Only in the Chrome window. No new profile or window was opened. Details: \(error.localizedDescription)")
         }
-        // A stale DevToolsActivePort cannot be trusted if its process is gone.
-        try? FileManager.default.removeItem(at: directory.appendingPathComponent("DevToolsActivePort"))
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = ["--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1",
-                             "--user-data-dir=\(directory.path)", "--no-first-run", "--no-default-browser-check",
-                             "--new-window", "https://chatgpt.com/"]
-        try process.run()
-        ownedProcess = process
-        for _ in 0..<80 {
-            try Task.checkCancellation()
-            try await Task.sleep(nanoseconds: 250_000_000)
-            if let p = try? readDebuggingPort() {
-                port = p
-                if let tabs = try? await listTabs() { return tabs }
-            }
-        }
-        throw MonitorError.browser("Chrome CDP did not become available. Check Chrome startup or the dedicated profile lock.")
-    }
-
-    private func readDebuggingPort() throws -> Int {
-        let file = directory.appendingPathComponent("DevToolsActivePort")
-        let content = try String(contentsOf: file, encoding: .utf8)
-        guard let line = content.components(separatedBy: .newlines).first,
-              let p = Int(line), p > 0 && p < 65536 else {
-            throw MonitorError.browser("Invalid Chrome debugging port")
-        }
-        return p
     }
 
     private func readBrowserWebSocketEndpoint(in userDataDirectory: URL) throws -> URL {
@@ -116,27 +56,15 @@ actor ChromeCDP {
         return url
     }
 
-    private func endpoint(_ path: String) throws -> URL {
-        guard let port else { throw MonitorError.browser("Chrome is not connected") }
-        guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else {
-            throw MonitorError.browser("Invalid Chrome endpoint")
-        }
-        return url
-    }
-
     func listTabs() async throws -> [ChromeTab] {
-        if connectionMode == .existingProfileWebSocket {
-            let result = try await browserCommand(method: "Target.getTargets", params: [:])
-            let targets = result["targetInfos"] as? [[String: Any]] ?? []
-            return targets.compactMap { target in
-                guard let id = target["targetId"] as? String,
-                      let type = target["type"] as? String,
-                      let url = target["url"] as? String else { return nil }
-                return ChromeTab(id: id, type: type, url: url, webSocketDebuggerUrl: nil)
-            }
+        let result = try await browserCommand(method: "Target.getTargets", params: [:])
+        let targets = result["targetInfos"] as? [[String: Any]] ?? []
+        return targets.compactMap { target in
+            guard let id = target["targetId"] as? String,
+                  let type = target["type"] as? String,
+                  let url = target["url"] as? String else { return nil }
+            return ChromeTab(id: id, type: type, url: url, webSocketDebuggerUrl: nil)
         }
-        let (data, _) = try await URLSession.shared.data(from: endpoint("/json/list"))
-        return try JSONDecoder().decode([ChromeTab].self, from: data)
     }
 
     func selectedTab(preferredId: String = "", preferredURL: String = "") async throws -> ChromeTab {
@@ -145,71 +73,37 @@ actor ChromeCDP {
         if !preferredId.isEmpty { throw MonitorError.blocked("Saved ChatGPT tab was lost. Stopped to avoid sending into a different conversation.") }
         if let exact = tabs.first(where: { $0.url == preferredURL }), !preferredURL.isEmpty { return exact }
         if tabs.count == 1, let only = tabs.first { return only }
-        if tabs.isEmpty { throw MonitorError.browser("Open ChatGPT in the dedicated Chrome window, then connect again") }
-        throw MonitorError.blocked("Several ChatGPT tabs are open in the dedicated profile. Close extras before starting.")
+        if tabs.isEmpty { throw MonitorError.browser("Open ChatGPT in your current Chrome profile, then connect again") }
+        throw MonitorError.blocked("Several ChatGPT tabs are open. Close extras before starting.")
     }
 
     func createFreshTab() async throws -> ChromeTab {
-        if connectionMode == .existingProfileWebSocket {
-            let url = "https://chatgpt.com/"
-            let result = try await browserCommand(method: "Target.createTarget", params: ["url": url])
-            guard let id = result["targetId"] as? String else {
-                throw MonitorError.browser("Chrome did not return an ID for the new ChatGPT tab")
-            }
-            return ChromeTab(id: id, type: "page", url: url, webSocketDebuggerUrl: nil)
+        let url = "https://chatgpt.com/"
+        let result = try await browserCommand(method: "Target.createTarget", params: ["url": url])
+        guard let id = result["targetId"] as? String else {
+            throw MonitorError.browser("Chrome did not return an ID for the new ChatGPT tab")
         }
-        var req = URLRequest(url: try endpoint("/json/new?https://chatgpt.com/"))
-        req.httpMethod = "PUT"
-        let (data, _) = try await URLSession.shared.data(for: req)
-        return try JSONDecoder().decode(ChromeTab.self, from: data)
+        return ChromeTab(id: id, type: "page", url: url, webSocketDebuggerUrl: nil)
     }
 
     private func command(tab: ChromeTab, method: String, params: [String: Any]) async throws -> [String: Any] {
-        if connectionMode == .existingProfileWebSocket {
-            let sessionId: String
-            if let attached = targetSessions[tab.id] {
-                sessionId = attached
-            } else {
-                let attached = try await browserSocketCommand(method: "Target.attachToTarget", params: ["targetId": tab.id, "flatten": true])
-                guard let created = attached["sessionId"] as? String else {
-                    throw MonitorError.browser("Chrome did not create a CDP session for the selected tab")
-                }
-                targetSessions[tab.id] = created
-                sessionId = created
+        let sessionId: String
+        if let attached = targetSessions[tab.id] {
+            sessionId = attached
+        } else {
+            let attached = try await browserSocketCommand(method: "Target.attachToTarget", params: ["targetId": tab.id, "flatten": true])
+            guard let created = attached["sessionId"] as? String else {
+                throw MonitorError.browser("Chrome did not create a CDP session for the selected tab")
             }
-            do {
-                return try await browserSocketCommand(method: method, params: params, sessionId: sessionId)
-            } catch {
-                targetSessions.removeValue(forKey: tab.id)
-                throw error
-            }
+            targetSessions[tab.id] = created
+            sessionId = created
         }
-        guard let socketURL = tab.webSocketDebuggerUrl.flatMap(URL.init(string:)),
-              socketURL.host == "127.0.0.1" || socketURL.host == "localhost" else {
-            throw MonitorError.browser("The selected Chrome target has no local CDP WebSocket")
+        do {
+            return try await browserSocketCommand(method: method, params: params, sessionId: sessionId)
+        } catch {
+            targetSessions.removeValue(forKey: tab.id)
+            throw error
         }
-        commandId += 1
-        let id = commandId
-        let session = URLSession(configuration: .ephemeral)
-        let socket = session.webSocketTask(with: socketURL)
-        socket.resume()
-        defer { socket.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
-        let data = try JSONSerialization.data(withJSONObject: ["id": id, "method": method, "params": params])
-        try await socket.send(.string(String(decoding: data, as: UTF8.self)))
-        // CDP may emit events before the matching command response.
-        for _ in 0..<32 {
-            try Task.checkCancellation()
-            let msg = try await socket.receive()
-            let bytes: Data
-            switch msg { case .string(let text): bytes = Data(text.utf8); case .data(let raw): bytes = raw; @unknown default: continue }
-            guard let obj = try JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { continue }
-            if (obj["id"] as? Int) != id { continue }
-            if let error = obj["error"] as? [String: Any] {
-                throw MonitorError.browser("CDP \(method): \(error["message"] ?? "unknown error")")
-            }
-            return obj["result"] as? [String: Any] ?? [:]
-        }
-        throw MonitorError.browser("No matching CDP response for \(method)")
     }
 
     private func makeBrowserSocket() throws -> URLSessionWebSocketTask {

@@ -76,7 +76,7 @@ import AppKit
             connected = true
             connectionLabel = await chrome.connectionModeDescription()
             status = "Connected to \(connectionLabel). Start when the intended ChatGPT conversation is ready."
-            event("Chrome connected using \(connectionLabel). \(tabs.count) CDP target(s) discovered.")
+            event("Chrome connected using \(connectionLabel). \(tabs.count) tab(s) discovered.")
         } catch {
             connected = false
             connectionLabel = "Not connected"

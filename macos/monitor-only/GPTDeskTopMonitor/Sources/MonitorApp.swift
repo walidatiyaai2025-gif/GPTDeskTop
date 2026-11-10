@@ -43,7 +43,7 @@ struct MonitorOnlyView: View {
                         Spacer()
                         if engine.running { ProgressView().controlSize(.small) }
                     }
-                    Text("To reuse your current Chrome profile, enable Allow remote debugging in chrome://inspect/#remote-debugging. This grants CDP access to that browser session. If unavailable, the app opens its separate profile.")
+                    Text("The app uses the Chrome profile already open and never launches another profile or window. Enable Allow remote debugging at chrome://inspect/#remote-debugging and approve GPTDeskTop Monitor Only when Chrome asks.")
                         .font(.caption).foregroundStyle(.secondary)
                     if !engine.selectedTabURL.isEmpty {
                         Text(engine.selectedTabURL).font(.caption.monospaced()).lineLimit(1).textSelection(.enabled)
